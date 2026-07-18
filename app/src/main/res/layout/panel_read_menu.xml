@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="#F2F0E8"
+    android:elevation="10dp"
+    android:orientation="vertical"
+    android:paddingBottom="12dp">
+
+    <!-- 上一章 / 下一章 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="8dp">
+
+        <TextView
+            android:id="@+id/btnPrevChapter"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center_vertical|start"
+            android:paddingHorizontal="12dp"
+            android:text="@string/prev_chapter"
+            android:textColor="#555555"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/btnNextChapter"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center_vertical|end"
+            android:paddingHorizontal="12dp"
+            android:text="@string/next_chapter"
+            android:textColor="#555555"
+            android:textSize="15sp" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#E0DCD0" />
+
+    <!-- 第一行：风格 偏好 跳转 目录书签 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingTop="10dp"
+        android:paddingBottom="4dp">
+
+        <LinearLayout
+            android:id="@+id/menuStyle"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_menu_style" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_style" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/menuPref"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_settings" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_pref" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/menuJump"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_menu_jump" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_jump" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/menuToc"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_toc" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_toc" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 第二行：视角 全屏显示 夜间 朗读 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingBottom="6dp">
+
+        <LinearLayout
+            android:id="@+id/menuOrient"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_menu_orient" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_orient" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/menuFullscreen"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_menu_fullscreen" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_fullscreen" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/menuNight"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_menu_night" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_night" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/menuRead"
+            style="@style/ReadMenuItem">
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:src="@drawable/ic_voice" />
+            <TextView
+                style="@style/ReadMenuLabel"
+                android:text="@string/menu_read" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

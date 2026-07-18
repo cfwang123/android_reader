@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingVertical="2dp">
+
+    <TextView
+        android:id="@+id/tvParagraph"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:lineSpacingMultiplier="1.4"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="6dp"
+        android:textColor="@color/read_text_default"
+        android:textIsSelectable="false"
+        android:textSize="18sp" />
+</FrameLayout>
