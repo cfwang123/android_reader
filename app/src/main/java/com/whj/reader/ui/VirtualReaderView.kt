@@ -43,14 +43,19 @@ class VirtualReaderView @JvmOverloads constructor(
 
     var onZoneTap: ((zone: Int) -> Unit)? = null
     var onScrollChangedListener: ((firstVisibleParagraph: Int) -> Unit)? = null
-    /** 选区菜单：从本段开始朗读 */
-    var onReadFromParagraph: ((paragraphIndex: Int) -> Unit)? = null
+    /** 选区菜单：从段内偏移起读到文末 */
+    var onReadFromParagraph: ((paragraphIndex: Int, charOffset: Int) -> Unit)? = null
     /**
      * 左/右边缘上下滑动调节。
      * @param isLeft true=左边缘
      * @param direction +1 上滑，-1 下滑
      */
     var onEdgeAdjust: ((isLeft: Boolean, direction: Int) -> Unit)? = null
+    /**
+     * 水平滑动翻页。
+     * [forward] true = 左滑（下一页），false = 右滑（上一页）。
+     */
+    var onHorizontalSwipe: ((forward: Boolean) -> Unit)? = null
     /** 左/右边缘是否启用（由设置决定；未启用则走普通滚动） */
     var leftEdgeEnabled: Boolean = true
     var rightEdgeEnabled: Boolean = true
@@ -59,7 +64,10 @@ class VirtualReaderView @JvmOverloads constructor(
     private var style: ReadStyle = ReadStyle()
     private var textColor: Int = 0xFF2C2C2C.toInt()
     private var highlightColor: Int = 0x66FFE082.toInt()
+    /** TTS 当前句高亮：段索引 + 段内 [start, end) */
     private var highlightParagraph: Int = -1
+    private var highlightStart: Int = 0
+    private var highlightEnd: Int = 0
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         isSubpixelText = true
@@ -100,11 +108,21 @@ class VirtualReaderView @JvmOverloads constructor(
     private var interactingUntilMs = 0L
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val minFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
+    private val swipeMinDistance = (48f * density).toInt().coerceAtLeast(touchSlop * 2)
+    private val swipeMinVelocity = minFlingVelocity.coerceAtLeast(400)
     private var downX = 0f
     private var downY = 0f
     private var downTime = 0L
     private var moved = false
     private var downZone = 1
+    /**
+     * 手势轴向：null=未判定，true=水平滑（翻页），false=竖向滑（滚页）。
+     * 一旦判定水平，本手势不再竖向滚动。
+     */
+    private var swipeHorizontal: Boolean? = null
+    /** 本手势是否已由 fling 触发翻页，避免 UP 再翻一次 */
+    private var horizontalSwipeConsumed = false
     /** 0=无 1=左 2=右 */
     private var edgeSide = 0
     private var edgeAccum = 0f
@@ -186,6 +204,17 @@ class VirtualReaderView @JvmOverloads constructor(
                     }
                     return true
                 }
+                // 判定水平/竖直：水平则吞掉竖滚，留给 UP/fling 翻页
+                if (swipeHorizontal == null) {
+                    val adx = abs(e2.x - downX)
+                    val ady = abs(e2.y - downY)
+                    if (adx > touchSlop || ady > touchSlop) {
+                        swipeHorizontal = adx > ady * 1.2f && onHorizontalSwipe != null
+                    }
+                }
+                if (swipeHorizontal == true) {
+                    return true
+                }
                 scrollByInternal(distanceY)
                 return true
             }
@@ -196,7 +225,19 @@ class VirtualReaderView @JvmOverloads constructor(
                 velocityX: Float,
                 velocityY: Float,
             ): Boolean {
-                if (selecting || !moved || edgeSide != 0) return false
+                if (selecting || edgeSide != 0) return false
+                // 水平 fling → 翻页（左滑下一页）
+                if (onHorizontalSwipe != null &&
+                    abs(velocityX) >= swipeMinVelocity &&
+                    abs(velocityX) > abs(velocityY) * 1.2f
+                ) {
+                    markInteracting()
+                    horizontalSwipeConsumed = true
+                    onHorizontalSwipe?.invoke(velocityX < 0f)
+                    return true
+                }
+                if (!moved) return false
+                if (swipeHorizontal == true) return true
                 markInteracting()
                 scroller.fling(
                     0, scrollYF.toInt(), 0, -velocityY.toInt(),
@@ -238,6 +279,8 @@ class VirtualReaderView @JvmOverloads constructor(
         layoutCache.evictAll()
         scrollYF = 0f
         highlightParagraph = -1
+        highlightStart = 0
+        highlightEnd = 0
         rebuildMetricsEstimateOnly()
         invalidate()
         scheduleFill(0L)
@@ -262,13 +305,37 @@ class VirtualReaderView @JvmOverloads constructor(
         notifyScroll(force = true)
     }
 
-    fun setHighlightParagraph(index: Int) {
-        if (highlightParagraph == index) return
+    /**
+     * 高亮某段内 [start, end) 字符（TTS 当前句）。
+     * index &lt; 0 或 end &lt;= start 时清除。
+     */
+    fun setHighlightRange(index: Int, start: Int, end: Int) {
+        if (index < 0 || end <= start) {
+            if (highlightParagraph < 0) return
+            highlightParagraph = -1
+            highlightStart = 0
+            highlightEnd = 0
+            invalidate()
+            return
+        }
+        if (highlightParagraph == index && highlightStart == start && highlightEnd == end) return
         highlightParagraph = index
+        highlightStart = start.coerceAtLeast(0)
+        highlightEnd = end
         invalidate()
     }
 
-    fun clearHighlight() = setHighlightParagraph(-1)
+    /** @deprecated 整段高亮，改用 [setHighlightRange] */
+    fun setHighlightParagraph(index: Int) {
+        if (index < 0) {
+            clearHighlight()
+            return
+        }
+        val len = paragraphs.getOrNull(index)?.text?.length ?: 0
+        setHighlightRange(index, 0, len)
+    }
+
+    fun clearHighlight() = setHighlightRange(-1, 0, 0)
     fun currentHighlight(): Int = highlightParagraph
 
     fun firstVisibleParagraph(): Int {
@@ -276,6 +343,76 @@ class VirtualReaderView @JvmOverloads constructor(
         var i = tops.binarySearch(scrollYF)
         if (i < 0) i = (-i - 2).coerceAtLeast(0)
         return i.coerceIn(0, paragraphs.lastIndex)
+    }
+
+    /**
+     * 屏幕内容区最上方对应的段落（用于书签）。
+     * [topInsetPx]：被顶栏等遮挡的高度（View 坐标系）。
+     * 返回视口可见区顶部落在的那一段（顶部可被裁切）。
+     */
+    fun topScreenParagraph(topInsetPx: Float = 0f): Int {
+        if (paragraphs.isEmpty() || tops.isEmpty() || height <= 0) return 0
+        runCatching { ensureLayoutsForViewport() }
+        // 可见区顶部（扣除遮挡后）对应的内容 Y
+        // 绘制：viewY = contentPaddingV + contentY - scrollYF
+        // 可见 contentY 起点 ≈ scrollYF + max(0, topInset - contentPaddingV)
+        val inset = topInsetPx.coerceAtLeast(0f)
+        val contentY = (scrollYF + (inset - contentPaddingV).coerceAtLeast(0f))
+            .coerceIn(0f, (totalHeight - 1f).coerceAtLeast(0f))
+        var i = tops.binarySearch(contentY)
+        if (i < 0) {
+            // insertion point: -i-1 为第一个 > contentY 的下标
+            i = (-i - 2).coerceAtLeast(0)
+        }
+        // 若下一段顶已 ≤ contentY，继续前进（估算 tops 误差）
+        while (i < paragraphs.lastIndex && tops[i + 1] <= contentY + 0.5f) {
+            i++
+        }
+        return i.coerceIn(0, paragraphs.lastIndex)
+    }
+
+    /** @deprecated 使用 [topScreenParagraph] */
+    fun firstFullyVisibleParagraph(): Int = topScreenParagraph(0f)
+
+    /** 若滚到某段顶部，对应的进度 0~100 */
+    fun progressPercentForParagraph(index: Int): Float {
+        if (paragraphs.isEmpty() || tops.isEmpty()) return 0f
+        val max = maxScrollY()
+        if (max <= 0) {
+            return if (index >= paragraphs.lastIndex) 100f else 0f
+        }
+        val y = tops.getOrElse(index.coerceIn(0, paragraphs.lastIndex)) { 0f }
+        return ((y / max) * 100f).coerceIn(0f, 100f)
+    }
+
+    /**
+     * 可视区内「第一个完整显示」的字：返回 (段索引, 段内字符偏移)。
+     * 完整：该行文字露出 ≥ [fullVisibleRatio]。
+     */
+    fun firstFullyVisibleCharPosition(): Pair<Int, Int> {
+        if (paragraphs.isEmpty() || tops.isEmpty() || height <= 0) {
+            return 0 to 0
+        }
+        val fullTop = scrollYF
+        val fullBottom = scrollYF + pageContentHeight()
+        var para = tops.binarySearch(fullTop.coerceAtLeast(0f))
+        if (para < 0) para = (-para - 2).coerceAtLeast(0)
+        para = (para - 1).coerceAtLeast(0)
+        while (para <= paragraphs.lastIndex) {
+            if (tops[para] > fullBottom) break
+            val layout = layoutCache.get(para) ?: buildAndCache(para)
+            val pTop = tops[para]
+            for (line in layout.lines) {
+                val lt = pTop + line.top
+                if (textVisibleRatio(lt, fullTop, fullBottom) >= fullVisibleRatio) {
+                    val off = line.start.coerceIn(0, paragraphs[para].text.length)
+                    return para to off
+                }
+            }
+            para++
+        }
+        // 回退：首个与视口相交的段起点
+        return firstVisibleParagraph() to 0
     }
 
     fun progressPercent(): Float {
@@ -299,8 +436,17 @@ class VirtualReaderView @JvmOverloads constructor(
 
     fun scrollToParagraph(index: Int) {
         if (index !in paragraphs.indices || tops.isEmpty()) return
+        // 尽量先量好目标段（及附近），再取 tops，减少估算误差
+        val from = (index - 1).coerceAtLeast(0)
+        val to = (index + 2).coerceAtMost(paragraphs.lastIndex)
+        for (i in from..to) {
+            if (layoutCache.get(i) == null) {
+                buildAndCache(i)
+            }
+        }
         scrollYF = tops.getOrElse(index) { 0f }
         clampScroll()
+        if (!scroller.isFinished) scroller.abortAnimation()
         invalidate()
         scheduleFill(0L)
         notifyScroll(force = true)
@@ -327,6 +473,70 @@ class VirtualReaderView @JvmOverloads constructor(
             return
         }
         scrollToParagraph(index)
+    }
+
+    /**
+     * TTS 当前句：不完全在视窗内时，把句顶对齐到视窗最上；已全在屏内则只刷新。
+     */
+    fun scrollToHighlightIfNeeded(paraIndex: Int, start: Int, end: Int) {
+        if (paraIndex !in paragraphs.indices || tops.isEmpty() || height <= 0) return
+        if (layoutCache.get(paraIndex) == null) {
+            buildAndCache(paraIndex)
+        }
+        val layout = layoutCache.get(paraIndex)
+        if (layout == null) {
+            scrollToParagraphIfNeeded(paraIndex)
+            return
+        }
+        val paraTop = tops.getOrElse(paraIndex) { 0f }
+        val bounds = highlightRangeYBounds(paraIndex, layout, paraTop, start, end)
+        if (bounds == null) {
+            scrollToParagraphIfNeeded(paraIndex)
+            return
+        }
+        val (rangeTop, rangeBottom) = bounds
+        val viewTop = scrollYF
+        val viewBottom = scrollYF + height
+        val pad = 4f
+        val fullyVisible = rangeTop >= viewTop - pad && rangeBottom <= viewBottom + pad
+        if (fullyVisible) {
+            invalidate()
+            return
+        }
+        // 句顶对齐视窗顶
+        scrollYF = rangeTop
+        clampScroll()
+        if (!scroller.isFinished) scroller.abortAnimation()
+        invalidate()
+        scheduleFill(0L)
+        notifyScroll(force = true)
+    }
+
+    /** @return (contentTop, contentBottom) of highlight range，无有效行则 null */
+    private fun highlightRangeYBounds(
+        para: Int,
+        layout: ParaLayout,
+        paraTop: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+    ): Pair<Float, Float>? {
+        val textLen = paragraphs.getOrNull(para)?.text?.length ?: return null
+        val a = rangeStart.coerceIn(0, textLen)
+        val b = rangeEnd.coerceIn(0, textLen)
+        if (a >= b) return null
+        var minTop = Float.MAX_VALUE
+        var maxBottom = Float.MIN_VALUE
+        var hit = false
+        for (line in layout.lines) {
+            val la = maxOf(line.start, a)
+            val lb = minOf(line.end, b)
+            if (la >= lb) continue
+            hit = true
+            val top = paraTop + line.top
+            minTop = minOf(minTop, top)
+            maxBottom = maxOf(maxBottom, top + lineHeight)
+        }
+        return if (hit) minTop to maxBottom else null
     }
 
     /**
@@ -376,14 +586,43 @@ class VirtualReaderView @JvmOverloads constructor(
         return true
     }
 
+    /**
+     * 翻页（按行）：
+     * - 下翻：当前屏最下面显示的一行 → 新页顶部（标题栏下完整显示）
+     * - 上翻：当前屏最上面显示的一行 → 新页底部，上方内容顶对齐完整行
+     * @param overlapLines 保留参数以兼容调用，已不再使用像素估算
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun pageTurn(forward: Boolean, overlapLines: Int = 1): Boolean {
-        if (height <= 0 || paragraphs.isEmpty()) return false
-        val page = pageDeltaPx(overlapLines)
+        if (height <= 0 || paragraphs.isEmpty() || tops.isEmpty()) return false
         val before = scrollYF
-        scrollYF += if (forward) page else -page
-        clampScroll()
-        if (scrollYF == before) return false
         if (!scroller.isFinished) scroller.abortAnimation()
+
+        ensureLayoutsForViewport()
+
+        if (forward) {
+            // 最下「完整显示」的一行 → 新页第 1 行；上一行不得露出
+            var target = findLastFullyVisibleLineTop()
+                ?: findViewportEdgeLineTop(wantLast = true)
+                ?: return false
+            if (abs(target - before) < 0.5f) {
+                target = nextLineTopAfter(target) ?: return false
+            }
+            // 精确对齐到该行顶（不再 snap 回退到上一行）
+            scrollYF = target.coerceAtLeast(0f)
+            clampScroll()
+        } else {
+            // 最上可见行 → 新页最后一行（状态栏上方完整，不被裁切）
+            val topLine = findViewportEdgeLineTop(wantLast = false)
+                ?: return false
+            if (topLine <= 0.5f && before <= 0.5f) return false
+            if (!scrollPageUpKeepingBottomLine(topLine) && abs(scrollYF - before) < 0.5f) {
+                val prev = prevLineTopBefore(topLine) ?: return false
+                if (!scrollPageUpKeepingBottomLine(prev)) return false
+            }
+        }
+
+        if (abs(scrollYF - before) < 0.5f) return false
         markInteracting()
         invalidate()
         notifyScroll(force = false)
@@ -403,11 +642,254 @@ class VirtualReaderView @JvmOverloads constructor(
         return true
     }
 
-    private fun pageDeltaPx(overlapLines: Int): Float {
-        val line = lineHeight
-        return (height - contentPaddingV * 2 - line * overlapLines)
-            .toFloat()
-            .coerceAtLeast(line)
+    /** 正文可视高度（去掉上下 contentPadding） */
+    private fun pageContentHeight(): Float =
+        (height - contentPaddingV * 2).toFloat().coerceAtLeast(lineHeight)
+
+    /** 预建视口附近段落布局，便于按行取 top */
+    private fun ensureLayoutsForViewport() {
+        if (paragraphs.isEmpty() || tops.isEmpty()) return
+        val first = firstVisibleParagraph()
+        val approx = estimateParasPerPage() + 4
+        val from = (first - 2).coerceAtLeast(0)
+        val to = (first + approx).coerceAtMost(paragraphs.lastIndex)
+        for (i in from..to) {
+            if (layoutCache.get(i) == null) buildAndCache(i)
+        }
+    }
+
+    /** 字形露出 ≥ 此比例视为「完整显示」（翻页锚点；行距空白不计入） */
+    private val fullVisibleRatio = 0.9f
+
+    /**
+     * 单行文字墨迹高度（ascent~descent），不含行距空白。
+     * lineHeight = textInkHeight * lineSpacingMult。
+     */
+    private fun textInkHeight(): Float {
+        val fm = textPaint.fontMetrics
+        return (fm.descent - fm.ascent).coerceAtLeast(1f)
+    }
+
+    /**
+     * 文字墨迹在 [rangeTop, rangeBottom) 内的可见比例（0~1）。
+     * 只算字形高度，行距空白不算。
+     */
+    private fun textVisibleRatio(
+        lineTop: Float,
+        rangeTop: Float,
+        rangeBottom: Float,
+    ): Float {
+        val inkH = textInkHeight()
+        val textTop = lineTop
+        val textBottom = lineTop + inkH
+        val a = max(textTop, rangeTop)
+        val b = min(textBottom, rangeBottom)
+        val overlap = (b - a).coerceAtLeast(0f)
+        return (overlap / inkH).coerceIn(0f, 1f)
+    }
+
+    /**
+     * 当前屏最下一条「完整显示」的行顶（content Y）。
+     * 完整：该行**文字**在正文区内露出 ≥ [fullVisibleRatio]（默认 90%），行距空白不计。
+     */
+    private fun findLastFullyVisibleLineTop(): Float? {
+        if (paragraphs.isEmpty() || tops.isEmpty() || height <= 0) return null
+        val pageH = pageContentHeight()
+        // 正文可视区间（content）：[scrollYF, scrollYF + pageH]
+        val fullTop = scrollYF
+        val fullBottom = scrollYF + pageH
+        val inkH = textInkHeight()
+
+        var edge: Float? = null
+        var para = tops.binarySearch(fullTop.coerceAtLeast(0f))
+        if (para < 0) para = (-para - 2).coerceAtLeast(0)
+        para = (para - 1).coerceAtLeast(0)
+
+        while (para <= paragraphs.lastIndex) {
+            if (tops[para] > fullBottom) break
+            val layout = layoutCache.get(para) ?: buildAndCache(para)
+            val pTop = tops[para]
+            for (line in layout.lines) {
+                val lt = pTop + line.top
+                if (textVisibleRatio(lt, fullTop, fullBottom) >= fullVisibleRatio) {
+                    edge = lt
+                }
+                // 文字顶已超出底边，后面行更不可能完整
+                if (lt > fullBottom) break
+                // 文字底已远超底边也可提前结束本段后续
+                if (lt + inkH > fullBottom + lineHeight) break
+            }
+            para++
+        }
+        return edge
+    }
+
+    /**
+     * 视口内相交的最顶/最底一行的 content Y（行顶）。
+     * 上翻取最顶；下翻兜底时取最底相交行。
+     */
+    private fun findViewportEdgeLineTop(wantLast: Boolean): Float? {
+        if (paragraphs.isEmpty() || tops.isEmpty()) return null
+        val lh = lineHeight
+        // 与绘制 clip 一致的正文区 content 范围
+        val cTop = scrollYF
+        val cBottom = scrollYF + pageContentHeight()
+
+        var edge: Float? = null
+        var para = tops.binarySearch(cTop.coerceAtLeast(0f))
+        if (para < 0) para = (-para - 2).coerceAtLeast(0)
+        para = (para - 1).coerceAtLeast(0)
+
+        while (para <= paragraphs.lastIndex) {
+            if (tops[para] > cBottom) break
+            val layout = layoutCache.get(para) ?: buildAndCache(para)
+            val pTop = tops[para]
+            for (line in layout.lines) {
+                val lt = pTop + line.top
+                val lb = lt + lh
+                if (lb > cTop + 0.5f && lt < cBottom - 0.5f) {
+                    if (wantLast) {
+                        edge = lt
+                    } else {
+                        return lt
+                    }
+                }
+            }
+            para++
+        }
+        return edge
+    }
+
+    private fun nextLineTopAfter(lineTop: Float): Float? {
+        if (paragraphs.isEmpty() || tops.isEmpty()) return null
+        var para = tops.binarySearch(lineTop)
+        if (para < 0) para = (-para - 2).coerceAtLeast(0)
+        para = para.coerceIn(0, paragraphs.lastIndex)
+        while (para <= paragraphs.lastIndex) {
+            val layout = layoutCache.get(para) ?: buildAndCache(para)
+            val pTop = tops[para]
+            for (line in layout.lines) {
+                val lt = pTop + line.top
+                if (lt > lineTop + 0.5f) return lt
+            }
+            para++
+        }
+        return null
+    }
+
+    private fun prevLineTopBefore(lineTop: Float): Float? {
+        if (paragraphs.isEmpty() || tops.isEmpty()) return null
+        var para = tops.binarySearch(lineTop)
+        if (para < 0) para = (-para - 2).coerceAtLeast(0)
+        para = para.coerceIn(0, paragraphs.lastIndex)
+        var prev: Float? = null
+        var i = 0
+        while (i <= para) {
+            val layout = layoutCache.get(i) ?: buildAndCache(i)
+            val pTop = tops[i]
+            for (line in layout.lines) {
+                val lt = pTop + line.top
+                if (lt >= lineTop - 0.5f) {
+                    return prev
+                }
+                prev = lt
+            }
+            i++
+        }
+        return prev
+    }
+
+    /**
+     * 上翻：把 [bottomLineTop] 放在视口底部（状态栏上方）完整显示，
+     * 顶部再对齐到完整行；禁止把底行顶出视口（那是被状态栏挡住的原因）。
+     *
+     * 绘制：viewY = contentPaddingV + contentY - scrollYF
+     * 底行完整：viewY_bottom <= height - contentPaddingV
+     *   => scrollYF >= bottomLineTop + lineHeight - pageContentHeight()
+     */
+    private fun scrollPageUpKeepingBottomLine(bottomLineTop: Float): Boolean {
+        val pageH = pageContentHeight()
+        val minScroll = (bottomLineTop + lineHeight - pageH).coerceAtLeast(0f)
+        // 精确贴底：底行下沿在 content 下 padding 处
+        scrollYF = minScroll
+        clampScroll()
+        // 顶行若半截：只允许「向前」对齐到下一行顶（增大 scroll），不得回退
+        snapScrollToLineTopForwardOnly(minScrollY = minScroll)
+        clampScroll()
+        return true
+    }
+
+    /**
+     * 若视口顶落在半行上：对齐到该行顶仅当不小于 minScrollY；
+     * 否则对齐到下一行顶（增大 scroll），保证底行仍完整在状态栏上方。
+     */
+    private fun snapScrollToLineTopForwardOnly(minScrollY: Float) {
+        if (paragraphs.isEmpty() || tops.isEmpty() || height <= 0) return
+        if (scrollYF <= 0.5f) {
+            scrollYF = 0f
+            return
+        }
+        val hit = lineTopAtOrBefore(scrollYF) ?: return
+        val atLineStart = abs(scrollYF - hit) < 0.5f
+        if (atLineStart) {
+            scrollYF = hit.coerceAtLeast(minScrollY)
+            return
+        }
+        // 半行：优先下一行顶（不把底行顶出屏）
+        val next = nextLineTopAfter(hit)
+        if (next != null && next + 0.5f >= minScrollY) {
+            scrollYF = next
+        } else if (hit + 0.5f >= minScrollY) {
+            scrollYF = hit
+        } else {
+            scrollYF = minScrollY
+        }
+    }
+
+    /** contentY 所在（或紧邻上方）行的行顶 */
+    private fun lineTopAtOrBefore(contentY: Float): Float? {
+        if (paragraphs.isEmpty() || tops.isEmpty()) return null
+        var para = tops.binarySearch(contentY.coerceAtLeast(0f))
+        if (para < 0) para = (-para - 2).coerceAtLeast(0)
+        para = para.coerceIn(0, paragraphs.lastIndex)
+        if (layoutCache.get(para) == null) buildAndCache(para)
+        para = tops.binarySearch(contentY.coerceAtLeast(0f)).let {
+            if (it < 0) (-it - 2).coerceAtLeast(0) else it
+        }.coerceIn(0, paragraphs.lastIndex)
+
+        val layout = layoutCache.get(para) ?: buildAndCache(para)
+        val pTop = tops[para]
+        val lh = lineHeight
+        var best: Float? = null
+        for (line in layout.lines) {
+            val lt = pTop + line.top
+            if (lt <= contentY + 0.5f) best = lt
+            if (contentY < lt + lh) break
+        }
+        if (best != null) return best
+        // 在段间距：用上一段末行
+        if (para > 0) {
+            val prevLayout = layoutCache.get(para - 1) ?: buildAndCache(para - 1)
+            val last = prevLayout.lines.lastOrNull() ?: return tops[para]
+            return tops[para - 1] + last.top
+        }
+        return pTop
+    }
+
+    /**
+     * 将 scrollY 对齐到「视口顶部第一行」的行顶（可回退）。
+     * 下翻后使用，保证标题栏下第 1 行完整。
+     */
+    private fun snapScrollToLineTop() {
+        if (paragraphs.isEmpty() || tops.isEmpty() || height <= 0) return
+        if (scrollYF <= 0.5f) {
+            scrollYF = 0f
+            return
+        }
+        val hit = lineTopAtOrBefore(scrollYF) ?: return
+        // 半行则对齐到该行顶（回退），保证顶行完整
+        scrollYF = hit.coerceAtLeast(0f)
+        clampScroll()
     }
 
     private fun markInteracting() {
@@ -426,6 +908,8 @@ class VirtualReaderView @JvmOverloads constructor(
                 downY = event.y
                 downTime = SystemClock.uptimeMillis()
                 moved = false
+                swipeHorizontal = null
+                horizontalSwipeConsumed = false
                 edgeAccum = 0f
                 val w = width.toFloat().coerceAtLeast(1f)
                 val ew = edgeWidthPx
@@ -479,9 +963,16 @@ class VirtualReaderView @JvmOverloads constructor(
                             onZoneTap?.invoke(downZone)
                         }
                     }
+                } else if (edgeSide == 0 &&
+                    !horizontalSwipeConsumed &&
+                    tryHorizontalSwipePageTurn(event.x - downX, event.y - downY)
+                ) {
+                    // 慢速水平滑翻页（fling 未达阈值时）
                 }
                 edgeSide = 0
                 edgeAccum = 0f
+                swipeHorizontal = null
+                horizontalSwipeConsumed = false
                 scheduleFill(8L)
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -492,9 +983,28 @@ class VirtualReaderView @JvmOverloads constructor(
                 }
                 edgeSide = 0
                 edgeAccum = 0f
+                swipeHorizontal = null
+                horizontalSwipeConsumed = false
                 scheduleFill(8L)
             }
         }
+        return true
+    }
+
+    /**
+     * 水平滑动翻页：左滑下一页，右滑上一页。
+     * @return 是否已处理
+     */
+    private fun tryHorizontalSwipePageTurn(dx: Float, dy: Float): Boolean {
+        val cb = onHorizontalSwipe ?: return false
+        val absDx = abs(dx)
+        val absDy = abs(dy)
+        val horizontal = swipeHorizontal == true ||
+            (absDx >= swipeMinDistance && absDx > absDy * 1.2f)
+        if (!horizontal) return false
+        if (absDx < swipeMinDistance) return false
+        // 右滑 dx>0 → 上一页；左滑 dx<0 → 下一页
+        cb.invoke(dx < 0f)
         return true
     }
 
@@ -585,11 +1095,9 @@ class VirtualReaderView @JvmOverloads constructor(
         super.onDraw(canvas)
         if (paragraphs.isEmpty() || contentWidth <= 0 || tops.isEmpty()) return
 
-        val topVisible = scrollYF - contentPaddingV
-        val bottomVisible = scrollYF + height + contentPaddingV
         val spacing = paraSpacingPx()
-
-        var start = tops.binarySearch(topVisible)
+        // 按正文顶定位首段（与 clip 后可见区一致）
+        var start = tops.binarySearch(scrollYF)
         if (start < 0) start = (-start - 2).coerceAtLeast(0)
         start = start.coerceIn(0, paragraphs.lastIndex)
         val first = (start - 1).coerceAtLeast(0)
@@ -600,6 +1108,10 @@ class VirtualReaderView @JvmOverloads constructor(
         cp.color = textColor
 
         canvas.save()
+        // 裁剪到正文区：顶/底 padding 内不画字，避免翻页后「上一行」从标题下露出
+        val clipTop = contentPaddingV.toFloat()
+        val clipBottom = (height - contentPaddingV).toFloat().coerceAtLeast(clipTop + 1f)
+        canvas.clipRect(0f, clipTop, width.toFloat(), clipBottom)
         canvas.translate(contentPaddingH.toFloat(), contentPaddingV - scrollYF)
 
         // 从 first 起按实测/占位高度累加 y
@@ -608,13 +1120,17 @@ class VirtualReaderView @JvmOverloads constructor(
         var syncBuilt = 0
         var needMoreFill = false
 
+        // 正文区对应的 content Y 范围（与 clip 一致）
+        val contentTop = scrollYF
+        val contentBottom = scrollYF + pageContentHeight()
+
         while (i <= paragraphs.lastIndex) {
-            if (y > bottomVisible) break
+            if (y > contentBottom + lineHeight) break
 
             var layout = layoutCache.get(i)
             // 可见区内缺布局：同步补上，避免下半屏长期空白
             // （仅对与视口相交的段，每帧限量，其余交给 fill）
-            if (layout == null && y < bottomVisible && y + heights[i] > topVisible) {
+            if (layout == null && y < contentBottom && y + heights[i] > contentTop) {
                 if (syncBuilt < MAX_SYNC_BUILD_PER_DRAW) {
                     layout = buildAndCache(i)
                     syncBuilt++
@@ -630,12 +1146,9 @@ class VirtualReaderView @JvmOverloads constructor(
                 heights[i].coerceAtMost(lineHeight * MAX_BLANK_PLACEHOLDER_LINES + spacing)
             }
 
-            if (layout != null && y + blockH >= topVisible) {
-                if (i == highlightParagraph) {
-                    highlightPaint.color = highlightColor
-                    canvas.drawRect(
-                        -4f, y, contentWidth + 4f, y + layout.height, highlightPaint,
-                    )
+            if (layout != null && y + blockH >= contentTop - lineHeight) {
+                if (i == highlightParagraph && highlightEnd > highlightStart) {
+                    drawHighlightRange(canvas, i, layout, y)
                 }
                 if (hasSelection() && selectionOverlaps(i)) {
                     drawSelection(canvas, i, layout, y)
@@ -647,8 +1160,9 @@ class VirtualReaderView @JvmOverloads constructor(
                 for (li in lines.indices) {
                     val line = lines[li]
                     val lineTopAbs = y + line.top
-                    if (lineTopAbs + lh < topVisible) continue
-                    if (lineTopAbs > bottomVisible) break
+                    // 行底不超过正文顶 → 属上一行区域，不画
+                    if (lineTopAbs + lh <= contentTop + 0.5f) continue
+                    if (lineTopAbs >= contentBottom - 0.5f) break
                     canvas.drawText(
                         text, line.start, line.end, 0f, y + line.baseline, paint,
                     )
@@ -828,7 +1342,7 @@ class VirtualReaderView @JvmOverloads constructor(
 
     /**
      * 将 index 段高度改为实测值，后续段 tops 整体平移。
-     * 仅 float 加法，相对断行开销可忽略。
+     * 若该段已在视口上方，同步平移 scrollY，避免恢复阅读位置时漂移。
      */
     private fun applyMeasuredHeight(index: Int, contentH: Float) {
         if (index !in heights.indices) return
@@ -838,6 +1352,10 @@ class VirtualReaderView @JvmOverloads constructor(
             heights[index] = newH
             return
         }
+        // 段起点在当前滚动位置之上（或刚好贴顶）：跟手修正 scroll
+        if (tops[index] < scrollYF + 0.5f) {
+            scrollYF = (scrollYF + delta).coerceAtLeast(0f)
+        }
         heights[index] = newH
         var i = index + 1
         val n = tops.size
@@ -846,6 +1364,7 @@ class VirtualReaderView @JvmOverloads constructor(
             i++
         }
         totalHeight += delta
+        clampScroll()
     }
 
     private fun buildParaLayout(index: Int): ParaLayout {
@@ -1049,16 +1568,43 @@ class VirtualReaderView @JvmOverloads constructor(
         val selStart = if (para == n.first.para) n.first.offset else 0
         val selEnd = if (para == n.second.para) n.second.offset else textLen
         if (selStart >= selEnd) return
+        drawCharRange(canvas, para, layout, paraTop, selStart, selEnd, selectionPaint)
+    }
+
+    /** TTS 当前句：按字符区间画高亮底（可跨多行） */
+    private fun drawHighlightRange(
+        canvas: Canvas,
+        para: Int,
+        layout: ParaLayout,
+        paraTop: Float,
+    ) {
+        val textLen = paragraphs[para].text.length
+        val a = highlightStart.coerceIn(0, textLen)
+        val b = highlightEnd.coerceIn(0, textLen)
+        if (a >= b) return
+        highlightPaint.color = highlightColor
+        drawCharRange(canvas, para, layout, paraTop, a, b, highlightPaint)
+    }
+
+    private fun drawCharRange(
+        canvas: Canvas,
+        para: Int,
+        layout: ParaLayout,
+        paraTop: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        paintBg: Paint,
+    ) {
         val paint = if (paragraphs[para].isChapter) chapterPaint else textPaint
         val text = paragraphs[para].text
         for (line in layout.lines) {
-            val a = maxOf(line.start, selStart)
-            val b = minOf(line.end, selEnd)
+            val a = maxOf(line.start, rangeStart)
+            val b = minOf(line.end, rangeEnd)
             if (a >= b) continue
             val x0 = if (a == line.start) 0f else paint.measureText(text, line.start, a)
             val x1 = paint.measureText(text, line.start, b)
             val top = paraTop + line.top
-            canvas.drawRect(x0, top, x1, top + lineHeight, selectionPaint)
+            canvas.drawRect(x0 - 2f, top, x1 + 2f, top + lineHeight, paintBg)
         }
     }
 
@@ -1126,14 +1672,16 @@ class VirtualReaderView @JvmOverloads constructor(
                             return true
                         }
                         3 -> {
-                            // 从选区起点所在段开始朗读
+                            // 从选区起点字符读到文末
                             val norm = normalizedSelection()
                             val para = norm?.first?.para
                                 ?: selStartPara.coerceAtLeast(0)
+                            val off = norm?.first?.offset
+                                ?: selStartOff.coerceAtLeast(0)
                             mode.finish()
                             clearSelection()
                             if (para in paragraphs.indices) {
-                                onReadFromParagraph?.invoke(para)
+                                onReadFromParagraph?.invoke(para, off)
                             }
                             return true
                         }

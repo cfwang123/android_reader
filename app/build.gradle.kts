@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+import java.util.Properties
+
 android {
     namespace = "com.whj.reader"
     compileSdk = 34
@@ -11,13 +13,40 @@ android {
         applicationId = "com.whj.reader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
+    }
+
+    // 与 krdict-android 相同：项目根目录 keystore.properties + release.keystore
+    // debug / release 共用同一签名 → 可互相覆盖安装且保留数据（书架、进度等）
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val hasReleaseKeystore = keystorePropertiesFile.exists()
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                val keystoreProperties = Properties().apply {
+                    load(keystorePropertiesFile.inputStream())
+                }
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
+        getByName("debug") {
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // 无 keystore 时仍用系统 debug 默认签名
+        }
         release {
             isMinifyEnabled = false
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -37,6 +66,23 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    // 模型从 assets 内存映射，勿再压缩
+    androidResources {
+        noCompress += "tflite"
+    }
+}
+
+// release 输出：reader1.0.1.apk
+android.applicationVariants.configureEach {
+    val vName = versionName
+    val isRelease = buildType.name == "release"
+    outputs.configureEach {
+        if (isRelease) {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "reader${vName}.apk"
+        }
+    }
 }
 
 dependencies {
@@ -45,7 +91,16 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("androidx.viewpager2:viewpager2:1.0.0")
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("androidx.activity:activity-ktx:1.8.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    // PDF 文字提取（TTS）
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // OCR：PP-OCRv4 mobile TFLite（NNAPI / GPU / CPU）
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-gpu-api:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 }

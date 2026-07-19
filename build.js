@@ -12,7 +12,18 @@ const GRADLE_WRAPPER = path.join(ROOT, IS_WIN ? 'gradlew.bat' : 'gradlew');
 const APP_ID = 'com.whj.reader';
 const MAIN_ACTIVITY = `${APP_ID}/.MainActivity`;
 const RELEASE_APK_DIR = path.join(ROOT, 'release');
-const RELEASE_APK_NAME = 'whj-reader.apk';
+const APP_BUILD_GRADLE = path.join(ROOT, 'app', 'build.gradle.kts');
+
+/** 参与增量判断的源路径（相对 ROOT） */
+const WATCH_PATHS = [
+  'app/src',
+  'app/build.gradle.kts',
+  'app/proguard-rules.pro',
+  'build.gradle.kts',
+  'settings.gradle.kts',
+  'gradle.properties',
+  'gradle/wrapper',
+];
 
 const HELP = `
 文本阅读器 Android 构建脚本
@@ -22,21 +33,27 @@ const HELP = `
 
 命令:
   build     编译 APK（默认 release）
+  release   编译 release 包（assembleRelease）
   rebuild   清理后重新编译（clean + build）
   clean     清理构建产物
   run       安装到真机并启动（debug 包）
-  apk       编译 release 并输出到 release/whj-reader.apk
+  install   release 编译（按源码时间增量）并安装到真机，然后启动
+  apk       编译 release 并复制到 release/reader{version}.apk
   devices   列出已连接的 adb 设备
 
 选项:
   --debug     build / rebuild 时编译 debug 包
   --release   build / rebuild 时编译 release 包（默认）
-  -s <serial> run 时指定设备序列号
+  --force     install 时强制重新编译（忽略时间戳）
+  -s <serial> run / install 时指定设备序列号
 
 示例:
+  node build.js release
   node build.js build --debug
   node build.js run
-  node build.js run -s ABC123456789
+  node build.js install
+  node build.js install --force
+  node build.js install -s ABC123456789
   node build.js apk
 `;
 
@@ -58,6 +75,24 @@ function run(command, args, options = {}) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+}
+
+/** 不因非零退出码抛错，返回 { status, stdout, stderr } */
+function runAllowFail(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    shell: IS_WIN,
+    ...options,
+  });
+  if (result.error) {
+    die(`执行失败: ${command} ${args.join(' ')}\n${result.error.message}`);
+  }
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
 }
 
 function runCapture(command, args) {
@@ -88,6 +123,52 @@ function adb(args, deviceSerial) {
   run('adb', adbArgs);
 }
 
+function adbAllowFail(args, deviceSerial) {
+  const adbArgs = deviceSerial ? ['-s', deviceSerial, ...args] : args;
+  return runAllowFail('adb', adbArgs);
+}
+
+/**
+ * 安装 APK。若签名与已装包不一致（debug ↔ release），先卸载再装。
+ */
+function adbInstallApk(apkPath, deviceSerial) {
+  console.log('[install] 安装中…');
+  let r = adbAllowFail(['install', '-r', apkPath], deviceSerial);
+  const out = `${r.stdout}\n${r.stderr}`;
+  if (r.status === 0 && !/Failure|failed/i.test(out)) {
+    return;
+  }
+
+  const incompatible =
+    /INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i.test(out);
+  if (!incompatible) {
+    process.stdout.write(r.stdout);
+    process.stderr.write(r.stderr);
+    die(`[install] 安装失败 (exit ${r.status})`);
+  }
+
+  console.log(
+    `[install] 签名与已装包不一致（旧包为其它密钥所签），将卸载 ${APP_ID} 后重装…`,
+  );
+  console.log(
+    '[install] 提示：debug/release 已配置共用 release.keystore 时，之后覆盖安装会保留数据',
+  );
+  const u = adbAllowFail(['uninstall', APP_ID], deviceSerial);
+  if (u.status !== 0) {
+    console.log(`[install] uninstall 输出: ${(u.stdout + u.stderr).trim() || '(无)'}`);
+  } else {
+    console.log('[install] 旧包已卸载');
+  }
+
+  console.log('[install] 重新安装…');
+  r = adbAllowFail(['install', '-r', apkPath], deviceSerial);
+  process.stdout.write(r.stdout);
+  process.stderr.write(r.stderr);
+  if (r.status !== 0 || /Failure|failed/i.test(`${r.stdout}\n${r.stderr}`)) {
+    die('[install] 卸载后安装仍失败');
+  }
+}
+
 function capitalize(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
@@ -96,6 +177,7 @@ function parseArgs(argv) {
   const positional = [];
   let variant = 'release';
   let deviceSerial = null;
+  let force = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -103,6 +185,8 @@ function parseArgs(argv) {
       variant = 'debug';
     } else if (arg === '--release') {
       variant = 'release';
+    } else if (arg === '--force') {
+      force = true;
     } else if (arg === '-s') {
       deviceSerial = argv[i + 1];
       if (!deviceSerial) {
@@ -117,7 +201,7 @@ function parseArgs(argv) {
     }
   }
 
-  return { command: positional[0], variant, deviceSerial };
+  return { command: positional[0], variant, deviceSerial, force };
 }
 
 function getRealDevices() {
@@ -163,7 +247,28 @@ function resolveDevice(serial) {
   return devices[0];
 }
 
+/** 从 app/build.gradle.kts 读取 versionName */
+function getVersionName() {
+  if (!fs.existsSync(APP_BUILD_GRADLE)) {
+    return '1.0.0';
+  }
+  const text = fs.readFileSync(APP_BUILD_GRADLE, 'utf8');
+  const m = text.match(/versionName\s*=\s*["']([^"']+)["']/);
+  return m ? m[1] : '1.0.0';
+}
+
 function getApkPath(variant) {
+  if (variant === 'release') {
+    return path.join(
+      ROOT,
+      'app',
+      'build',
+      'outputs',
+      'apk',
+      'release',
+      `reader${getVersionName()}.apk`,
+    );
+  }
   return path.join(
     ROOT,
     'app',
@@ -175,23 +280,122 @@ function getApkPath(variant) {
   );
 }
 
+/** 递归取路径下最新 mtime（毫秒） */
+function maxMtime(target, state) {
+  if (!fs.existsSync(target)) {
+    return;
+  }
+  let st;
+  try {
+    st = fs.statSync(target);
+  } catch {
+    return;
+  }
+  if (st.isFile()) {
+    if (st.mtimeMs > state.max) {
+      state.max = st.mtimeMs;
+      state.file = target;
+    }
+    return;
+  }
+  if (!st.isDirectory()) {
+    return;
+  }
+  let names;
+  try {
+    names = fs.readdirSync(target);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (
+      name === 'build' ||
+      name === '.gradle' ||
+      name === 'node_modules' ||
+      name === '.git' ||
+      name === 'tmp'
+    ) {
+      continue;
+    }
+    maxMtime(path.join(target, name), state);
+  }
+}
+
+function getSourceLatestMtime() {
+  const state = { max: 0, file: null };
+  for (const rel of WATCH_PATHS) {
+    maxMtime(path.join(ROOT, rel), state);
+  }
+  return state;
+}
+
+/**
+ * 是否需要重新编译 release：
+ * - APK 不存在
+ * - 任一监视源文件 mtime 新于 APK
+ */
+function needsReleaseRebuild(apkPath) {
+  if (!fs.existsSync(apkPath)) {
+    return { need: true, reason: 'release APK 不存在' };
+  }
+  const apkMtime = fs.statSync(apkPath).mtimeMs;
+  const src = getSourceLatestMtime();
+  if (src.max <= 0) {
+    return { need: true, reason: '未找到可监视源文件' };
+  }
+  if (src.max > apkMtime) {
+    const rel = path.relative(ROOT, src.file || '');
+    return {
+      need: true,
+      reason: `源码较新（${rel || 'source'}）`,
+    };
+  }
+  return { need: false, reason: '源码未变更' };
+}
+
+function ensureReleaseApk(force) {
+  const apkPath = getApkPath('release');
+  const check = force
+    ? { need: true, reason: '--force 强制编译' }
+    : needsReleaseRebuild(apkPath);
+
+  if (check.need) {
+    console.log(`[install] ${check.reason}，开始 assembleRelease…`);
+    gradle('assembleRelease');
+  } else {
+    console.log(`[install] ${check.reason}，跳过编译`);
+  }
+
+  if (!fs.existsSync(apkPath)) {
+    die(`未找到 release APK: ${apkPath}`);
+  }
+  console.log(`[install] APK: ${apkPath}`);
+  return apkPath;
+}
+
 function build(variant) {
   gradle(`assemble${capitalize(variant)}`);
   const apkPath = getApkPath(variant);
   if (fs.existsSync(apkPath)) {
     console.log(`\nAPK: ${apkPath}`);
+  } else if (variant === 'release') {
+    // 兜底：列出 release 目录
+    const dir = path.join(ROOT, 'app', 'build', 'outputs', 'apk', 'release');
+    if (fs.existsSync(dir)) {
+      console.log(`\nRelease 输出目录: ${dir}`);
+      for (const f of fs.readdirSync(dir)) {
+        if (f.endsWith('.apk')) console.log(`  ${path.join(dir, f)}`);
+      }
+    }
   }
 }
 
 function apk() {
-  gradle('assembleRelease');
-  const src = getApkPath('release');
-  if (!fs.existsSync(src)) {
-    die(`未找到 release APK: ${src}`);
-  }
+  const apkPath = ensureReleaseApk(true);
   fs.mkdirSync(RELEASE_APK_DIR, { recursive: true });
-  const dest = path.join(RELEASE_APK_DIR, RELEASE_APK_NAME);
-  fs.copyFileSync(src, dest);
+  const name = path.basename(apkPath);
+  const dest = path.join(RELEASE_APK_DIR, name);
+  fs.copyFileSync(apkPath, dest);
   console.log(`\nRelease APK: ${dest}`);
 }
 
@@ -207,8 +411,27 @@ function rebuild(variant) {
 function runOnDevice(deviceSerial) {
   const serial = resolveDevice(deviceSerial);
   console.log(`目标设备: ${serial}`);
-  gradle('installDebug');
+  // 与 release 同签名时，installDebug 可直接覆盖且保留数据
+  gradle('assembleDebug');
+  const apkPath = getApkPath('debug');
+  if (!fs.existsSync(apkPath)) {
+    die(`未找到 debug APK: ${apkPath}`);
+  }
+  adbInstallApk(apkPath, serial);
   adb(['shell', 'am', 'start', '-n', MAIN_ACTIVITY], serial);
+}
+
+/**
+ * release：按源码时间决定是否编译，再 adb install -r 并启动
+ */
+function installRelease(deviceSerial, force) {
+  const apkPath = ensureReleaseApk(force);
+  const serial = resolveDevice(deviceSerial);
+  console.log(`[install] 目标设备: ${serial}`);
+  adbInstallApk(apkPath, serial);
+  console.log(`[install] 启动 ${MAIN_ACTIVITY}`);
+  adb(['shell', 'am', 'start', '-n', MAIN_ACTIVITY], serial);
+  console.log('[install] 完成');
 }
 
 function listDevices() {
@@ -216,7 +439,7 @@ function listDevices() {
   console.log(output.trim() || '无设备');
 }
 
-const { command, variant, deviceSerial } = parseArgs(process.argv.slice(2));
+const { command, variant, deviceSerial, force } = parseArgs(process.argv.slice(2));
 
 if (!command) {
   console.log(HELP.trim());
@@ -227,6 +450,10 @@ switch (command) {
   case 'build':
     build(variant);
     break;
+  case 'release':
+    // 始终编译 release，等价于 build --release
+    build('release');
+    break;
   case 'rebuild':
     rebuild(variant);
     break;
@@ -235,6 +462,9 @@ switch (command) {
     break;
   case 'run':
     runOnDevice(deviceSerial);
+    break;
+  case 'install':
+    installRelease(deviceSerial, force);
     break;
   case 'apk':
     apk();

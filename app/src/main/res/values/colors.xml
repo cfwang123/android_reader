@@ -6,6 +6,7 @@
     <color name="primary">#5B8C5A</color>
     <color name="primary_dark">#3F6B3E</color>
     <color name="primary_light">#A8C9A7</color>
+    <color name="primary_soft">#E3F0E2</color>
     <color name="accent">#E8A838</color>
 
     <color name="text_primary">#2C3E50</color>

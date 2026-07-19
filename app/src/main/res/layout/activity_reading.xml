@@ -46,33 +46,58 @@
             android:contentDescription="@string/back"
             android:src="@drawable/ic_back" />
 
-        <TextView
-            android:id="@+id/tvBookTitle"
+        <!-- 中间占位：不再显示文件名 -->
+        <View
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="1"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <ImageButton
+            android:id="@+id/btnBookmark"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/bookmark"
+            android:src="@drawable/ic_bookmark_border" />
+
+        <TextView
+            android:id="@+id/btnEncoding"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:gravity="center"
+            android:text="@string/encoding_btn"
             android:textColor="@color/text_primary"
             android:textSize="16sp"
             android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btnSearch"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/search"
+            android:src="@drawable/ic_search" />
     </LinearLayout>
 
+    <!-- 底栏叠加，正文区始终到底，避免展开菜单时高度变化误关菜单 -->
     <com.whj.reader.ui.VirtualReaderView
         android:id="@+id/readerView"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:scrollbars="none"
-        app:layout_constraintBottom_toTopOf="@id/readStatusBar"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/tvReadTitle" />
 
-    <!-- 常驻底部：电量 · 时间 · 进度 -->
+    <!-- 常驻底部：电量 · 时间 · 进度（叠在正文上，需有底色） -->
     <LinearLayout
         android:id="@+id/readStatusBar"
         android:layout_width="0dp"
         android:layout_height="28dp"
+        android:background="@color/read_bg_default"
+        android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingHorizontal="16dp"
@@ -111,19 +136,21 @@
             android:textSize="11sp" />
     </LinearLayout>
 
-    <!-- 底部区域：菜单 / TTS -->
+    <!-- 底部区域：菜单 / TTS（叠加在正文上） -->
     <LinearLayout
         android:id="@+id/bottomChrome"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:elevation="10dp"
         android:orientation="vertical"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
-        <include
-            android:id="@+id/readMenu"
-            layout="@layout/panel_read_menu"
+        <FrameLayout
+            android:id="@+id/readMenuHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:visibility="gone" />
 
         <LinearLayout
@@ -191,34 +218,34 @@
                     android:layout_height="1dp"
                     android:layout_weight="1" />
 
-                <!-- 语速 -->
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnTtsRateDown"
+                    android:id="@+id/btnTtsRate"
                     style="@style/Widget.WhjReader.TtsButton"
                     android:layout_width="wrap_content"
                     android:layout_height="36dp"
-                    android:minWidth="36dp"
-                    android:text="−"
-                    android:textSize="18sp" />
-
-                <TextView
-                    android:id="@+id/tvTtsRate"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minWidth="40dp"
-                    android:gravity="center"
                     android:text="1.0×"
-                    android:textColor="@color/text_primary"
                     android:textSize="13sp" />
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnTtsRateUp"
+                    android:id="@+id/btnTtsSleep"
                     style="@style/Widget.WhjReader.TtsButton"
                     android:layout_width="wrap_content"
                     android:layout_height="36dp"
-                    android:minWidth="36dp"
-                    android:text="+"
-                    android:textSize="16sp" />
+                    android:text="@string/tts_sleep"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tvTtsSleepCountdown"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:gravity="center"
+                    android:minWidth="48dp"
+                    android:paddingHorizontal="8dp"
+                    android:textColor="@color/primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
 
                 <ImageButton
                     android:id="@+id/btnVoice"

@@ -11,23 +11,13 @@
         android:layout_width="match_parent"
         android:layout_height="48dp"
         app:tabIndicatorColor="@color/toolbar_orange"
+        app:tabMode="fixed"
         app:tabSelectedTextColor="@color/toolbar_orange"
         app:tabTextColor="@color/text_secondary" />
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rvToc"
+    <androidx.viewpager2.widget.ViewPager2
+        android:id="@+id/vpToc"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:clipToPadding="false"
-        android:paddingVertical="8dp" />
-
-    <TextView
-        android:id="@+id/tvTocEmpty"
-        android:layout_width="match_parent"
-        android:layout_height="120dp"
-        android:gravity="center"
-        android:text="@string/toc_empty"
-        android:textColor="@color/text_muted"
-        android:visibility="gone" />
+        android:layout_weight="1" />
 </LinearLayout>

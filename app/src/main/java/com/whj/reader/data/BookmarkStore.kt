@@ -31,6 +31,7 @@ object BookmarkStore {
                             paragraphIndex = o.getInt("paragraphIndex"),
                             preview = o.optString("preview", ""),
                             createdAt = o.optLong("createdAt", 0L),
+                            progressPercent = o.optDouble("progressPercent", -1.0).toFloat(),
                         ),
                     )
                 }
@@ -62,6 +63,10 @@ object BookmarkStore {
         }
     }
 
+    fun replaceAll(ctx: Context, items: List<Bookmark>) {
+        save(ctx, items)
+    }
+
     private fun save(ctx: Context, items: List<Bookmark>) {
         val arr = JSONArray()
         items.forEach { b ->
@@ -70,7 +75,8 @@ object BookmarkStore {
                     .put("fileKey", b.fileKey)
                     .put("paragraphIndex", b.paragraphIndex)
                     .put("preview", b.preview)
-                    .put("createdAt", b.createdAt),
+                    .put("createdAt", b.createdAt)
+                    .put("progressPercent", b.progressPercent.toDouble()),
             )
         }
         prefs(ctx).edit().putString(KEY, arr.toString()).apply()

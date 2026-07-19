@@ -27,6 +27,15 @@
             android:src="@drawable/ic_back"
             android:visibility="gone" />
 
+        <ImageButton
+            android:id="@+id/btnHome"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/shelf_home"
+            android:src="@drawable/ic_home"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/tvTitle"
             android:layout_width="0dp"
@@ -41,13 +50,147 @@
             android:textStyle="bold" />
 
         <ImageButton
-            android:id="@+id/btnSettings"
+            android:id="@+id/btnMultiSelect"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/selection_mode"
+            android:src="@drawable/ic_multiselect" />
+
+        <ImageButton
+            android:id="@+id/btnMore"
             android:layout_width="40dp"
             android:layout_height="40dp"
             android:layout_marginEnd="4dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/settings"
-            android:src="@drawable/ic_settings" />
+            android:contentDescription="@string/more_options"
+            android:src="@drawable/ic_more_vert" />
+    </LinearLayout>
+
+    <!-- 书架搜书名 -->
+    <LinearLayout
+        android:id="@+id/searchBar"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:background="@color/white"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="12dp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/toolbar">
+
+        <EditText
+            android:id="@+id/etSearch"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@android:color/transparent"
+            android:hint="@string/shelf_search_hint"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:maxLines="1"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_muted"
+            android:textSize="15sp" />
+
+        <ImageButton
+            android:id="@+id/btnSearchClear"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/cancel"
+            android:src="@drawable/ic_close" />
+    </LinearLayout>
+
+    <!-- 文件夹完整路径（进入文件夹时显示） -->
+    <TextView
+        android:id="@+id/tvFolderPath"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/white"
+        android:ellipsize="middle"
+        android:maxLines="2"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="0dp"
+        android:paddingBottom="6dp"
+        android:textColor="@color/text_muted"
+        android:textSize="12sp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/searchBar" />
+
+    <!-- 多选操作条：长按书后显示 -->
+    <LinearLayout
+        android:id="@+id/selectionBar"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:background="@color/primary_soft"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="4dp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvFolderPath">
+
+        <ImageButton
+            android:id="@+id/btnSelectionCancel"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/cancel"
+            android:src="@drawable/ic_close" />
+
+        <TextView
+            android:id="@+id/tvSelectionCount"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/text_primary"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnSelectAll"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:gravity="center"
+            android:paddingHorizontal="10dp"
+            android:text="@string/select_all"
+            android:textColor="@color/primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnSelectionMove"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:gravity="center"
+            android:paddingHorizontal="10dp"
+            android:text="@string/move_book"
+            android:textColor="@color/primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnSelectionRemove"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:gravity="center"
+            android:paddingHorizontal="10dp"
+            android:text="@string/delete_book"
+            android:textColor="#C45C5C"
+            android:textSize="13sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <HorizontalScrollView
@@ -57,7 +200,7 @@
         android:scrollbars="none"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/toolbar">
+        app:layout_constraintTop_toBottomOf="@id/selectionBar">
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -67,76 +210,65 @@
             android:paddingTop="12dp"
             android:paddingBottom="4dp">
 
+            <!-- 导入文件 / 导入文件夹 / 新建书架 / 绑定文件夹 合并为下拉 -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnOpenFile"
+                android:id="@+id/btnAddMenu"
                 android:layout_width="wrap_content"
                 android:layout_height="40dp"
                 android:layout_marginEnd="8dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
-                android:text="@string/open_file"
+                android:text="@string/add_menu"
                 android:textSize="13sp"
-                app:cornerRadius="10dp" />
+                app:cornerRadius="10dp"
+                app:icon="@android:drawable/arrow_down_float"
+                app:iconGravity="end"
+                app:iconPadding="4dp"
+                app:iconSize="12dp" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnImportFolder"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="@string/import_folder"
-                android:textSize="13sp"
-                app:cornerRadius="10dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnNewShelf"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="@string/new_shelf"
-                android:textSize="13sp"
-                app:cornerRadius="10dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSample"
+                android:id="@+id/btnSort"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="40dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
-                android:text="@string/sample_book"
+                android:text="@string/shelf_sort"
                 android:textSize="13sp" />
         </LinearLayout>
     </HorizontalScrollView>
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rvShelf"
+    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+        android:id="@+id/swipeRefresh"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:clipToPadding="false"
-        android:padding="12dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/actionScroll" />
+        app:layout_constraintTop_toBottomOf="@id/actionScroll">
 
-    <TextView
-        android:id="@+id/tvEmpty"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:gravity="center"
-        android:padding="24dp"
-        android:text="@string/empty_shelf"
-        android:textColor="@color/text_muted"
-        android:textSize="14sp"
-        android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="@id/rvShelf"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="@id/rvShelf" />
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvShelf"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:padding="12dp" />
+
+            <TextView
+                android:id="@+id/tvEmpty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:padding="24dp"
+                android:text="@string/empty_shelf"
+                android:textColor="@color/text_muted"
+                android:textSize="14sp"
+                android:visibility="gone" />
+        </FrameLayout>
+    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

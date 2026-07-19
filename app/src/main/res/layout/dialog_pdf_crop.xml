@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/tvCropHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingBottom="8dp"
+        android:text="@string/pdf_crop_dialog_hint"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="220dp"
+        android:background="#333333">
+
+        <ImageView
+            android:id="@+id/ivCropPreview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/pdf_page"
+            android:scaleType="fitCenter" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCropPrev"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/pdf_crop_prev_page"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvCropPage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCropNext"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/pdf_crop_next_page"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvCropL"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <SeekBar
+        android:id="@+id/seekCropL"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="30" />
+
+    <TextView
+        android:id="@+id/tvCropR"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <SeekBar
+        android:id="@+id/seekCropR"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="30" />
+
+    <TextView
+        android:id="@+id/tvCropT"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <SeekBar
+        android:id="@+id/seekCropT"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="30" />
+
+    <TextView
+        android:id="@+id/tvCropB"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
+    <SeekBar
+        android:id="@+id/seekCropB"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="30" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnCropAuto"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:layout_marginTop="8dp"
+        android:text="@string/pdf_crop_auto"
+        android:textSize="13sp" />
+</LinearLayout>

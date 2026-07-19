@@ -4,27 +4,35 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.speech.tts.Voice
 import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.SeekBar
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.tabs.TabLayout
+import com.google.android.material.tabs.TabLayoutMediator
+import com.whj.reader.R
 import com.whj.reader.data.AppSettings
+import com.whj.reader.data.BookChineseModeStore
+import com.whj.reader.data.BookEncodingStore
+import com.whj.reader.data.BookFileType
 import com.whj.reader.data.BookmarkStore
 import com.whj.reader.data.BookshelfStore
+import com.whj.reader.data.ChineseConvert
+import com.whj.reader.data.ReadingProgressStore
 import com.whj.reader.data.LoadedBook
 import com.whj.reader.data.TextLoader
 import com.whj.reader.databinding.ActivityReadingBinding
@@ -40,7 +48,12 @@ import com.whj.reader.ui.ParagraphAdapter
 import com.whj.reader.ui.TocAdapter
 import com.whj.reader.ui.TocItem
 import com.whj.reader.ui.VirtualReaderView
+import com.whj.reader.util.KeepScreenController
+import com.whj.reader.util.OpenFailGuide
+import com.whj.reader.util.OrientationHelper
+import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
+import com.whj.reader.util.TtsVoicePicker
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,6 +67,8 @@ class ReadingActivity : AppCompatActivity() {
         const val EXTRA_URI = "uri"
         const val EXTRA_ASSET = "asset"
         const val EXTRA_TITLE = "title"
+        /** 指定文本编码；空/不传 = 自动判断 */
+        const val EXTRA_ENCODING = "encoding"
     }
 
     private lateinit var binding: ActivityReadingBinding
@@ -68,8 +83,11 @@ class ReadingActivity : AppCompatActivity() {
     /** 用户通过「朗读」打开过 TTS 条；停止后关闭 */
     private var ttsBarOpen = false
     private var immersive = false
+    private var chromeShownAtMs = 0L
     private var fileKey: String = ""
     private var displayTitle: String = ""
+    /** 加载并恢复进度完成前，禁止把「第 0 段」写回进度（否则会冲掉上次位置） */
+    private var allowProgressSave = false
     private var batteryReceiverRegistered = false
     private val clockHandler = Handler(Looper.getMainLooper())
     private val clockFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
@@ -80,13 +98,59 @@ class ReadingActivity : AppCompatActivity() {
         }
     }
     private val idleHandler = Handler(Looper.getMainLooper())
-    private val idleExitRunnable = Runnable {
-        if (isFinishing || isDestroyed) return@Runnable
-        Toasts.show(this, R.string.idle_exit_toast)
-        if (::tts.isInitialized) {
-            tts.stop()
+    private val idleExitRunnable = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            // TTS 定时优先：定时未结束前不因空闲退出
+            if (sleepTimer.isActive()) {
+                val wait = (sleepTimer.remainingMs() + 2_000L).coerceAtLeast(1_000L)
+                idleHandler.postDelayed(this, wait)
+                return
+            }
+            Toasts.show(this@ReadingActivity, R.string.idle_exit_toast)
+            if (::tts.isInitialized) {
+                tts.stop()
+            }
+            finish()
         }
-        finish()
+    }
+    private lateinit var keepScreen: KeepScreenController
+
+    private val searchLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val para = result.data?.getIntExtra(BookSearchActivity.RESULT_PARA_INDEX, -1) ?: -1
+        if (para < 0 || !::reader.isInitialized) return@registerForActivityResult
+        hideChrome()
+        reader.scrollToParagraph(para)
+        if (allowProgressSave) saveProgress(para)
+        updateProgressLabel()
+    }
+
+    /** 打开失败：重新选文件 */
+    private val reselectDocLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        applyReselectedUri(uri)
+    }
+
+    /** 打开失败：授予全盘权限后重试 */
+    private val openFailPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        if (StorageAccess.hasAllFilesAccess() ||
+            (intent.getStringExtra(EXTRA_URI)?.let { StorageAccess.canRead(this, Uri.parse(it)) } == true)
+        ) {
+            Toasts.show(this, R.string.open_failed_permission_granted_retry)
+            loadContent()
+        } else {
+            showOpenFailGuide(
+                OpenFailGuide.Reason.PERMISSION,
+                detail = null,
+            )
+        }
     }
 
     private val batteryReceiver = object : BroadcastReceiver() {
@@ -101,8 +165,10 @@ class ReadingActivity : AppCompatActivity() {
         binding = ActivityReadingBinding.inflate(layoutInflater)
         setContentView(binding.root)
         settingsPanel = binding.settingsPanel
-        readMenu = binding.readMenu
+        // 菜单 inflate 到 host，并预测量避免首次空白
+        readMenu = PanelReadMenuBinding.inflate(layoutInflater, binding.readMenuHost, true)
         reader = binding.readerView
+        premeasureReadMenu()
 
         style = AppSettings.loadStyle(this)
 
@@ -122,22 +188,44 @@ class ReadingActivity : AppCompatActivity() {
                 }
             }
         }
+        // 左右滑翻页：左滑下一页，右滑上一页
+        reader.onHorizontalSwipe = { forward ->
+            bumpIdleTimer()
+            if (binding.settingsPanelContainer.isVisible) {
+                binding.settingsPanelContainer.isVisible = false
+            } else {
+                if (chromeVisible) hideChrome()
+                pageTurn(forward = forward)
+            }
+        }
         // 进度保存已在 View 内节流；这里只写入，并刷新底部进度
         reader.onScrollChangedListener = { first ->
             bumpIdleTimer()
-            saveProgress(first)
+            // 滚动时先刷新书签态，再考虑收起菜单（避免图标停在旧状态）
+            if (chromeVisible) {
+                updateBookmarkButton()
+            }
+            // 滚动时收菜单（叠加底栏后不再因布局高度变化误关）
+            if (chromeVisible &&
+                android.os.SystemClock.uptimeMillis() - chromeShownAtMs > 200L
+            ) {
+                hideChrome()
+            }
+            if (allowProgressSave) {
+                saveProgress(first)
+            }
             updateProgressLabel()
         }
-        reader.onReadFromParagraph = { paraIndex ->
+        reader.onReadFromParagraph = { paraIndex, charOffset ->
             bumpIdleTimer()
-            // 关闭菜单，打开 TTS 条并从该段朗读
+            // 关闭菜单，打开 TTS 条并从选区起点读到文末
             chromeVisible = false
             ttsBarOpen = true
             applyChromeVisibility()
             if (!tts.isReady()) {
                 tts.reinit()
             }
-            tts.playFrom(paraIndex, 0)
+            tts.playFromParagraphOffset(paraIndex, charOffset)
         }
         reader.onEdgeAdjust = { isLeft, direction ->
             bumpIdleTimer()
@@ -150,24 +238,34 @@ class ReadingActivity : AppCompatActivity() {
         tts.listener = ttsListener
         tts.setSpeechRate(AppSettings.ttsRate(this))
         tts.setPitch(AppSettings.ttsPitch(this))
-        AppSettings.voiceName(this)?.let { tts.applyVoiceByName(it) }
+        // 引擎/发音人在 TtsManager 构造与 onInit 中从 prefs 恢复，勿在 init 前 apply
         tts.init()
 
         setupTopBar()
         setupReadMenu()
         setupTtsBar()
         setupSettingsPanel()
+        setupBottomChromeInsets()
         applyStyleToUi()
         hideChrome()
         updateClock()
         updateProgressLabel()
-        registerBattery()
 
-        if (AppSettings.keepScreenOn(this)) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        keepScreen = KeepScreenController(this) {
+            ::tts.isInitialized && tts.currentState().state == TtsManager.State.SPEAKING
         }
+        keepScreen.apply()
 
         loadContent()
+    }
+
+    private fun setupBottomChromeInsets() {
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(binding.bottomChrome) { v, insets ->
+            val nav = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+            v.setPadding(v.paddingLeft, v.paddingTop, v.paddingRight, nav.bottom)
+            insets
+        }
+        binding.bottomChrome.requestApplyInsets()
     }
 
     override fun onResume() {
@@ -176,21 +274,35 @@ class ReadingActivity : AppCompatActivity() {
         updateProgressLabel()
         // 偏好页可能改过边缘手势，回来时刷新
         applyEdgeSwipeFlags()
-        clockHandler.removeCallbacks(clockTick)
-        clockHandler.post(clockTick)
+        startClockAndBattery()
         bumpIdleTimer()
+        if (::keepScreen.isInitialized) keepScreen.onResume()
+        // 前台才允许「自动」使用方向传感器
+        applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = true)
     }
 
     override fun onPause() {
         super.onPause()
-        clockHandler.removeCallbacks(clockTick)
+        stopClockAndBattery()
         idleHandler.removeCallbacks(idleExitRunnable)
-        if (::tts.isInitialized && tts.currentState().state == TtsManager.State.SPEAKING) {
-            tts.pause()
-        }
+        if (::keepScreen.isInitialized) keepScreen.onPause()
+        // 后台关闭方向传感器（自动模式锁到当前方向）
+        applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = false)
+        // 锁屏/切后台不暂停 TTS，由前台服务继续播放
         if (::reader.isInitialized) {
             saveProgress(reader.firstVisibleParagraph())
         }
+    }
+
+    private fun startClockAndBattery() {
+        clockHandler.removeCallbacks(clockTick)
+        clockHandler.post(clockTick)
+        registerBattery()
+    }
+
+    private fun stopClockAndBattery() {
+        clockHandler.removeCallbacks(clockTick)
+        unregisterBattery()
     }
 
     override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
@@ -199,16 +311,28 @@ class ReadingActivity : AppCompatActivity() {
                 ev.actionMasked == android.view.MotionEvent.ACTION_UP)
         ) {
             bumpIdleTimer()
+            if (::keepScreen.isInitialized) keepScreen.onUserActivity()
         }
         return super.dispatchTouchEvent(ev)
     }
 
-    /** 重置空闲退出计时（默认 30 分钟无操作则退出阅读） */
+    /**
+     * 重置空闲退出计时（默认 30 分钟无操作则退出阅读）。
+     * 若 TTS 定时关闭仍在计时，则空闲退出不得早于定时结束（定时优先）。
+     */
     private fun bumpIdleTimer() {
         idleHandler.removeCallbacks(idleExitRunnable)
         val mins = AppSettings.idleExitMinutes(this)
-        if (mins > 0) {
-            idleHandler.postDelayed(idleExitRunnable, mins * 60_000L)
+        if (mins <= 0 && !sleepTimer.isActive()) return
+        val idleMs = if (mins > 0) mins * 60_000L else 0L
+        val delay = if (sleepTimer.isActive()) {
+            val sleepMs = sleepTimer.remainingMs() + 2_000L
+            if (idleMs > 0L) maxOf(idleMs, sleepMs) else sleepMs
+        } else {
+            idleMs
+        }
+        if (delay > 0L) {
+            idleHandler.postDelayed(idleExitRunnable, delay)
         }
     }
 
@@ -220,25 +344,40 @@ class ReadingActivity : AppCompatActivity() {
                     reader.clearHighlight()
                 }
                 updateTtsUi(snapshot)
+                if (::keepScreen.isInitialized) keepScreen.onTtsStateChanged()
             }
         }
 
-        override fun onParagraphHighlight(paragraphIndex: Int) {
+        override fun onSentenceHighlight(
+            paragraphIndex: Int,
+            startOffset: Int,
+            endOffset: Int,
+        ) {
             runOnUiThread {
                 if (!::reader.isInitialized || !::tts.isInitialized || isFinishing || isDestroyed) {
                     return@runOnUiThread
                 }
                 val st = tts.currentState().state
+                if (paragraphIndex < 0 || endOffset < 0 ||
+                    st == TtsManager.State.IDLE
+                ) {
+                    reader.clearHighlight()
+                    return@runOnUiThread
+                }
                 if (st == TtsManager.State.SPEAKING || st == TtsManager.State.PAUSED) {
-                    reader.setHighlightParagraph(paragraphIndex)
+                    reader.setHighlightRange(paragraphIndex, startOffset, endOffset)
                 } else {
                     reader.clearHighlight()
                 }
                 if (AppSettings.autoScroll(this@ReadingActivity) &&
                     st != TtsManager.State.IDLE
                 ) {
-                    // 目标句已在屏内则不竖直跳动
-                    reader.scrollToParagraphIfNeeded(paragraphIndex)
+                    // 句未全在视窗 → 滚到句顶；已全在屏内不动
+                    reader.scrollToHighlightIfNeeded(
+                        paragraphIndex,
+                        startOffset,
+                        endOffset,
+                    )
                 }
                 saveProgress(paragraphIndex)
             }
@@ -253,9 +392,10 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        clockHandler.removeCallbacks(clockTick)
+        stopClockAndBattery()
         idleHandler.removeCallbacks(idleExitRunnable)
-        unregisterBattery()
+        if (::keepScreen.isInitialized) keepScreen.onDestroy()
+        sleepTimer.cancel()
         if (::tts.isInitialized) {
             tts.listener = null
             tts.shutdown()
@@ -305,16 +445,252 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun setupTopBar() {
         binding.btnBack.setOnClickListener { finish() }
+        binding.btnSearch.setOnClickListener {
+            if (fileKey.isBlank()) return@setOnClickListener
+            searchLauncher.launch(
+                BookSearchActivity.intentTxt(this, fileKey, displayTitle),
+            )
+        }
+        binding.btnBookmark.setOnClickListener { toggleBookmarkAtCurrent() }
+        binding.btnEncoding.setOnClickListener { showEncodingPicker() }
     }
 
-    /** 瞬时翻页（无动画），保留约 1 行；快翻时进度由 View 节流回调更新 */
+    /**
+     * 书签锚点：用户看到的「屏幕最上方第一段」。
+     * 菜单打开时顶栏盖住 Reader 顶部，需扣除顶栏高度。
+     */
+    private fun bookmarkAnchorParagraph(): Int {
+        if (book == null || !::reader.isInitialized) return 0
+        val density = resources.displayMetrics.density
+        val inset = if (chromeVisible) {
+            // 顶栏可能尚未 measure，用实测高度或 52dp 兜底
+            val h = binding.topBar.height
+            if (h > 0) h.toFloat() else 52f * density
+        } else {
+            0f
+        }
+        return reader.topScreenParagraph(inset)
+            .coerceIn(0, book!!.paragraphs.lastIndex.coerceAtLeast(0))
+    }
+
+    /** 当前阅读位置添加/取消书签（屏幕最上方第一段） */
+    private fun toggleBookmarkAtCurrent() {
+        if (fileKey.isBlank() || book == null) return
+        // 布局后再取锚点，避免顶栏 height=0
+        binding.topBar.post {
+            val para = bookmarkAnchorParagraph()
+            if (BookmarkStore.has(this, fileKey, para)) {
+                BookmarkStore.remove(this, fileKey, para)
+                Toasts.show(this, R.string.bookmark_off)
+            } else {
+                val preview = book!!.paragraphs.getOrNull(para)?.text
+                    ?.take(80)
+                    ?.replace('\n', ' ')
+                    .orEmpty()
+                val pct = reader.progressPercentForParagraph(para)
+                BookmarkStore.add(
+                    this,
+                    com.whj.reader.model.Bookmark(
+                        fileKey = fileKey,
+                        paragraphIndex = para,
+                        preview = preview,
+                        progressPercent = pct,
+                    ),
+                )
+                Toasts.show(this, R.string.bookmark_on)
+            }
+            updateBookmarkButton()
+        }
+    }
+
+    private fun updateBookmarkButton() {
+        if (!::binding.isInitialized || !::reader.isInitialized) return
+        if (fileKey.isBlank() || book == null) {
+            binding.btnBookmark.setImageResource(R.drawable.ic_bookmark_border)
+            return
+        }
+        val para = bookmarkAnchorParagraph()
+        val on = BookmarkStore.has(this, fileKey, para)
+        binding.btnBookmark.setImageResource(
+            if (on) R.drawable.ic_bookmark else R.drawable.ic_bookmark_border,
+        )
+        binding.btnBookmark.contentDescription = if (on) {
+            getString(R.string.bookmark_on)
+        } else {
+            getString(R.string.add_bookmark)
+        }
+    }
+
+    /** 编码（RadioGroup）+ 简繁转换 */
+    private fun showEncodingPicker() {
+        val key = fileKey.ifBlank {
+            intent.getStringExtra(EXTRA_URI)
+                ?: intent.getStringExtra(EXTRA_ASSET)?.let { "asset://$it" }
+                ?: return
+        }
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_text_options, null)
+        val rgEnc = view.findViewById<android.widget.RadioGroup>(R.id.rgEncoding)
+        val rgZh = view.findViewById<android.widget.RadioGroup>(R.id.rgChinese)
+        val rbOff = view.findViewById<android.widget.RadioButton>(R.id.rbZhOff)
+        val rbSimple = view.findViewById<android.widget.RadioButton>(R.id.rbZhToSimple)
+        val rbTrad = view.findViewById<android.widget.RadioButton>(R.id.rbZhToTrad)
+
+        val ids = BookEncodingStore.OPTION_IDS
+        val currentEnc = BookEncodingStore.get(this, key) ?: BookEncodingStore.ENCODING_AUTO
+        val encRadioIds = IntArray(ids.size)
+        for ((i, code) in ids.withIndex()) {
+            val rb = android.widget.RadioButton(this).apply {
+                id = View.generateViewId()
+                text = if (code == BookEncodingStore.ENCODING_AUTO) {
+                    getString(R.string.encoding_auto)
+                } else {
+                    code
+                }
+                minHeight = (40 * resources.displayMetrics.density).toInt()
+            }
+            encRadioIds[i] = rb.id
+            rgEnc.addView(rb)
+            if (code == currentEnc ||
+                (code == BookEncodingStore.ENCODING_AUTO && currentEnc == BookEncodingStore.ENCODING_AUTO)
+            ) {
+                rb.isChecked = true
+            }
+        }
+        if (rgEnc.checkedRadioButtonId == -1 && encRadioIds.isNotEmpty()) {
+            rgEnc.check(encRadioIds[0])
+        }
+
+        when (BookChineseModeStore.get(this, key)) {
+            ChineseConvert.Mode.TO_SIMPLE -> rbSimple.isChecked = true
+            ChineseConvert.Mode.TO_TRADITIONAL -> rbTrad.isChecked = true
+            else -> rbOff.isChecked = true
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.text_options_title)
+            .setView(view)
+            .setPositiveButton(R.string.apply) { dialog, _ ->
+                val checkedEncId = rgEnc.checkedRadioButtonId
+                val encIdx = encRadioIds.indexOf(checkedEncId).coerceAtLeast(0)
+                val code = ids.getOrElse(encIdx) { BookEncodingStore.ENCODING_AUTO }
+                val enc = if (code == BookEncodingStore.ENCODING_AUTO) null else code
+                BookEncodingStore.set(this, key, enc)
+                if (enc != null) intent.putExtra(EXTRA_ENCODING, enc)
+                else intent.removeExtra(EXTRA_ENCODING)
+
+                val zhMode = when (rgZh.checkedRadioButtonId) {
+                    R.id.rbZhToSimple -> ChineseConvert.Mode.TO_SIMPLE
+                    R.id.rbZhToTrad -> ChineseConvert.Mode.TO_TRADITIONAL
+                    else -> ChineseConvert.Mode.OFF
+                }
+                BookChineseModeStore.set(this, key, zhMode)
+
+                val encLabel = enc ?: getString(R.string.encoding_auto)
+                val zhLabel = when (zhMode) {
+                    ChineseConvert.Mode.TO_SIMPLE -> getString(R.string.chinese_convert_to_simple)
+                    ChineseConvert.Mode.TO_TRADITIONAL -> getString(R.string.chinese_convert_to_trad)
+                    ChineseConvert.Mode.OFF -> getString(R.string.chinese_convert_off)
+                }
+                Toasts.show(
+                    this,
+                    getString(R.string.encoding_set, encLabel) + " · " + zhLabel,
+                )
+                dialog.dismiss()
+                reloadTextOptions(enc, zhMode)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun reloadTextOptions(
+        preferredEncoding: String?,
+        chineseMode: ChineseConvert.Mode,
+    ) {
+        val asset = intent.getStringExtra(EXTRA_ASSET)
+        val uriStr = intent.getStringExtra(EXTRA_URI)
+        val titleExtra = intent.getStringExtra(EXTRA_TITLE)
+        val keepPara = if (::reader.isInitialized) {
+            reader.firstVisibleParagraph()
+        } else {
+            0
+        }
+        if (::tts.isInitialized) {
+            tts.stop()
+        }
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    when {
+                        asset != null -> TextLoader.loadFromAssets(
+                            this@ReadingActivity,
+                            asset,
+                            titleExtra ?: getString(R.string.unnamed),
+                            preferredEncoding = preferredEncoding,
+                            chineseMode = chineseMode,
+                        )
+                        uriStr != null -> TextLoader.loadFromUri(
+                            this@ReadingActivity,
+                            Uri.parse(uriStr),
+                            titleExtra,
+                            preferredEncoding = preferredEncoding,
+                            chineseMode = chineseMode,
+                        )
+                        else -> error("未指定文件")
+                    }
+                }
+            }
+            result.onSuccess { loaded ->
+                book = loaded
+                fileKey = loaded.uri
+                displayTitle = loaded.title
+                binding.tvReadTitle.text = loaded.title
+                if (!loaded.encoding.equals("UTF-8", ignoreCase = true) &&
+                    BookEncodingStore.get(this@ReadingActivity, loaded.uri) == null
+                ) {
+                    BookEncodingStore.set(this@ReadingActivity, loaded.uri, loaded.encoding)
+                }
+                allowProgressSave = false
+                val progress = keepPara.coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0))
+                reader.setContent(loaded.paragraphs)
+                applyStyleToUi(keepAnchor = false)
+                tts.setDocument(
+                    loaded.paragraphs,
+                    TextLoader.SentenceLineBreakMode.NEWLINE,
+                )
+                reader.post {
+                    if (progress in loaded.paragraphs.indices) {
+                        reader.scrollToParagraph(progress)
+                    }
+                    updateProgressLabel()
+                    updateBookmarkButton()
+                    allowProgressSave = true
+                    saveProgress(reader.firstVisibleParagraph())
+                }
+            }.onFailure { e ->
+                // 重载失败：引导权限/重选；已有正文时不因关闭对话框而退出
+                showOpenFailGuide(
+                    reason = OpenFailGuide.reasonFrom(e),
+                    detail = e.message,
+                    exitOnClose = book == null,
+                )
+            }
+        }
+    }
+
+    /** 瞬时翻页：下翻末行顶置，上翻首行底置；第 1 行在标题栏下完整显示 */
     private fun pageTurn(forward: Boolean) {
+        if (chromeVisible) hideChrome()
+        if (binding.settingsPanelContainer.isVisible) {
+            binding.settingsPanelContainer.isVisible = false
+        }
         if (!reader.canPage(forward)) {
             Toasts.show(this, if (forward) R.string.page_bottom else R.string.page_top)
             return
         }
-        reader.pageTurn(forward = forward, overlapLines = 1)
-        // 进度条节流，避免连点拖慢主线程
+        if (!reader.pageTurn(forward = forward)) {
+            Toasts.show(this, if (forward) R.string.page_bottom else R.string.page_top)
+            return
+        }
         if (reader.shouldUpdateProgressUi()) {
             updateProgressLabel()
         }
@@ -351,6 +727,10 @@ class ReadingActivity : AppCompatActivity() {
         }
         // 全屏显示（沉浸）
         readMenu.menuFullscreen.setOnClickListener {
+            if (!immersive && hasDisplayCutout()) {
+                Toasts.show(this, R.string.immersive_cutout_unsupported)
+                return@setOnClickListener
+            }
             immersive = !immersive
             applyImmersive()
             Toasts.show(
@@ -373,14 +753,30 @@ class ReadingActivity : AppCompatActivity() {
             }
             val snap = tts.currentState()
             if (snap.state == TtsManager.State.IDLE) {
-                val start = reader.currentHighlight().takeIf { it >= 0 }
-                    ?: reader.firstVisibleParagraph()
-                tts.playFrom(start, 0)
+                startTtsFromViewport()
             } else {
                 tts.playPauseToggle()
             }
         }
     }
+
+    /** 从可视区第一个完整显示的字开始读到文末 */
+    private fun startTtsFromViewport() {
+        val (para, off) = reader.firstFullyVisibleCharPosition()
+        tts.playFromParagraphOffset(para, off)
+    }
+
+    private val sleepTimer = com.whj.reader.tts.TtsSleepTimer(
+        onTick = { left ->
+            if (!isFinishing && !isDestroyed) {
+                binding.tvTtsSleepCountdown.text =
+                    com.whj.reader.tts.TtsSleepTimer.formatCountdown(left)
+            }
+        },
+        onFinished = { onSleepTimerFinished() },
+    )
+
+    private val ttsRateOptions = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f)
 
     private fun setupTtsBar() {
         binding.btnTtsPlayPause.setOnClickListener {
@@ -390,9 +786,7 @@ class ReadingActivity : AppCompatActivity() {
             }
             val snap = tts.currentState()
             if (snap.state == TtsManager.State.IDLE) {
-                val start = reader.currentHighlight().takeIf { it >= 0 }
-                    ?: reader.firstVisibleParagraph()
-                tts.playFrom(start, 0)
+                startTtsFromViewport()
             } else {
                 tts.playPauseToggle()
             }
@@ -401,6 +795,8 @@ class ReadingActivity : AppCompatActivity() {
         binding.btnTtsNext.setOnClickListener { tts.nextSentence() }
         binding.btnTtsStop.setOnClickListener {
             tts.stop()
+            sleepTimer.cancel()
+            updateSleepUi()
             reader.clearHighlight()
             ttsBarOpen = false
             updateTtsUi(tts.currentState())
@@ -415,26 +811,119 @@ class ReadingActivity : AppCompatActivity() {
                 Toasts.show(this, R.string.tts_check_system, android.widget.Toast.LENGTH_LONG)
             }
         }
-        binding.btnTtsRateDown.setOnClickListener { adjustTtsRate(-0.1f) }
-        binding.btnTtsRateUp.setOnClickListener { adjustTtsRate(0.1f) }
+        binding.btnTtsRate.setOnClickListener { v -> showTtsRateMenu(v) }
+        binding.btnTtsSleep.setOnClickListener { v -> showTtsSleepMenu(v) }
+        binding.tvTtsSleepCountdown.setOnClickListener { confirmCancelSleepTimer() }
         updateTtsRateLabel(AppSettings.ttsRate(this))
+        updateSleepUi()
+    }
+
+    private fun confirmCancelSleepTimer() {
+        if (!sleepTimer.isActive()) {
+            showTtsSleepMenu(binding.btnTtsSleep)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setMessage(R.string.tts_sleep_cancel_confirm)
+            .setPositiveButton(R.string.confirm) { _, _ ->
+                sleepTimer.cancel()
+                updateSleepUi()
+                Toasts.show(this, R.string.tts_sleep_cancelled)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showTtsRateMenu(anchor: android.view.View) {
+        val popup = android.widget.PopupMenu(this, anchor)
+        ttsRateOptions.forEachIndexed { i, rate ->
+            popup.menu.add(0, i, i, formatRateLabel(rate))
+        }
+        popup.setOnMenuItemClickListener { item ->
+            val rate = ttsRateOptions.getOrNull(item.itemId) ?: return@setOnMenuItemClickListener false
+            AppSettings.setTtsRate(this, rate)
+            tts.setSpeechRate(rate, restartCurrent = true)
+            updateTtsRateLabel(rate)
+            settingsPanel.seekTtsRate.progress =
+                ((rate - 0.5f) / 0.1f).toInt().coerceIn(0, 20)
+            settingsPanel.tvTtsRate.text = String.format("%.1fx", rate)
+            true
+        }
+        popup.show()
+    }
+
+    private fun formatRateLabel(rate: Float): String {
+        val body = if (kotlin.math.abs(rate - rate.toInt()) < 0.001f) {
+            rate.toInt().toString()
+        } else {
+            String.format(java.util.Locale.US, "%.2f", rate).trimEnd('0').trimEnd('.')
+        }
+        return body + "×"
+    }
+
+    private fun updateTtsRateLabel(rate: Float) {
+        binding.btnTtsRate.text = formatRateLabel(rate)
+    }
+
+    private fun showTtsSleepMenu(anchor: android.view.View) {
+        val popup = android.widget.PopupMenu(this, anchor)
+        com.whj.reader.tts.TtsSleepTimer.OPTION_MINUTES.forEachIndexed { i, mins ->
+            val title = if (mins == 0) {
+                getString(R.string.tts_sleep_off)
+            } else {
+                getString(R.string.tts_sleep_minutes, mins)
+            }
+            popup.menu.add(0, i, i, title)
+        }
+        popup.setOnMenuItemClickListener { item ->
+            val mins = com.whj.reader.tts.TtsSleepTimer.OPTION_MINUTES
+                .getOrNull(item.itemId) ?: return@setOnMenuItemClickListener false
+            if (mins == 0) {
+                sleepTimer.cancel()
+                updateSleepUi()
+                bumpIdleTimer()
+                Toasts.show(this, R.string.tts_sleep_cancelled)
+            } else {
+                sleepTimer.start(mins * 60_000L)
+                updateSleepUi()
+                // 定时优先于空闲退出：重算空闲计时
+                bumpIdleTimer()
+                Toasts.show(this, getString(R.string.tts_sleep_set, mins))
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun updateSleepUi() {
+        val active = sleepTimer.isActive()
+        binding.btnTtsSleep.isVisible = !active
+        binding.tvTtsSleepCountdown.isVisible = active
+        if (active) {
+            binding.tvTtsSleepCountdown.text =
+                com.whj.reader.tts.TtsSleepTimer.formatCountdown(sleepTimer.remainingMs())
+        }
+    }
+
+    private fun onSleepTimerFinished() {
+        if (isFinishing || isDestroyed) return
+        if (::tts.isInitialized) tts.stop()
+        if (::reader.isInitialized) reader.clearHighlight()
+        updateSleepUi()
+        if (::tts.isInitialized) updateTtsUi(tts.currentState())
+        // 定时结束后按正常空闲规则重新计时
+        bumpIdleTimer()
+        Toasts.show(this, R.string.tts_sleep_finished)
     }
 
     private fun adjustTtsRate(delta: Float) {
         val next = (AppSettings.ttsRate(this) + delta).coerceIn(0.5f, 2.5f)
-        // 对齐到 0.1
         val rounded = (kotlin.math.round(next * 10f) / 10f).coerceIn(0.5f, 2.5f)
         AppSettings.setTtsRate(this, rounded)
-        // 立即用新语速重读当前句
         tts.setSpeechRate(rounded, restartCurrent = true)
         updateTtsRateLabel(rounded)
-        // 同步设置面板上的 seek（若已打开）
         settingsPanel.seekTtsRate.progress = ((rounded - 0.5f) / 0.1f).toInt().coerceIn(0, 20)
         settingsPanel.tvTtsRate.text = String.format("%.1fx", rounded)
-    }
-
-    private fun updateTtsRateLabel(rate: Float) {
-        binding.tvTtsRate.text = String.format("%.1f×", rate)
     }
 
     private fun setupSettingsPanel() {
@@ -549,25 +1038,32 @@ class ReadingActivity : AppCompatActivity() {
         updateProgressLabel()
     }
 
+    /**
+     * 全屏：隐藏导航栏，**保留系统状态栏**（打孔屏仍显示时间/信号/电量）。
+     */
     private fun applyImmersive() {
         @Suppress("DEPRECATION")
         if (immersive) {
             window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_FULLSCREEN
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 )
+            applyStyleToUi()
         } else {
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
             applyStyleToUi()
         }
     }
 
-    private fun applyOrientationMode(mode: OrientationMode, toast: Boolean) {
-        requestedOrientation = when (mode) {
-            OrientationMode.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            OrientationMode.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            OrientationMode.AUTO -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        }
+    private fun applyOrientationMode(
+        mode: OrientationMode,
+        toast: Boolean,
+        allowSensor: Boolean = !isFinishing && hasWindowFocus(),
+    ) {
+        // 仅「自动」且前台时监听传感器；竖/横屏锁定不启用传感器
+        OrientationHelper.apply(this, mode, allowSensor = allowSensor && mode == OrientationMode.AUTO)
         if (toast) {
             val label = when (mode) {
                 OrientationMode.PORTRAIT -> getString(R.string.orient_portrait)
@@ -584,7 +1080,11 @@ class ReadingActivity : AppCompatActivity() {
         reader.rightEdgeEnabled = AppSettings.rightEdgeAction(this) != EdgeSwipeAction.NONE
     }
 
-    /** 边缘滑动：+1 上滑增大，-1 下滑减小 */
+    /**
+     * 边缘滑动。
+     * [direction]：+1 上滑，-1 下滑（来自 VirtualReaderView）。
+     * 字号：下滑加大、上滑减小；语速仍为上滑加快、下滑减慢。
+     */
     private fun handleEdgeAdjust(isLeft: Boolean, direction: Int) {
         val action = if (isLeft) {
             AppSettings.leftEdgeAction(this)
@@ -608,7 +1108,8 @@ class ReadingActivity : AppCompatActivity() {
                 Toasts.show(this, getString(R.string.edge_toast_rate, next))
             }
             EdgeSwipeAction.FONT -> {
-                val next = (style.fontSizeSp + direction).coerceIn(12f, 36f)
+                // 下滑(direction=-1)加大字号，上滑(+1)减小
+                val next = (style.fontSizeSp - direction).coerceIn(12f, 36f)
                 if (next == style.fontSizeSp) return
                 style = style.copy(fontSizeSp = next)
                 persistAndApplyStyle(keepAnchor = true)
@@ -627,6 +1128,16 @@ class ReadingActivity : AppCompatActivity() {
         val asset = intent.getStringExtra(EXTRA_ASSET)
         val uriStr = intent.getStringExtra(EXTRA_URI)
         val titleExtra = intent.getStringExtra(EXTRA_TITLE)
+        val encodingExtra = intent.getStringExtra(EXTRA_ENCODING)
+        val preferredEncoding = encodingExtra?.takeIf { it.isNotBlank() }
+            ?: uriStr?.let { BookEncodingStore.get(this, it) }
+            ?: asset?.let { BookEncodingStore.get(this, "asset://$it") }
+        val bookKey = uriStr ?: asset?.let { "asset://$it" }.orEmpty()
+        val chineseMode = if (bookKey.isNotBlank()) {
+            BookChineseModeStore.get(this, bookKey)
+        } else {
+            ChineseConvert.Mode.OFF
+        }
 
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -635,12 +1146,16 @@ class ReadingActivity : AppCompatActivity() {
                         asset != null -> TextLoader.loadFromAssets(
                             this@ReadingActivity,
                             asset,
-                            titleExtra ?: getString(R.string.sample_book),
+                            titleExtra ?: getString(R.string.unnamed),
+                            preferredEncoding = preferredEncoding,
+                            chineseMode = chineseMode,
                         )
                         uriStr != null -> TextLoader.loadFromUri(
                             this@ReadingActivity,
                             Uri.parse(uriStr),
                             titleExtra,
+                            preferredEncoding = preferredEncoding,
+                            chineseMode = chineseMode,
                         )
                         else -> error("未指定文件")
                     }
@@ -650,38 +1165,167 @@ class ReadingActivity : AppCompatActivity() {
                 book = loaded
                 fileKey = loaded.uri
                 displayTitle = loaded.title
-                binding.tvBookTitle.text = loaded.title
                 binding.tvReadTitle.text = loaded.title
+
+                // 非 UTF-8：记忆编码供书架展示（已有手动设置则保留）
+                val usedEnc = loaded.encoding
+                if (!usedEnc.equals("UTF-8", ignoreCase = true)) {
+                    val key = loaded.uri
+                    if (BookEncodingStore.get(this@ReadingActivity, key) == null) {
+                        BookEncodingStore.set(this@ReadingActivity, key, usedEnc)
+                    }
+                }
+
+                // 先读进度（在 setContent/applyStyle 触发滚动回调之前），并暂时禁止写回
+                allowProgressSave = false
+                val saved = AppSettings.progressFor(this@ReadingActivity, loaded.uri)
+                val shelfPara = BookshelfStore.findBookByUri(this@ReadingActivity, loaded.uri)
+                    ?.lastParagraph ?: 0
+                val progress = maxOf(saved, shelfPara)
+                    .coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0))
+
                 reader.setContent(loaded.paragraphs)
-                applyStyleToUi()
-                tts.setDocument(loaded.paragraphs)
+                applyStyleToUi(keepAnchor = false)
+                tts.setDocument(
+                    loaded.paragraphs,
+                    com.whj.reader.data.TextLoader.SentenceLineBreakMode.NEWLINE,
+                )
                 applyChromeVisibility()
 
-                BookshelfStore.addOrUpdateBook(
+                // 仅更新已在书架上的书，不自动新增（绑定文件夹打开的书不进主书架）
+                BookshelfStore.updateIfExists(
                     this@ReadingActivity,
                     uri = loaded.uri,
                     displayName = loaded.title,
-                    pathHint = if (asset != null) getString(R.string.builtin_sample) else uriStr.orEmpty(),
+                    lastParagraph = progress,
+                )
+                ReadingProgressStore.saveTxt(
+                    this@ReadingActivity,
+                    loaded.uri,
+                    progress,
+                    loaded.paragraphs.size,
                 )
                 AppSettings.setLastBook(this@ReadingActivity, loaded.uri, loaded.title)
 
-                val progress = AppSettings.progressFor(this@ReadingActivity, fileKey)
-                if (progress in loaded.paragraphs.indices) {
-                    reader.post {
+                // 恢复上次阅读位置（等一帧布局后再滚一次，减少估算高度误差）
+                fun restorePos() {
+                    if (progress > 0 && progress in loaded.paragraphs.indices) {
                         reader.scrollToParagraph(progress)
-                        updateProgressLabel()
                     }
-                } else {
                     updateProgressLabel()
                 }
+                reader.post {
+                    restorePos()
+                    reader.post {
+                        restorePos()
+                        allowProgressSave = true
+                        saveProgress(reader.firstVisibleParagraph())
+                    }
+                }
             }.onFailure { e ->
-                Toasts.show(
-                    this@ReadingActivity,
-                    getString(R.string.load_failed, e.message ?: ""),
-                    android.widget.Toast.LENGTH_LONG,
+                showOpenFailGuide(
+                    reason = OpenFailGuide.reasonFrom(e),
+                    detail = e.message,
+                    exitOnClose = true,
+                )
+            }
+        }
+    }
+
+    private fun showOpenFailGuide(
+        reason: OpenFailGuide.Reason,
+        detail: String?,
+        exitOnClose: Boolean = true,
+    ) {
+        val title = intent.getStringExtra(EXTRA_TITLE)
+        val isAsset = !intent.getStringExtra(EXTRA_ASSET).isNullOrBlank()
+        OpenFailGuide.show(
+            activity = this,
+            reason = reason,
+            detail = detail,
+            bookTitle = title,
+            onGrantPermission = if (isAsset) {
+                null
+            } else {
+                {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        openFailPermissionLauncher.launch(
+                            StorageAccess.manageAllFilesIntent(this),
+                        )
+                    } else {
+                        // 旧版：引导后直接重试
+                        loadContent()
+                    }
+                }
+            },
+            onReselect = if (isAsset) {
+                null
+            } else {
+                {
+                    reselectDocLauncher.launch(
+                        arrayOf(
+                            "text/plain",
+                            "text/*",
+                            "application/pdf",
+                            "application/octet-stream",
+                        ),
+                    )
+                }
+            },
+            onClose = {
+                if (exitOnClose) finish()
+            },
+        )
+    }
+
+    private fun applyReselectedUri(uri: Uri) {
+        val oldUri = intent.getStringExtra(EXTRA_URI)
+        lifecycleScope.launch {
+            val name = withContext(Dispatchers.IO) {
+                runCatching {
+                    contentResolver.query(uri, null, null, null, null)?.use { c ->
+                        val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                    }
+                }.getOrNull()
+                    ?: uri.lastPathSegment
+                    ?: intent.getStringExtra(EXTRA_TITLE)
+                    ?: getString(R.string.unnamed)
+            }
+            // 若用户重选了 PDF，跳转 PDF 阅读
+            if (BookFileType.isPdfUri(this@ReadingActivity, uri, name) ||
+                BookFileType.isPdf(name)
+            ) {
+                val stable = withContext(Dispatchers.IO) {
+                    OpenFailGuide.bindReselectedFile(
+                        this@ReadingActivity,
+                        oldUri = oldUri,
+                        newUri = uri,
+                        displayName = name,
+                    )
+                }
+                Toasts.show(this@ReadingActivity, R.string.open_failed_reselect_done)
+                startActivity(
+                    Intent(this@ReadingActivity, PdfReadingActivity::class.java)
+                        .putExtra(PdfReadingActivity.EXTRA_URI, stable)
+                        .putExtra(PdfReadingActivity.EXTRA_TITLE, BookFileType.stripBookExt(name)),
                 )
                 finish()
+                return@launch
             }
+            val stable = withContext(Dispatchers.IO) {
+                OpenFailGuide.bindReselectedFile(
+                    this@ReadingActivity,
+                    oldUri = oldUri,
+                    newUri = uri,
+                    displayName = name,
+                )
+            }
+            intent.putExtra(EXTRA_URI, stable)
+            intent.putExtra(EXTRA_TITLE, BookFileType.stripBookExt(name))
+            intent.removeExtra(EXTRA_ASSET)
+            Toasts.show(this@ReadingActivity, R.string.open_failed_reselect_done)
+            loadContent()
         }
     }
 
@@ -713,9 +1357,11 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun saveProgress(paragraphIndex: Int) {
-        if (fileKey.isEmpty()) return
+        if (fileKey.isEmpty() || !allowProgressSave) return
         AppSettings.saveProgress(this, fileKey, paragraphIndex)
         BookshelfStore.updateProgress(this, fileKey, paragraphIndex)
+        val total = book?.paragraphs?.size ?: 0
+        ReadingProgressStore.saveTxt(this, fileKey, paragraphIndex, total)
         if (displayTitle.isNotEmpty()) {
             AppSettings.setLastBook(this, fileKey, displayTitle)
         }
@@ -727,12 +1373,22 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun showChrome() {
         chromeVisible = true
+        chromeShownAtMs = android.os.SystemClock.uptimeMillis()
         applyChromeVisibility()
+        // 等顶栏布局后再算书签锚点（避免 height=0 / 旧图标状态）
+        binding.topBar.post { updateBookmarkButton() }
     }
 
     private fun hideChrome() {
         chromeVisible = false
         applyChromeVisibility()
+    }
+
+    private fun hasDisplayCutout(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 28) return false
+        val cutout = window.decorView.rootWindowInsets?.displayCutout
+            ?: return false
+        return cutout.boundingRects.isNotEmpty()
     }
 
     /**
@@ -743,8 +1399,46 @@ class ReadingActivity : AppCompatActivity() {
      */
     private fun applyChromeVisibility() {
         binding.topBar.isVisible = chromeVisible
-        readMenu.root.isVisible = chromeVisible
         binding.ttsBar.isVisible = !chromeVisible && ttsBarOpen
+        val host = binding.readMenuHost
+        if (chromeVisible) {
+            host.visibility = View.VISIBLE
+            readMenu.root.visibility = View.VISIBLE
+            val lp = host.layoutParams
+            lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            host.layoutParams = lp
+            host.bringToFront()
+            binding.readStatusBar.bringToFront()
+            binding.bottomChrome.bringToFront()
+            binding.topBar.bringToFront()
+            host.post { if (chromeVisible) forceMenuLayout() }
+        } else {
+            host.visibility = View.GONE
+        }
+    }
+
+    private fun premeasureReadMenu() {
+        val host = binding.readMenuHost
+        host.visibility = View.INVISIBLE
+        host.post {
+            forceMenuLayout()
+            if (!chromeVisible) host.visibility = View.GONE
+        }
+    }
+
+    private fun forceMenuLayout() {
+        val host = binding.readMenuHost
+        val parentW = binding.bottomChrome.width.takeIf { it > 0 }
+            ?: binding.root.width.takeIf { it > 0 }
+            ?: resources.displayMetrics.widthPixels
+        if (parentW <= 0) return
+        val wSpec = View.MeasureSpec.makeMeasureSpec(parentW, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        readMenu.root.measure(wSpec, hSpec)
+        host.measure(wSpec, hSpec)
+        host.requestLayout()
+        binding.bottomChrome.requestLayout()
     }
 
     private fun jumpChapter(delta: Int) {
@@ -849,95 +1543,12 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun showVoicePicker() {
-        if (!tts.isReady()) {
-            tts.reinit()
-            Toasts.show(this, R.string.tts_not_ready)
-            return
-        }
-        val voices = tts.getVoices()
-        if (voices.isEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.tts_no_engine)
-                .setMessage(R.string.tts_no_voices)
-                .setPositiveButton(R.string.tts_open_settings) { _, _ ->
-                    runCatching { startActivity(tts.openTtsSettingsIntent()) }
-                }
-                .setNegativeButton(R.string.cancel, null)
-                .show()
-            return
-        }
-
-        val byLang = linkedMapOf<String, MutableList<Voice>>()
-        voices.forEach { v ->
-            val key = localeKey(v.locale)
-            byLang.getOrPut(key) { mutableListOf() }.add(v)
-        }
-        val langKeys = byLang.keys.toList()
-        val langLabels = langKeys.map { key ->
-            val sample = byLang[key]!!.first().locale
-            val display = localeDisplayName(sample)
-            "$display · ${getString(R.string.tts_voice_count, byLang[key]!!.size)}"
-        }.toTypedArray()
-
-        val currentVoice = tts.currentVoiceName()
-        val currentLangIndex = langKeys.indexOfFirst { key ->
-            byLang[key]!!.any { it.name == currentVoice }
-        }.coerceAtLeast(0)
-
-        AlertDialog.Builder(this)
-            .setTitle(R.string.tts_lang_pick)
-            .setSingleChoiceItems(langLabels, currentLangIndex) { dialog, which ->
-                dialog.dismiss()
-                showVoiceListForLanguage(byLang[langKeys[which]].orEmpty())
+        TtsVoicePicker.show(this, tts) {
+            if (tts.currentState().state == TtsManager.State.SPEAKING) {
+                val snap = tts.currentState()
+                tts.playFrom(snap.paragraphIndex, snap.sentenceIndex)
             }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
-
-    private fun showVoiceListForLanguage(voices: List<Voice>) {
-        if (voices.isEmpty()) return
-        val sorted = voices.sortedBy { it.name }
-        val labels = sorted.map { v ->
-            val quality = when {
-                v.quality >= 400 -> getString(R.string.tts_quality_high)
-                v.quality >= 300 -> getString(R.string.tts_quality_mid)
-                else -> getString(R.string.tts_quality_low)
-            }
-            val net = if (v.isNetworkConnectionRequired) " · 需网络" else ""
-            "${v.name}（$quality$net）"
-        }.toTypedArray()
-        val current = tts.currentVoiceName()
-        val checked = sorted.indexOfFirst { it.name == current }.coerceAtLeast(0)
-
-        AlertDialog.Builder(this)
-            .setTitle(R.string.tts_voice_pick)
-            .setSingleChoiceItems(labels, checked) { dialog, which ->
-                val voice = sorted[which]
-                tts.setVoice(voice)
-                AppSettings.setVoiceName(this, voice.name)
-                Toasts.show(this, voice.name)
-                if (tts.currentState().state == TtsManager.State.SPEAKING) {
-                    val snap = tts.currentState()
-                    tts.playFrom(snap.paragraphIndex, snap.sentenceIndex)
-                }
-                dialog.dismiss()
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
-
-    private fun localeKey(locale: Locale): String {
-        val lang = locale.language.ifBlank { "und" }
-        val country = locale.country
-        return if (country.isNullOrBlank()) lang else "${lang}_$country"
-    }
-
-    private fun localeDisplayName(locale: Locale): String {
-        val name = runCatching {
-            locale.getDisplayName(Locale.SIMPLIFIED_CHINESE)
-        }.getOrNull()?.takeIf { it.isNotBlank() }
-        if (!name.isNullOrBlank()) return name
-        return locale.toString().ifBlank { getString(R.string.tts_unknown_lang) }
+        }
     }
 
     private fun showTocSheet() {
@@ -946,11 +1557,10 @@ class ReadingActivity : AppCompatActivity() {
         val sheet = SheetTocBinding.inflate(LayoutInflater.from(this))
         dialog.setContentView(sheet.root)
 
-        val tocAdapter = TocAdapter { item ->
-            val index = when (item) {
-                is TocItem.ChapterItem -> item.chapter.paragraphIndex
-                is TocItem.BookmarkItem -> item.bookmark.paragraphIndex
-            }
+        val curPara = bookmarkAnchorParagraph()
+        val totalParas = b.paragraphs.size
+
+        fun jumpTo(index: Int) {
             dialog.dismiss()
             reader.scrollToParagraph(index)
             saveProgress(index)
@@ -960,39 +1570,107 @@ class ReadingActivity : AppCompatActivity() {
                 reader.clearHighlight()
             }
         }
-        sheet.rvToc.layoutManager = LinearLayoutManager(this)
-        sheet.rvToc.adapter = tocAdapter
 
-        fun showChapters() {
-            val items = b.chapters.map { TocItem.ChapterItem(it) }
-            tocAdapter.submit(items, reader.firstVisibleParagraph())
-            sheet.tvTocEmpty.isVisible = items.isEmpty()
-            sheet.rvToc.isVisible = items.isNotEmpty()
-            if (items.isEmpty()) sheet.tvTocEmpty.setText(R.string.toc_empty)
-        }
+        val chapterAdapter = TocAdapter(
+            onClick = { item ->
+                val index = (item as? TocItem.ChapterItem)?.chapter?.paragraphIndex ?: return@TocAdapter
+                jumpTo(index)
+            },
+        )
+        lateinit var bookmarkAdapter: TocAdapter
+        bookmarkAdapter = TocAdapter(
+            onClick = { item ->
+                val index = (item as? TocItem.BookmarkItem)?.bookmark?.paragraphIndex ?: return@TocAdapter
+                jumpTo(index)
+            },
+            onDeleteBookmark = { bm ->
+                BookmarkStore.remove(this, bm.fileKey, bm.paragraphIndex)
+                val items = BookmarkStore.list(this, fileKey).map { TocItem.BookmarkItem(it) }
+                bookmarkAdapter.submit(items, curPara, totalParas)
+                updateBookmarkButton()
+                Toasts.show(this, R.string.bookmark_removed)
+            },
+        )
+        chapterAdapter.submit(
+            b.chapters.map { TocItem.ChapterItem(it) },
+            curPara,
+            totalParas,
+        )
+        bookmarkAdapter.submit(
+            BookmarkStore.list(this, fileKey).map { TocItem.BookmarkItem(it) },
+            curPara,
+            totalParas,
+        )
 
-        fun showBookmarks() {
-            val items = BookmarkStore.list(this, fileKey).map { TocItem.BookmarkItem(it) }
-            tocAdapter.submit(items, reader.firstVisibleParagraph())
-            sheet.tvTocEmpty.isVisible = items.isEmpty()
-            sheet.rvToc.isVisible = items.isNotEmpty()
-            if (items.isEmpty()) sheet.tvTocEmpty.setText(R.string.bookmark_empty)
-        }
+        val titles = listOf(getString(R.string.toc), getString(R.string.bookmark))
+        val adapters = listOf(chapterAdapter, bookmarkAdapter)
+        val emptyMsgs = listOf(R.string.toc_empty, R.string.bookmark_empty)
 
-        sheet.tabLayout.addTab(sheet.tabLayout.newTab().setText(R.string.toc))
-        sheet.tabLayout.addTab(sheet.tabLayout.newTab().setText(R.string.bookmark))
-        sheet.tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab?) {
-                when (tab?.position) {
-                    0 -> showChapters()
-                    1 -> showBookmarks()
-                }
+        sheet.vpToc.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun getItemCount(): Int = 2
+
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val page = LayoutInflater.from(parent.context)
+                    .inflate(R.layout.page_toc_list, parent, false)
+                return object : RecyclerView.ViewHolder(page) {}
             }
 
-            override fun onTabUnselected(tab: TabLayout.Tab?) {}
-            override fun onTabReselected(tab: TabLayout.Tab?) {}
-        })
-        showChapters()
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                val page = holder.itemView
+                val rv = page.findViewById<RecyclerView>(R.id.rvList)
+                val empty = page.findViewById<android.widget.TextView>(R.id.tvEmpty)
+                val ad = adapters[position]
+                if (rv.layoutManager == null) {
+                    rv.layoutManager = LinearLayoutManager(this@ReadingActivity)
+                }
+                if (rv.adapter !== ad) {
+                    rv.adapter = ad
+                }
+                empty.setText(emptyMsgs[position])
+                fun syncEmpty() {
+                    val n = ad.itemCount
+                    empty.isVisible = n == 0
+                    rv.isVisible = n > 0
+                }
+                syncEmpty()
+                // 每个 page 只挂一次 observer，避免重复注册
+                if (page.getTag(R.id.rvList) !== ad) {
+                    page.setTag(R.id.rvList, ad)
+                    ad.registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
+                        override fun onChanged() = syncEmpty()
+                    })
+                }
+            }
+        }
+
+        TabLayoutMediator(sheet.tabLayout, sheet.vpToc) { tab, pos ->
+            tab.text = titles[pos]
+        }.attach()
+
+        // 打开即为最大高度，不要先半屏再上拉两段
+        dialog.setOnShowListener {
+            val bottomSheet = dialog.findViewById<View>(
+                com.google.android.material.R.id.design_bottom_sheet,
+            ) ?: return@setOnShowListener
+            val maxH = (resources.displayMetrics.heightPixels * 0.92f).toInt()
+            bottomSheet.layoutParams = bottomSheet.layoutParams.apply {
+                height = maxH
+            }
+            sheet.root.layoutParams = sheet.root.layoutParams?.apply {
+                height = maxH
+            } ?: ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                maxH,
+            )
+            bottomSheet.requestLayout()
+            val behavior = com.google.android.material.bottomsheet.BottomSheetBehavior
+                .from(bottomSheet)
+            behavior.skipCollapsed = true
+            behavior.isFitToContents = false
+            behavior.expandedOffset = (resources.displayMetrics.heightPixels - maxH)
+                .coerceAtLeast(0)
+            behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
+        }
         dialog.show()
     }
 }

@@ -20,6 +20,14 @@ build/
 # Local configuration (SDK path, etc.)
 local.properties
 
+# Release signing (example keystore.properties.example may be committed)
+keystore.properties
+release.keystore
+keystore/
+*.jks
+*.keystore
+!debug.keystore
+
 # Android Studio / IntelliJ
 *.iml
 .idea/
@@ -49,18 +57,13 @@ ehthumbs.db
 tmp/
 **/tmp/
 
-# Packaging
-*.jks
-*.keystore
-!debug.keystore
+# Scratch notes
+1.md
 
 # NDK
 obj/
 
-# Profiling
-*.hprof
-
-# Node helper scripts cache (if any)
+# Node helper
 node_modules/
 
 # Optional IDE

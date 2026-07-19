@@ -1,78 +1,186 @@
-# 文本阅读器（whj.reader）
+# Text Reader (whj.reader)
 
-轻量 Android TXT 阅读器：书架管理、虚拟列表大文件阅读、系统 TTS 朗读、中英文界面。
+A lightweight Android reader: bookshelf, TXT/PDF reading, system TTS, on-device OCR, and Chinese/English UI.
 
-[English README](README_EN.md) · 开发细节见 [DEVELOPMENT.md](DEVELOPMENT.md)
+[中文](README.zh.md)
 
-## 功能概览
+## Features
 
-- **书架**：导入单个 TXT 或整个文件夹；支持一级书架文件夹
-- **阅读**：自绘虚拟滚动，适合大文本；点击左/中/右翻页或调菜单
-- **排版**：字号、行距、段距、多主题与夜间模式
-- **朗读（TTS）**：系统引擎、按句号分句、语速调节、发音人选择
-- **手势**：左右边缘上下滑可调语速/字号（偏好中可配置）
-- **视角**：竖屏 / 横屏 / 自动旋转；全屏沉浸
-- **语言**：界面中英文切换（设置 → 界面语言）
-- **其它**：进度跳转、书签/目录、空闲自动退出、自动恢复上次阅读
+- **Bookshelf**: import TXT/PDF or a folder; one-level shelf folders; bind external folders; multi-select move/delete; search
+- **TXT reading**: custom virtual list for large files; left / center / right tap zones; encoding & Chinese conversion in the reader (not on the shelf)
+- **PDF reading**: pages, zoom, TOC, crop, selection/copy, TTS; optional per-page OCR for scanned PDFs (cached)
+- **Typography**: font size, line/paragraph spacing, themes, night mode
+- **TTS**: system engine, sentence highlight, rate, voice picker; next sentence pre-queued with `QUEUE_ADD`
+- **Text-to-speech page**: paste text → play or export audio
+- **OCR**: gallery/camera → local TFLite PP-OCR → overlay selection and full-text copy
+- **Gestures**: edge swipe for rate / font size (configurable)
+- **Orientation**: portrait / landscape / auto; immersive fullscreen
+- **Language**: app UI Chinese / English (Settings → App language)
+- **Other**: jump, TOC/bookmarks, idle exit, resume last book
 
-## 环境要求
+### Bookshelf
 
-| 项 | 说明 |
-|----|------|
-| 包名 | `com.whj.reader` |
-| 语言 | Kotlin |
-| minSdk | 24（Android 7.0+） |
+- **Import file**: TXT / PDF into the current shelf
+- **Import folder**: SAF; one-level scan; can create a same-named shelf at root
+- **Bind folder**: browse external tree without copying into the shelf
+- **New shelf**: root only (no nesting)
+- **Multi-select**: select all / move / remove (does not delete source files)
+- Long-press folder: rename / delete (books move to root)
+- Long-press book: move / remove from shelf  
+  > Set text encoding in the **reading screen** after opening a book (no encoding entry on the shelf)
+
+### TXT reading
+
+- Tap center: menu (chapter, style, prefs, jump, TOC/bookmarks, orientation, auto, night, TTS, …)
+- Toolbar encoding control: file encoding and simplified/traditional Chinese
+- Auto-detect UTF-8 / GBK / GB18030, etc., or set manually
+
+### PDF reading
+
+- Page render, pinch-zoom, TOC
+- Selectable text layer when present; TTS when text or OCR cache is available
+- Menu: crop margins; **OCR scanned PDF pages** (range, progress/cancel, on-disk cache)
+
+### TTS
+
+- Manifest declares `TTS_SERVICE` queries (required on Android 11+)
+- Sentence highlight, prev/next, pause/resume, voice, sleep timer
+- No sound: install a TTS engine and Chinese voice pack
+- Shelf ⋮ → **Text to speech**: paste text to play or export
+
+### OCR
+
+- Shelf ⋮ → **OCR**
+- Models under `app/src/main/assets/ocr/` (det / cls / rec + keys)
+- Drag-select on the image; full text below uses fling scrolling
+
+## Requirements
+
+| Item | Value |
+|------|--------|
+| Package | `com.whj.reader` |
+| App name | Text Reader |
+| Language | Kotlin |
+| minSdk | 24 (Android 7.0+) |
 | targetSdk / compileSdk | 34 |
-| 构建 | Gradle 8.4 + AGP 8.3.2 |
-| JDK | 17 |
+| Build | Gradle 8.4 + AGP 8.3.2 |
+| JDK | 17 (optional local `org.gradle.java.home`; do not commit machine paths) |
+| Paths | Keep `android.overridePathCheck=true` if the path is non-ASCII (already set) |
 
-详细本机路径与命令行说明见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+### Local setup (do not commit secrets)
 
-## 快速开始
+1. Create `local.properties` (gitignored):
+
+```properties
+sdk.dir=path/to/Android/Sdk
+```
+
+2. Pin JDK 17 via local `gradle.properties` / `JAVA_HOME` if needed.
+
+3. Put `adb` on PATH.
 
 ```powershell
-cd reader
+java -version
+adb devices
+```
 
-# 编译 Debug
+### Android Studio
+
+Open the project root (folder with `settings.gradle.kts`), Sync, Run debug. Prefer Gradle JDK 17. With `keystore.properties` + `release.keystore`, debug/release can share a keystore so reinstalls keep app data.
+
+## Quick start
+
+From `reader/`:
+
+```powershell
 .\gradlew.bat assembleDebug
+.\gradlew.bat assembleRelease
 
-# 安装到已连接设备
-adb install -r app\build\outputs\apk\debug\app-debug.apk
+node build.js release
+node build.js build --debug
+node build.js clean
+node build.js rebuild --debug
+node build.js run
+node build.js devices
+```
 
-# 启动
+APKs:
+
+```
+app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/release/
+```
+
+### Device
+
+```powershell
+node build.js run
+node build.js run -s YOUR_SERIAL
+
+.\gradlew.bat installDebug
 adb shell am start -n com.whj.reader/.MainActivity
 ```
 
-首次使用请在 `local.properties` 中配置 `sdk.dir`。
+```powershell
+adb logcat --pid=$(adb shell pidof -s com.whj.reader)
+adb uninstall com.whj.reader
+```
 
-## 项目结构
+## Project layout
 
 ```
 reader/
-├── app/src/main/
-│   ├── java/com/whj/reader/   # 业务代码
-│   │   ├── MainActivity       # 书架
-│   │   ├── ReadingActivity    # 阅读 + TTS
-│   │   ├── SettingsActivity   # 偏好
-│   │   ├── data/              # 加载、设置、书架
-│   │   ├── tts/               # 系统 TTS
-│   │   └── ui/                # VirtualReaderView 等
-│   ├── res/values/            # 中文文案（默认）
-│   ├── res/values-en/         # 英文文案
-│   └── assets/sample.txt      # 内置示例
-├── DEVELOPMENT.md
+├── app/
+│   ├── build.gradle.kts
+│   └── src/main/
+│       ├── AndroidManifest.xml
+│       ├── assets/ocr/              # TFLite OCR models + dict
+│       ├── java/com/whj/reader/
+│       │   ├── MainActivity.kt          # bookshelf
+│       │   ├── ReadingActivity.kt       # TXT + TTS
+│       │   ├── PdfReadingActivity.kt    # PDF / OCR / TTS
+│       │   ├── OcrActivity.kt
+│       │   ├── TtsSynthActivity.kt
+│       │   ├── data/
+│       │   ├── ocr/
+│       │   ├── tts/
+│       │   └── ui/
+│       └── res/
+│           ├── values/                  # Chinese (default)
+│           └── values-en/
+├── gradle/wrapper/
+├── build.gradle.kts
+├── settings.gradle.kts
+├── gradle.properties
+├── local.properties                     # local SDK, do not commit
+├── keystore.properties.example
+├── build.js
 ├── README.md
-└── README_EN.md
+└── README.zh.md
 ```
 
-## 界面语言
+## Language
 
-1. 打开 **偏好 / 设置**
-2. 点 **界面语言**
-3. 选择 **中文** 或 **English**
+Settings → **App language** → 中文 / English.
 
-语言偏好会持久保存，下次启动自动应用。
+## FAQ
 
-## 许可与说明
+### TTS silent
 
-个人/学习用途原型项目。使用系统 TTS 时需设备已安装对应语音引擎与语音包。
+Install a system TTS engine and a Chinese voice pack; check volume.
+
+### Garbled Chinese TXT
+
+Auto-detect UTF-8 / GB18030 / GBK / Big5, or set encoding in the reader. Re-save as UTF-8 if needed.
+
+### Scanned PDF has no selectable text
+
+Use **OCR scanned PDF pages** in the PDF menu; results are cached.
+
+### SDK / JDK missing
+
+Check `sdk.dir` and JDK 17 / `JAVA_HOME`.
+
+## Notes
+
+Prototype for personal/learning use. System TTS needs an engine and voice pack; OCR runs fully on-device.

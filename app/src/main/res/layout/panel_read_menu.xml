@@ -3,9 +3,13 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="#F2F0E8"
-    android:elevation="10dp"
+    android:clickable="true"
+    android:elevation="12dp"
+    android:focusable="true"
+    android:minHeight="120dp"
     android:orientation="vertical"
-    android:paddingBottom="12dp">
+    android:paddingTop="4dp"
+    android:paddingBottom="16dp">
 
     <!-- 上一章 / 下一章 -->
     <LinearLayout
@@ -157,4 +161,5 @@
                 android:text="@string/menu_read" />
         </LinearLayout>
     </LinearLayout>
+
 </LinearLayout>

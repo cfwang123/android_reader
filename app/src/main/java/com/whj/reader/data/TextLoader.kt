@@ -7,7 +7,11 @@ import com.whj.reader.model.Paragraph
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.util.regex.Pattern
 
 data class LoadedBook(
@@ -29,25 +33,47 @@ object TextLoader {
         Pattern.compile("^\\s*[一二三四五六七八九十百千]+[、\\.．].{1,40}$"),
     )
 
-    fun loadFromUri(context: Context, uri: Uri, displayName: String? = null): LoadedBook {
+    /**
+     * @param preferredEncoding 指定编码（如 UTF-8 / GBK）；null 或空则自动判断
+     */
+    fun loadFromUri(
+        context: Context,
+        uri: Uri,
+        displayName: String? = null,
+        preferredEncoding: String? = null,
+        chineseMode: ChineseConvert.Mode = ChineseConvert.Mode.OFF,
+    ): LoadedBook {
         val bytes = context.contentResolver.openInputStream(uri)?.use { readAll(it) }
             ?: error("无法打开文件")
-        val (text, encoding) = decodeBytes(bytes)
+        val (text, encoding) = decodeBytes(bytes, preferredEncoding)
         val title = displayName
             ?: queryDisplayName(context, uri)
             ?: uri.lastPathSegment
             ?: context.getString(com.whj.reader.R.string.unnamed)
-        return parseBook(text, title, encoding, uri.toString())
+        return parseBook(text, title, encoding, uri.toString(), chineseMode)
     }
 
-    fun loadFromAssets(context: Context, assetPath: String, title: String): LoadedBook {
+    fun loadFromAssets(
+        context: Context,
+        assetPath: String,
+        title: String,
+        preferredEncoding: String? = null,
+        chineseMode: ChineseConvert.Mode = ChineseConvert.Mode.OFF,
+    ): LoadedBook {
         val bytes = context.assets.open(assetPath).use { readAll(it) }
-        val (text, encoding) = decodeBytes(bytes)
-        return parseBook(text, title, encoding, "asset://$assetPath")
+        val (text, encoding) = decodeBytes(bytes, preferredEncoding)
+        return parseBook(text, title, encoding, "asset://$assetPath", chineseMode)
     }
 
-    fun parseBook(text: String, title: String, encoding: String, uri: String): LoadedBook {
-        val rawParas = text
+    fun parseBook(
+        text: String,
+        title: String,
+        encoding: String,
+        uri: String,
+        chineseMode: ChineseConvert.Mode = ChineseConvert.Mode.OFF,
+    ): LoadedBook {
+        val body = ChineseConvert.apply(text, chineseMode)
+        val rawParas = body
             .replace("\r\n", "\n")
             .replace('\r', '\n')
             .split("\n")
@@ -103,18 +129,15 @@ object TextLoader {
                 isChapter = isChapterTitle(p),
             )
         }
+        // 仅用识别出的章节标题作目录；识别失败则为空（界面显示「无目录」），
+        // 勿把正文/TTS 分段伪造成目录
         val chapters = paragraphs
             .filter { it.isChapter }
-            .map { Chapter(title = it.text.lineSequence().first().take(60), paragraphIndex = it.index) }
-            .ifEmpty {
-                // 无章节时，用每隔若干段生成简易目录
-                paragraphs.filterIndexed { i, _ -> i % 30 == 0 }.map {
-                    Chapter(
-                        title = it.text.take(40).replace('\n', ' ') +
-                            if (it.text.length > 40) "…" else "",
-                        paragraphIndex = it.index,
-                    )
-                }
+            .map {
+                Chapter(
+                    title = it.text.lineSequence().first().take(60),
+                    paragraphIndex = it.index,
+                )
             }
 
         return LoadedBook(
@@ -212,8 +235,26 @@ object TextLoader {
         return out.toByteArray()
     }
 
-    private fun decodeBytes(bytes: ByteArray): Pair<String, String> {
+    /**
+     * 自动判断顺序：
+     * 1. 用户指定编码
+     * 2. BOM（UTF-8 / UTF-16）
+     * 3. **字节是否为合法 UTF-8** → 是则直接 UTF-8（避免日文假名/汉字 UTF-8 被 GBK 误解）
+     * 4. 否则在 GB18030 / GBK / Big5 等间按文本评分选优
+     */
+    private fun decodeBytes(
+        bytes: ByteArray,
+        preferredEncoding: String? = null,
+    ): Pair<String, String> {
         if (bytes.isEmpty()) return "" to "UTF-8"
+
+        val forced = preferredEncoding?.trim().orEmpty()
+        if (forced.isNotEmpty() &&
+            !forced.equals("auto", ignoreCase = true)
+        ) {
+            return decodeWithCharset(bytes, forced)
+        }
+
         // BOM
         if (bytes.size >= 3 &&
             bytes[0] == 0xEF.toByte() &&
@@ -229,7 +270,13 @@ object TextLoader {
             return String(bytes, Charset.forName("UTF-16BE")) to "UTF-16BE"
         }
 
-        val candidates = listOf("UTF-8", "GB18030", "GBK", "Big5")
+        // 合法 UTF-8 优先（日文/中文无 BOM 的 UTF-8 常被 GBK 误判）
+        if (isStrictUtf8(bytes)) {
+            return String(bytes, Charsets.UTF_8) to "UTF-8"
+        }
+
+        // 非合法 UTF-8：再在中文编码间比分
+        val candidates = listOf("GB18030", "GBK", "Big5", "UTF-8")
         var best: Pair<String, String>? = null
         var bestScore = Int.MIN_VALUE
         for (name in candidates) {
@@ -244,29 +291,88 @@ object TextLoader {
         return best ?: (String(bytes, Charsets.UTF_8) to "UTF-8")
     }
 
+    /** 严格 UTF-8：遇非法序列则失败（不用 REPLACE） */
+    private fun isStrictUtf8(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return true
+        return try {
+            val decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+            decoder.decode(ByteBuffer.wrap(bytes))
+            true
+        } catch (_: CharacterCodingException) {
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun decodeWithCharset(bytes: ByteArray, name: String): Pair<String, String> {
+        return try {
+            val cs = Charset.forName(name)
+            // 跳过 UTF-8 BOM
+            if (name.equals("UTF-8", ignoreCase = true) &&
+                bytes.size >= 3 &&
+                bytes[0] == 0xEF.toByte() &&
+                bytes[1] == 0xBB.toByte() &&
+                bytes[2] == 0xBF.toByte()
+            ) {
+                String(bytes, 3, bytes.size - 3, cs) to name
+            } else {
+                String(bytes, cs) to name
+            }
+        } catch (_: Exception) {
+            decodeBytes(bytes, preferredEncoding = null)
+        }
+    }
+
+    /**
+     * 文本启发式评分（仅用于非合法 UTF-8 时的候选比较）。
+     * 会计入汉字、日文假名、韩文；并惩罚替换字符与控制符。
+     */
     private fun scoreText(text: String, encoding: String): Int {
         var score = 0
         var replacement = 0
         var cjk = 0
+        var kana = 0
+        var hangul = 0
         var printable = 0
         val sample = text.take(8000)
         for (ch in sample) {
+            val cp = ch.code
             when {
                 ch == '\uFFFD' -> replacement++
-                ch.code in 0x4E00..0x9FFF -> {
+                // 汉字
+                cp in 0x4E00..0x9FFF || cp in 0x3400..0x4DBF -> {
                     cjk++
                     printable++
                 }
-                ch.isLetterOrDigit() || ch.isWhitespace() || "，。！？、；：\"\"''（）【】《》—…·,.!?;:'\"()-[]{}".contains(ch) ->
+                // 日文平假名 / 片假名 / 半角片假名
+                cp in 0x3040..0x309F || cp in 0x30A0..0x30FF || cp in 0xFF66..0xFF9D -> {
+                    kana++
                     printable++
-                ch.code < 32 && ch != '\n' && ch != '\r' && ch != '\t' -> score -= 3
+                }
+                // 韩文
+                cp in 0xAC00..0xD7AF -> {
+                    hangul++
+                    printable++
+                }
+                ch.isLetterOrDigit() || ch.isWhitespace() ||
+                    "，。！？、；：\"\"''（）【】《》—…·「」『』,.!?;:'\"()-[]{}".contains(ch) ->
+                    printable++
+                cp < 32 && ch != '\n' && ch != '\r' && ch != '\t' -> score -= 5
+                // GB 误解 UTF-8 时常见的怪异符号区
+                cp in 0xE000..0xF8FF -> score -= 2
             }
         }
         score += printable
         score += cjk * 2
-        score -= replacement * 20
-        if (encoding == "UTF-8") score += 5
-        if (encoding.startsWith("GB") && cjk > 20) score += 10
+        score += kana * 3
+        score += hangul * 3
+        score -= replacement * 40
+        // 假名很多时不应偏向 GB（GB 下假名很少，若误解多是乱码汉字）
+        if (kana > 10 && encoding.startsWith("GB")) score -= 30
+        if (kana > 10 && encoding == "UTF-8") score += 20
         return score
     }
 
@@ -279,16 +385,127 @@ object TextLoader {
         }.getOrNull()
     }
 
+    /** 句在原文中的区间（end 为 exclusive），供 TTS 高亮 */
+    data class SentenceSpan(
+        val text: String,
+        val start: Int,
+        val end: Int,
+    )
+
     /**
-     * 按句号（及问号/感叹号）切分，供 TTS 逐句朗读。
-     * 不以分号、省略号等切分，避免过碎。
+     * 换行如何参与 TTS 分句。
+     * - [NEWLINE]：TXT — 单个换行即句尾
+     * - [NONE]：仅标点断句（PDF 用；双倍/大行距不能当句尾）
      */
-    fun splitSentences(paragraph: String): List<String> {
-        val text = paragraph.trim()
-        if (text.isEmpty()) return emptyList()
-        val parts = text.split(Regex("(?<=[。！？!?])"))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        return if (parts.isEmpty()) listOf(text) else parts
+    enum class SentenceLineBreakMode {
+        NEWLINE,
+        NONE,
+    }
+
+    /**
+     * 按句末标点切分，保留原文偏移。
+     * - 中文主断句：。！？；… 及 ．
+     * - 英文：. ! ?（. 仅在后接空白/结尾时切，避免 3.14）
+     * - 换行规则见 [SentenceLineBreakMode]
+     * - 「…？」类：问号/叹号后若紧跟闭引号，断在引号后
+     */
+    fun splitSentenceSpans(
+        paragraph: String,
+        lineBreakMode: SentenceLineBreakMode = SentenceLineBreakMode.NEWLINE,
+    ): List<SentenceSpan> {
+        if (paragraph.isEmpty()) return emptyList()
+        val text = paragraph.replace("\r\n", "\n").replace('\r', '\n')
+        val spans = ArrayList<SentenceSpan>(8)
+        var start = 0
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            if (c == '\n') {
+                when (lineBreakMode) {
+                    SentenceLineBreakMode.NEWLINE -> {
+                        addTrimmedSpan(spans, text, start, i)
+                        // 跳过连续换行
+                        var j = i + 1
+                        while (j < text.length && text[j] == '\n') j++
+                        start = j
+                        i = j
+                        continue
+                    }
+                    SentenceLineBreakMode.NONE -> {
+                        // 换行不断句（PDF 常有大行距/双倍行距）
+                        i++
+                        continue
+                    }
+                }
+            }
+            var endAt = -1
+            when (c) {
+                '。', '！', '？', '．', '；' -> endAt = i + 1
+                '…' -> {
+                    // …… 连续省略号
+                    var j = i
+                    while (j < text.length && (text[j] == '…' || text[j] == '.')) j++
+                    endAt = j
+                }
+                '!', '?' -> endAt = i + 1
+                '.' -> {
+                    val next = text.getOrNull(i + 1)
+                    if (next == null || next.isWhitespace() || next == '\n' ||
+                        next == '"' || next == '\u201D' || next == '」' || next == '』'
+                    ) {
+                        endAt = i + 1
+                    }
+                }
+            }
+            if (endAt > 0) {
+                // 句末后紧跟闭引号一并吃进本句
+                while (endAt < text.length) {
+                    val n = text[endAt]
+                    if (n == '」' || n == '』' || n == '"' || n == '\u201D' || n == '\'') {
+                        endAt++
+                    } else {
+                        break
+                    }
+                }
+                addTrimmedSpan(spans, text, start, endAt)
+                start = endAt
+                i = endAt
+                continue
+            }
+            i++
+        }
+        if (start < text.length) {
+            addTrimmedSpan(spans, text, start, text.length)
+        }
+        if (spans.isEmpty()) {
+            val t = text.trim()
+            if (t.isNotEmpty()) {
+                val s = text.indexOf(t)
+                spans.add(SentenceSpan(t, s, s + t.length))
+            }
+        }
+        return spans
+    }
+
+    /** 仅文本列表（兼容旧调用） */
+    fun splitSentences(
+        paragraph: String,
+        lineBreakMode: SentenceLineBreakMode = SentenceLineBreakMode.NEWLINE,
+    ): List<String> =
+        splitSentenceSpans(paragraph, lineBreakMode).map { it.text }
+
+    private fun addTrimmedSpan(
+        out: MutableList<SentenceSpan>,
+        paragraph: String,
+        from: Int,
+        to: Int,
+    ) {
+        var a = from
+        var b = to
+        while (a < b && paragraph[a].isWhitespace()) a++
+        while (b > a && paragraph[b - 1].isWhitespace()) b--
+        if (a < b) {
+            out.add(SentenceSpan(paragraph.substring(a, b), a, b))
+        }
     }
 }
