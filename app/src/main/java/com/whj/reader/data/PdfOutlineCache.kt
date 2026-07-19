@@ -52,6 +52,19 @@ object PdfOutlineCache {
         saveDisk(context, key, st, roots)
     }
 
+    fun remove(context: Context, uri: Uri) {
+        val key = uri.toString()
+        memory.remove(key)
+        runCatching { cacheFile(context, key).delete() }
+            .onFailure { Log.w(TAG, "remove outline cache: ${it.message}") }
+    }
+
+    fun remove(context: Context, uriKey: String) {
+        if (uriKey.isBlank()) return
+        memory.remove(uriKey)
+        runCatching { cacheFile(context, uriKey).delete() }
+    }
+
     fun loadOrParse(context: Context, uri: Uri): List<PdfOutlineLoader.Node> {
         get(context, uri)?.let {
             Log.i(TAG, "outline cache hit ${uri.toString().takeLast(32)}")

@@ -1,186 +1,141 @@
-# Text Reader
+# Text Reader (whj.reader)
 
-A lightweight Android reader: bookshelf, TXT/PDF reading, system TTS, on-device OCR, and Chinese/English UI.
+A lightweight Android reader: bookshelf, TXT/PDF, system TTS, speech export (MP3/M4A/WAV), on-device OCR, Chinese/English UI.
 
 [中文](README.zh.md)
 
 ## Features
 
-- **Bookshelf**: import TXT/PDF or a folder; one-level shelf folders; bind external folders; multi-select move/delete; search
-- **TXT reading**: custom virtual list for large files; left / center / right tap zones; encoding & Chinese conversion in the reader (not on the shelf)
-- **PDF reading**: pages, zoom, TOC, crop, selection/copy, TTS; optional per-page OCR for scanned PDFs (cached)
-- **Typography**: font size, line/paragraph spacing, themes, night mode
-- **TTS**: system engine, sentence highlight, rate, voice picker; next sentence pre-queued with `QUEUE_ADD`
-- **Text-to-speech page**: paste text → play or export audio
-- **OCR**: gallery/camera → local TFLite PP-OCR → overlay selection and full-text copy
-- **Gestures**: edge swipe for rate / font size (configurable)
-- **Orientation**: portrait / landscape / auto; immersive fullscreen
-- **Language**: app UI Chinese / English (Settings → App language)
-- **Other**: jump, TOC/bookmarks, idle exit, resume last book
+- **Bookshelf**: import TXT/PDF or folders; one-level shelves; bind external trees; multi-select; search
+- **TXT**: virtual list, font presets, encoding/Chinese conversion, sentence TTS, range speech export
+- **PDF**: continuous/single page, zoom, crop, TOC (preloaded on open), in-doc links, TTS, scan OCR
+- **Speech export**: TXT by line range / PDF by page range; **MP3** (arm64 LAME) / **M4A** / **WAV** + bitrate
+- **OCR**: gallery/camera → TFLite PP-OCR → overlay + full text
+- **Orientation**: portrait / landscape / auto (menu icon follows mode); immersive fullscreen
+- **Language**: Settings → App language
 
 ### Bookshelf
 
-- **Import file**: TXT / PDF into the current shelf
-- **Import folder**: SAF; one-level scan; can create a same-named shelf at root
-- **Bind folder**: browse external tree without copying into the shelf
-- **New shelf**: root only (no nesting)
-- **Multi-select**: select all / move / remove (does not delete source files)
-- Long-press folder: rename / delete (books move to root)
-- Long-press book: move / remove from shelf  
-  > Set text encoding in the **reading screen** after opening a book (no encoding entry on the shelf)
+- Import TXT/PDF; import folder; bind folder (browse only)
+- Multi-select: move / remove (does not delete source files)
+- Encoding is set on the **TXT reading screen**, not the shelf
 
 ### TXT reading
 
-- Tap center: menu (chapter, style, prefs, jump, TOC/bookmarks, orientation, auto, night, TTS, …)
-- Toolbar encoding control: file encoding and simplified/traditional Chinese
-- Auto-detect UTF-8 / GBK / GB18030, etc., or set manually
+- Center menu (two-page horizontal swipe): style, prefs, jump, TOC, orientation, fullscreen, night, read, **synthesize**
+- **Fonts**: default / sans / serif / mono (system typefaces)
+- **Paragraphs**: one newline = one unit; only real chapter titles (e.g. “第X章”) are bold — not “一、二、三、” list lines
+- **TTS**: sentence highlight; `QUEUE_ADD` prequeue; back key stops TTS without leaving the book
+- **Export**: default full text; optional start/end lines; auto-append “。” if a line lacks sentence punctuation
 
 ### PDF reading
 
-- Page render, pinch-zoom, TOC
-- Selectable text layer when present; TTS when text or OCR cache is available
-- Menu: crop margins; **OCR scanned PDF pages** (range, progress/cancel, on-disk cache)
+- Continuous or single-page; pinch-zoom; margin crop
+- **TOC**: preloaded into memory when the PDF opens (plus disk cache)
+- **Links**: tap GoTo links to jump; external URI with confirm; toolbar **history back/forward**
+- Text selection when a text layer exists; **OCR scanned pages** (range, cancelable, on-disk cache)
+- **Export speech** by **page range** (default current→last; “all pages”); OCR first if no text
+- Menu prev/next page keeps the bottom menu open; orientation icon has 3 states
 
-### TTS
+### TTS & export
 
-- Manifest declares `TTS_SERVICE` queries (required on Android 11+)
-- Sentence highlight, prev/next, pause/resume, voice, sleep timer
-- No sound: install a TTS engine and Chinese voice pack
-- Shelf ⋮ → **Text to speech**: paste text to play or export
+| Item | Detail |
+|------|--------|
+| System TTS | Engine / language / voice, rate, highlight, sleep timer |
+| Continuity | Prequeue next sentence with `QUEUE_ADD` |
+| Export pipeline | Chunked `synthesizeToFile` → merge WAV → MP3 or M4A |
+| MP3 | LAME **arm64-only** native lib; fallback M4A then WAV |
+| Bitrate | 32–192 kbps for MP3/M4A |
+| Standalone | Shelf ⋮ → Text to speech |
 
 ### OCR
 
-- Shelf ⋮ → **OCR**
-- Models under `app/src/main/assets/ocr/` (det / cls / rec + keys)
-- Drag-select on the image; full text below uses fling scrolling
+- Shelf ⋮ → OCR
+- Models: `app/src/main/assets/ocr/`
+- Overlay selection; fling scrolling for full text
 
 ## Requirements
 
 | Item | Value |
 |------|--------|
 | Package | `com.whj.reader` |
-| App name | Text Reader |
+| Version | 1.0.1 (`app/build.gradle.kts`) |
 | Language | Kotlin |
-| minSdk | 24 (Android 7.0+) |
+| minSdk | 24 |
 | targetSdk / compileSdk | 34 |
 | Build | Gradle 8.4 + AGP 8.3.2 |
-| JDK | 17 (optional local `org.gradle.java.home`; do not commit machine paths) |
-| Paths | Keep `android.overridePathCheck=true` if the path is non-ASCII (already set) |
+| JDK | 17 |
 
-### Local setup (do not commit secrets)
+### Local setup
 
-1. Create `local.properties` (gitignored):
-
-```properties
-sdk.dir=path/to/Android/Sdk
-```
-
-2. Pin JDK 17 via local `gradle.properties` / `JAVA_HOME` if needed.
-
-3. Put `adb` on PATH.
-
-```powershell
-java -version
-adb devices
-```
-
-### Android Studio
-
-Open the project root (folder with `settings.gradle.kts`), Sync, Run debug. Prefer Gradle JDK 17. With `keystore.properties` + `release.keystore`, debug/release can share a keystore so reinstalls keep app data.
+1. `local.properties` with `sdk.dir=...` (gitignored)
+2. JDK 17
+3. `adb` on PATH
 
 ## Quick start
 
-From `reader/`:
-
 ```powershell
+cd reader
 .\gradlew.bat assembleDebug
-.\gradlew.bat assembleRelease
-
-node build.js release
-node build.js build --debug
-node build.js clean
-node build.js rebuild --debug
 node build.js run
 node build.js devices
+node build.js release
 ```
-
-APKs:
 
 ```
 app/build/outputs/apk/debug/app-debug.apk
-app/build/outputs/apk/release/
-```
-
-### Device
-
-```powershell
-node build.js run
-node build.js run -s YOUR_SERIAL
-
-.\gradlew.bat installDebug
-adb shell am start -n com.whj.reader/.MainActivity
-```
-
-```powershell
-adb logcat --pid=$(adb shell pidof -s com.whj.reader)
-adb uninstall com.whj.reader
+app/build/outputs/apk/release/reader1.0.1.apk
 ```
 
 ## Project layout
 
 ```
 reader/
-├── app/
-│   ├── build.gradle.kts
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── assets/ocr/              # TFLite OCR models + dict
-│       ├── java/com/whj/reader/
-│       │   ├── MainActivity.kt          # bookshelf
-│       │   ├── ReadingActivity.kt       # TXT + TTS
-│       │   ├── PdfReadingActivity.kt    # PDF / OCR / TTS
-│       │   ├── OcrActivity.kt
-│       │   ├── TtsSynthActivity.kt
-│       │   ├── data/
-│       │   ├── ocr/
-│       │   ├── tts/
-│       │   └── ui/
-│       └── res/
-│           ├── values/                  # Chinese (default)
-│           └── values-en/
-├── gradle/wrapper/
-├── build.gradle.kts
-├── settings.gradle.kts
-├── gradle.properties
-├── local.properties                     # local SDK, do not commit
-├── keystore.properties.example
+├── app/src/main/
+│   ├── assets/ocr/
+│   ├── java/com/whj/reader/
+│   │   ├── MainActivity.kt
+│   │   ├── ReadingActivity.kt      # TXT + TTS + export
+│   │   ├── PdfReadingActivity.kt   # PDF + links + OCR + page export
+│   │   ├── OcrActivity.kt
+│   │   ├── TtsSynthActivity.kt
+│   │   ├── data/
+│   │   ├── ocr/
+│   │   ├── tts/                    # manager, export, wav/aac/mp3
+│   │   └── ui/
+│   └── res/
 ├── build.js
+├── keystore.properties.example
 ├── README.md
 └── README.zh.md
 ```
 
-## Language
+## APK size (approx.)
 
-Settings → **App language** → 中文 / English.
+Largest parts: TFLite natives (multi-ABI) + OCR models; then PDFBox; LAME arm64 is ~0.2 MB. The rest is app DEX/UI.
 
 ## FAQ
 
-### TTS silent
+### No TTS audio
 
 Install a system TTS engine and a Chinese voice pack; check volume.
 
-### Garbled Chinese TXT
+### Garbled TXT
 
-Auto-detect UTF-8 / GB18030 / GBK / Big5, or set encoding in the reader. Re-save as UTF-8 if needed.
+Auto-detect or set encoding in the reader.
 
-### Scanned PDF has no selectable text
+### Scanned PDF has no text
 
-Use **OCR scanned PDF pages** in the PDF menu; results are cached.
+Use **OCR scanned PDF pages**; export/read need a text layer or OCR cache.
 
-### SDK / JDK missing
+### MP3 unavailable
 
-Check `sdk.dir` and JDK 17 / `JAVA_HOME`.
+Only **arm64-v8a** ships LAME; x86/emulators fall back to M4A.
+
+### Links do nothing
+
+Need real PDF link annotations; pure-text TOC entries use the TOC panel.
 
 ## Notes
 
-Prototype for personal/learning use. System TTS needs an engine and voice pack; OCR runs fully on-device.
+Personal/learning prototype. TTS uses the system engine; OCR is fully on-device. LAME is third-party — check license compliance if you redistribute.

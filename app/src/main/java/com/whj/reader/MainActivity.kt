@@ -1490,11 +1490,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmDeleteBook(book: ShelfBook) {
+        val isHistory = ReadingHistoryStore.isHistoryBookId(book.id) ||
+            ReadingHistoryStore.isHistoryFolderId(book.folderId) ||
+            isInsideHistory()
         AlertDialog.Builder(this)
             .setTitle(R.string.delete_book)
             .setMessage(R.string.delete_book_msg)
             .setPositiveButton(R.string.delete) { _, _ ->
-                BookshelfStore.removeBook(this, book.id)
+                if (isHistory) {
+                    // 删除阅读记录 + PDF OCR/目录等缓存
+                    ReadingHistoryStore.removeRecord(this, book.uri)
+                } else {
+                    BookshelfStore.removeBook(this, book.id)
+                }
                 refreshShelf()
             }
             .setNegativeButton(R.string.cancel, null)
@@ -1567,7 +1575,25 @@ class MainActivity : AppCompatActivity() {
             .setTitle(R.string.batch_delete_books_title)
             .setMessage(getString(R.string.batch_delete_books_msg, books.size))
             .setPositiveButton(R.string.delete) { _, _ ->
-                BookshelfStore.removeBooks(this, books.map { it.id }.toSet())
+                val historyUris = books
+                    .filter {
+                        ReadingHistoryStore.isHistoryBookId(it.id) ||
+                            ReadingHistoryStore.isHistoryFolderId(it.folderId)
+                    }
+                    .map { it.uri }
+                val shelfIds = books
+                    .filterNot {
+                        ReadingHistoryStore.isHistoryBookId(it.id) ||
+                            ReadingHistoryStore.isHistoryFolderId(it.folderId)
+                    }
+                    .map { it.id }
+                    .toSet()
+                if (historyUris.isNotEmpty()) {
+                    ReadingHistoryStore.removeRecords(this, historyUris)
+                }
+                if (shelfIds.isNotEmpty()) {
+                    BookshelfStore.removeBooks(this, shelfIds)
+                }
                 Toasts.show(this, getString(R.string.batch_removed, books.size))
                 exitSelectionMode()
                 refreshShelf()

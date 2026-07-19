@@ -71,6 +71,22 @@ android {
     androidResources {
         noCompress += "tflite"
     }
+
+    // MP3（LAME）仅打包 arm64-v8a，其它 ABI 不带 native，运行时回退 M4A
+    packaging {
+        jniLibs {
+            excludes += listOf(
+                "lib/armeabi/libandroidlame.so",
+                "lib/armeabi-v7a/libandroidlame.so",
+                "lib/x86/libandroidlame.so",
+                "lib/x86_64/libandroidlame.so",
+                "lib/armeabi/libmp3lame.so",
+                "lib/armeabi-v7a/libmp3lame.so",
+                "lib/x86/libmp3lame.so",
+                "lib/x86_64/libmp3lame.so",
+            )
+        }
+    }
 }
 
 // release 输出：reader1.0.1.apk
@@ -103,4 +119,9 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-gpu-api:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    // MP3 编码（LAME 封装，仅 arm64 so 打入包，见 packaging.excludes）
+    // 排除旧 support 库，避免与 AndroidX 冲突
+    implementation("com.github.naman14:TAndroidLame:1.1") {
+        exclude(group = "com.android.support")
+    }
 }

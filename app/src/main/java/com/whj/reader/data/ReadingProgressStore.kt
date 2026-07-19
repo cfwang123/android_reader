@@ -51,6 +51,11 @@ object ReadingProgressStore {
         }.getOrNull()
     }
 
+    fun remove(ctx: Context, uri: String) {
+        if (uri.isBlank()) return
+        prefs(ctx).edit().remove(key(uri)).apply()
+    }
+
     fun saveTxt(ctx: Context, uri: String, paragraphIndex: Int, totalParagraphs: Int) {
         if (uri.isBlank()) return
         write(

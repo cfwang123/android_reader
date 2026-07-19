@@ -27,11 +27,14 @@ import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.ImageView
 import android.widget.SeekBar
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -39,6 +42,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.whj.reader.data.AppSettings
 import com.whj.reader.data.BookFileType
 import com.whj.reader.data.BookshelfStore
+import com.whj.reader.data.PdfLinkIndex
 import com.whj.reader.data.PdfOcrCacheStore
 import com.whj.reader.data.PdfOcrConverter
 import com.whj.reader.data.PdfTextExtractor
@@ -46,11 +50,14 @@ import com.whj.reader.R
 import com.whj.reader.databinding.ActivityPdfReadingBinding
 import com.whj.reader.databinding.DialogPdfOcrBinding
 import com.whj.reader.databinding.PanelPdfSettingsBinding
+import com.whj.reader.databinding.PanelPdfTtsExportBinding
 import com.whj.reader.databinding.PanelReadMenuBinding
 import com.whj.reader.model.OrientationMode
 import com.whj.reader.model.Paragraph
 import com.whj.reader.model.PdfPageMode
 import com.whj.reader.ocr.TfliteOcrEngine
+import com.whj.reader.tts.Mp3Encoder
+import com.whj.reader.tts.TtsExportHelper
 import com.whj.reader.tts.TtsManager
 import com.whj.reader.ui.PdfPageAdapter
 import com.whj.reader.util.KeepScreenController
@@ -59,6 +66,7 @@ import com.whj.reader.util.OrientationHelper
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
 import com.whj.reader.util.TtsVoicePicker
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -92,18 +100,31 @@ class PdfReadingActivity : AppCompatActivity() {
     private lateinit var binding: ActivityPdfReadingBinding
     private lateinit var readMenu: PanelReadMenuBinding
     private lateinit var pdfSettings: PanelPdfSettingsBinding
+    private lateinit var exportPanel: PanelPdfTtsExportBinding
+    private var ttsExport: TtsExportHelper? = null
 
     private var fileKey: String = ""
     private var displayTitle: String = ""
     private var pageCount: Int = 0
     private var pageIndex: Int = 0
     private var chromeVisible = false
+    /** 合成语音面板 */
+    private var exportPanelOpen = false
+    /** 书内链接：page → links；后台加载 */
+    private var pageLinks: Map<Int, List<PdfLinkIndex.Link>> = emptyMap()
+    /** 目录大纲（打开 PDF 后预加载到内存） */
+    private var outlineRoots: List<com.whj.reader.data.PdfOutlineLoader.Node>? = null
+    private var outlineLoading = false
+    /** 链接跳转历史（存离开前页码） */
+    private val navBackStack = ArrayDeque<Int>()
+    private val navForwardStack = ArrayDeque<Int>()
     private var allowProgressSave = false
     private var immersive = false
     /** 打开菜单的时间，避免布局变化触发 onScrolled 立刻关菜单 */
     private var chromeShownAtMs = 0L
     private var pageMode: PdfPageMode = PdfPageMode.CONTINUOUS
     private var night = false
+    private val exportBitrateOptions = intArrayOf(32, 48, 64, 96, 128, 160, 192)
     /** 四边切边比例 L,T,R,B 各 0~0.30 */
     private var cropL = 0f
     private var cropT = 0f
@@ -265,8 +286,12 @@ class PdfReadingActivity : AppCompatActivity() {
         setContentView(binding.root)
         // 菜单：inflate 到 host（attach 后预测量，避免首次 GONE→VISIBLE 空白）
         readMenu = PanelReadMenuBinding.inflate(layoutInflater, binding.readMenuHost, true)
+        exportPanel = PanelPdfTtsExportBinding.inflate(layoutInflater, binding.ttsExportHost, true)
         pdfSettings = binding.pdfSettingsPanel
         premeasureReadMenu()
+        setupMenuPager()
+        setupPdfExportPanel()
+        setupBackPress()
 
         pageMode = AppSettings.pdfPageMode(this)
         night = AppSettings.pdfNight(this)
@@ -287,6 +312,8 @@ class PdfReadingActivity : AppCompatActivity() {
         tts.init()
 
         binding.btnBack.setOnClickListener { finish() }
+        binding.btnHistBack.setOnClickListener { navigateHistoryBack() }
+        binding.btnHistForward.setOnClickListener { navigateHistoryForward() }
         binding.btnBookmark.setOnClickListener { togglePdfBookmark() }
         binding.btnMore.setOnClickListener { v -> showPdfMoreMenu(v) }
         binding.topBar.setOnClickListener { }
@@ -300,6 +327,7 @@ class PdfReadingActivity : AppCompatActivity() {
         hideChrome()
         updateClock()
         applyPageModeUi()
+        updateHistNavButtons()
 
         loadPdf()
     }
@@ -343,6 +371,8 @@ class PdfReadingActivity : AppCompatActivity() {
         ocrJob = null
         pendingAfterExtract = null
         sleepTimer.cancel()
+        ttsExport?.shutdown()
+        ttsExport = null
         if (::tts.isInitialized) {
             tts.listener = null
             tts.shutdown()
@@ -483,6 +513,12 @@ class PdfReadingActivity : AppCompatActivity() {
                         ?.position ?: 0
                     pageIndex = maxOf(viewState.page, shelf, progressPage)
                         .coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                    navBackStack.clear()
+                    navForwardStack.clear()
+                    pageLinks = emptyMap()
+                    outlineRoots = null
+                    outlineLoading = false
+                    updateHistNavButtons()
 
                     // 仅更新已在书架上的书，不自动新增（绑定文件夹打开不进主书架）
                     BookshelfStore.updateIfExists(
@@ -517,6 +553,8 @@ class PdfReadingActivity : AppCompatActivity() {
                     }
                     // 打开后立即后台：PDFBox 进内存 + 当前页附近文字缓存，之后按需预取
                     startNearbyTextExtraction(uri)
+                    // 后台加载书内链接
+                    loadPdfLinksAsync(uri)
                 } catch (e: Exception) {
                     binding.tvLoading.isVisible = false
                     setPdfContentHidden(false)
@@ -634,6 +672,9 @@ class PdfReadingActivity : AppCompatActivity() {
         pageChars = emptyMap()
         paraLinks = emptyList()
         ttsParagraphs = emptyList()
+        pageLinks = emptyMap()
+        outlineRoots = null
+        outlineLoading = false
         singleBitmap?.recycle()
         singleBitmap = null
     }
@@ -664,6 +705,8 @@ class PdfReadingActivity : AppCompatActivity() {
                     android.util.Log.w("PdfReading", "nearby extract: openSession failed")
                     return@launch
                 }
+                // 会话就绪后立刻预加载目录到内存（不挡首屏）
+                preloadOutlineAsync(uri)
                 val extracted = withContext(Dispatchers.IO) {
                     runCatching {
                         PdfTextExtractor.extractPagesRaw(
@@ -865,11 +908,11 @@ class PdfReadingActivity : AppCompatActivity() {
             if (chromeVisible) hideChrome()
             pageTurn(forward = forward)
         }
-        // 中部轻点：菜单 / 关面板（可有双击延迟）
-        zoomLayout.onSingleTap = { x, _ ->
+        // 中部轻点：优先书内链接 → 菜单 / 关面板
+        zoomLayout.onSingleTap = { x, y ->
             if (binding.settingsPanelContainer.isVisible) {
                 binding.settingsPanelContainer.isVisible = false
-            } else {
+            } else if (!tryHandlePdfLinkTap(x, y)) {
                 handleTap(x, zoomLayout.width.toFloat().coerceAtLeast(1f))
             }
         }
@@ -1186,9 +1229,12 @@ class PdfReadingActivity : AppCompatActivity() {
      * 连续模式：页高 > 屏高则滚 80% 屏高，否则滚一页实际高度。
      * 单页模式：仍按页切换。
      */
-    private fun pageTurn(forward: Boolean) {
-        if (chromeVisible) hideChrome()
-        if (binding.settingsPanelContainer.isVisible) {
+    /**
+     * @param closeMenu 为 false 时保持底部菜单（上一页/下一页按钮）
+     */
+    private fun pageTurn(forward: Boolean, closeMenu: Boolean = true) {
+        if (closeMenu && chromeVisible) hideChrome()
+        if (closeMenu && binding.settingsPanelContainer.isVisible) {
             binding.settingsPanelContainer.isVisible = false
         }
         if (pageMode == PdfPageMode.CONTINUOUS) {
@@ -1274,15 +1320,16 @@ class PdfReadingActivity : AppCompatActivity() {
         // 风格 → 排版
         (readMenu.menuStyle.getChildAt(1) as? android.widget.TextView)?.text =
             getString(R.string.menu_layout)
+        updateOrientMenuIcon()
         // 上一页 / 下一页
         readMenu.btnPrevChapter.text = getString(R.string.pdf_prev_page)
         readMenu.btnNextChapter.text = getString(R.string.pdf_next_page)
         // 上/下一页：翻页后保持菜单打开
         readMenu.btnPrevChapter.setOnClickListener {
-            pageTurn(false)
+            pageTurn(false, closeMenu = false)
         }
         readMenu.btnNextChapter.setOnClickListener {
-            pageTurn(true)
+            pageTurn(true, closeMenu = false)
         }
         readMenu.menuStyle.setOnClickListener {
             hideChrome()
@@ -1310,6 +1357,7 @@ class PdfReadingActivity : AppCompatActivity() {
             }
             AppSettings.setPdfOrientationMode(this, next)
             applyOrientationMode(next)
+            updateOrientMenuIcon()
             val label = when (next) {
                 OrientationMode.PORTRAIT -> getString(R.string.orient_portrait)
                 OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
@@ -1333,7 +1381,7 @@ class PdfReadingActivity : AppCompatActivity() {
             night = !night
             AppSettings.setPdfNight(this, night)
             applyNightUi()
-            // 刷新当前页滤镜
+            // 刷新当前页滤镜；不关底部菜单
             if (pageMode == PdfPageMode.SINGLE) {
                 applyNightFilter(binding.ivPdfPage)
             } else {
@@ -1343,6 +1391,365 @@ class PdfReadingActivity : AppCompatActivity() {
         readMenu.menuRead.setOnClickListener {
             hideChrome()
             startPdfTts()
+        }
+        readMenu.menuSynth.setOnClickListener {
+            openPdfExportPanel()
+        }
+    }
+
+    private fun updateOrientMenuIcon() {
+        if (!::readMenu.isInitialized) return
+        val mode = AppSettings.pdfOrientationMode(this)
+        val iv = readMenu.menuOrient.getChildAt(0) as? android.widget.ImageView ?: return
+        iv.setImageResource(OrientationHelper.menuIconRes(mode))
+        val label = when (mode) {
+            OrientationMode.PORTRAIT -> getString(R.string.orient_portrait)
+            OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
+            OrientationMode.AUTO -> getString(R.string.orient_auto)
+        }
+        (readMenu.menuOrient.getChildAt(1) as? android.widget.TextView)?.text = label
+    }
+
+    private fun setupMenuPager() {
+        val pager = readMenu.menuPager
+        pager.pageCount = 2
+        pager.onPageSettled = { page -> updateMenuPageDots(page) }
+        pager.setOnScrollChangeListener { _, _, _, _, _ -> updateMenuPageDots() }
+    }
+
+    private fun updateMenuPageDots(page: Int? = null) {
+        if (!::readMenu.isInitialized) return
+        val pager = readMenu.menuPager
+        val pageW = pager.width.coerceAtLeast(1)
+        val p = page ?: ((pager.scrollX + pageW / 2f) / pageW).toInt().coerceIn(0, 1)
+        readMenu.menuDot0.setBackgroundResource(
+            if (p == 0) R.drawable.bg_menu_dot_on else R.drawable.bg_menu_dot_off,
+        )
+        readMenu.menuDot1.setBackgroundResource(
+            if (p == 1) R.drawable.bg_menu_dot_on else R.drawable.bg_menu_dot_off,
+        )
+    }
+
+    private fun setupBackPress() {
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    val ttsActive = ::tts.isInitialized &&
+                        tts.currentState().state != TtsManager.State.IDLE
+                    when {
+                        exportPanelOpen -> closePdfExportPanel()
+                        binding.settingsPanelContainer.isVisible -> {
+                            binding.settingsPanelContainer.isVisible = false
+                        }
+                        ttsBarOpen || ttsActive -> {
+                            if (::tts.isInitialized) tts.stop()
+                            ttsBarOpen = false
+                            applyChromeVisibility()
+                        }
+                        chromeVisible -> hideChrome()
+                        else -> {
+                            isEnabled = false
+                            onBackPressedDispatcher.onBackPressed()
+                            isEnabled = true
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    private fun setupPdfExportPanel() {
+        exportPanel.btnExportClose.setOnClickListener { closePdfExportPanel() }
+        exportPanel.btnExportVoice.setOnClickListener {
+            TtsVoicePicker.show(this, tts) { refreshPdfExportVoiceLabel() }
+        }
+        exportPanel.btnPageAll.setOnClickListener { setPdfExportAllPages() }
+        exportPanel.btnStartExport.setOnClickListener { startPdfPageExport() }
+        exportPanel.btnCancelExport.setOnClickListener { ttsExport?.cancel() }
+        val labels = exportBitrateOptions.map {
+            getString(R.string.tts_export_bitrate_kbps, it)
+        }
+        exportPanel.spExportBitrate.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            labels,
+        )
+        val saved = AppSettings.ttsExportBitrateKbps(this)
+        val idx = exportBitrateOptions.indexOf(saved).takeIf { it >= 0 }
+            ?: exportBitrateOptions.indexOf(64).coerceAtLeast(0)
+        exportPanel.spExportBitrate.setSelection(idx)
+        val mp3Ok = Mp3Encoder.isAvailable()
+        exportPanel.rbFormatMp3.isEnabled = mp3Ok
+        if (mp3Ok) {
+            exportPanel.rbFormatMp3.isChecked = true
+        } else {
+            exportPanel.rbFormatMp3.alpha = 0.45f
+            exportPanel.rbFormatM4a.isChecked = true
+        }
+        exportPanel.rgExportFormat.setOnCheckedChangeListener { _, _ ->
+            refreshPdfExportBitrateEnabled()
+        }
+        fun onPageEdit() = updatePdfExportRangeLabel()
+        exportPanel.etPageFrom.setOnFocusChangeListener { _, has -> if (!has) onPageEdit() }
+        exportPanel.etPageTo.setOnFocusChangeListener { _, has -> if (!has) onPageEdit() }
+        refreshPdfExportVoiceLabel()
+        refreshPdfExportBitrateEnabled()
+    }
+
+    private fun openPdfExportPanel() {
+        if (::tts.isInitialized) tts.stop()
+        // 先关底部菜单/TTS 条，再打开合成面板（避免菜单与面板叠在一起）
+        chromeVisible = false
+        ttsBarOpen = false
+        exportPanelOpen = true
+        binding.readMenuHost.visibility = View.GONE
+        binding.ttsBar.isVisible = false
+        binding.topBar.isVisible = false
+        // 默认：当前页 ~ 全书末
+        val cur = (currentVisiblePage() + 1).coerceAtLeast(1)
+        val max = pageCount.coerceAtLeast(1)
+        exportPanel.etPageFrom.setText(cur.toString())
+        exportPanel.etPageTo.setText(max.toString())
+        updatePdfExportRangeLabel()
+        refreshPdfExportVoiceLabel()
+        setPdfExportProgressUi(active = false)
+        applyChromeVisibility()
+    }
+
+    private fun closePdfExportPanel() {
+        if (ttsExport?.isWorking() == true) ttsExport?.cancel()
+        exportPanelOpen = false
+        setPdfExportProgressUi(active = false)
+        applyChromeVisibility()
+    }
+
+    private fun setPdfExportAllPages() {
+        val max = pageCount.coerceAtLeast(1)
+        exportPanel.etPageFrom.setText("1")
+        exportPanel.etPageTo.setText(max.toString())
+        updatePdfExportRangeLabel()
+    }
+
+    private fun parsePdfExportRange(): Pair<Int, Int>? {
+        if (pageCount <= 0) return null
+        val from1 = exportPanel.etPageFrom.text?.toString()?.toIntOrNull() ?: return null
+        val to1 = exportPanel.etPageTo.text?.toString()?.toIntOrNull() ?: return null
+        var a = from1.coerceIn(1, pageCount)
+        var b = to1.coerceIn(1, pageCount)
+        if (a > b) {
+            val t = a; a = b; b = t
+        }
+        return (a - 1) to (b - 1)
+    }
+
+    private fun updatePdfExportRangeLabel() {
+        val range = parsePdfExportRange()
+        if (range == null) {
+            exportPanel.tvExportRange.text = getString(R.string.pdf_tts_export_invalid_pages, pageCount.coerceAtLeast(1))
+            return
+        }
+        val (from0, to0) = range
+        val n = to0 - from0 + 1
+        var chars = 0
+        for (p in from0..to0) {
+            chars += pageChars[p]?.count { !it.char.isWhitespace() }
+                ?: rawPageCache[p]?.count { !it.char.isWhitespace() }
+                ?: 0
+        }
+        exportPanel.tvExportRange.text = getString(
+            R.string.pdf_tts_export_range,
+            from0 + 1,
+            to0 + 1,
+            n,
+            chars,
+        )
+    }
+
+    private fun refreshPdfExportVoiceLabel() {
+        if (!::exportPanel.isInitialized || !::tts.isInitialized) return
+        exportPanel.tvExportVoice.text = tts.currentVoiceName()
+            ?: AppSettings.voiceName(this)
+            ?: getString(R.string.tts_voice)
+    }
+
+    private fun refreshPdfExportBitrateEnabled() {
+        if (!::exportPanel.isInitialized) return
+        val need = exportPanel.rbFormatMp3.isChecked || exportPanel.rbFormatM4a.isChecked
+        exportPanel.spExportBitrate.isEnabled = need
+        exportPanel.tvBitrateLabel.alpha = if (need) 1f else 0.4f
+        exportPanel.spExportBitrate.alpha = if (need) 1f else 0.4f
+    }
+
+    private fun selectedPdfExportBitrateKbps(): Int {
+        val pos = exportPanel.spExportBitrate.selectedItemPosition
+        return exportBitrateOptions.getOrNull(pos)
+            ?: AppSettings.ttsExportBitrateKbps(this)
+    }
+
+    private fun startPdfPageExport() {
+        val range = parsePdfExportRange()
+        if (range == null) {
+            Toasts.show(this, getString(R.string.pdf_tts_export_invalid_pages, pageCount.coerceAtLeast(1)))
+            return
+        }
+        if (ttsExport?.isWorking() == true) return
+        val (from0, to0) = range
+        val pages = (from0..to0).toList()
+        exportPanel.tvExportProgress.isVisible = true
+        exportPanel.tvExportProgress.text = getString(R.string.pdf_tts_export_extracting)
+        ensurePagesExtracted(
+            pages = pages,
+            showToast = false,
+            preserveTtsPosition = true,
+        ) { _ ->
+            if (isFinishing || isDestroyed) return@ensurePagesExtracted
+            val text = buildExportTextForPages(from0, to0)
+            if (text.isBlank()) {
+                setPdfExportProgressUi(active = false)
+                Toasts.show(this, R.string.pdf_tts_export_no_text)
+                return@ensurePagesExtracted
+            }
+            var format = when {
+                exportPanel.rbFormatWav.isChecked -> TtsExportHelper.Format.WAV
+                exportPanel.rbFormatMp3.isChecked -> TtsExportHelper.Format.MP3
+                else -> TtsExportHelper.Format.M4A
+            }
+            if (format == TtsExportHelper.Format.MP3 && !Mp3Encoder.isAvailable()) {
+                format = TtsExportHelper.Format.M4A
+                exportPanel.rbFormatM4a.isChecked = true
+                Toasts.show(this, R.string.tts_export_mp3_unsupported)
+            }
+            val kbps = selectedPdfExportBitrateKbps()
+            AppSettings.setTtsExportBitrateKbps(this, kbps)
+            val helper = TtsExportHelper(this).also { ttsExport = it }
+            setPdfExportProgressUi(active = true, done = 0, total = 1)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            helper.export(
+                text = text,
+                format = format,
+                filePrefix = "pdf",
+                bitRateKbps = kbps,
+                listener = object : TtsExportHelper.Listener {
+                    override fun onProgress(done: Int, total: Int, phase: String) {
+                        if (isFinishing || isDestroyed) return
+                        val label = when (phase) {
+                            "encode" -> getString(R.string.tts_export_encoding)
+                            "merge" -> getString(R.string.tts_export_progress, total, total)
+                            else -> getString(
+                                R.string.tts_export_progress,
+                                done.coerceAtMost(total),
+                                total,
+                            )
+                        }
+                        setPdfExportProgressUi(true, done, total.coerceAtLeast(1), label)
+                    }
+
+                    override fun onSuccess(file: File) {
+                        if (isFinishing || isDestroyed) return
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        setPdfExportProgressUi(false)
+                        Toasts.show(
+                            this@PdfReadingActivity,
+                            getString(R.string.tts_export_ok, file.name),
+                            android.widget.Toast.LENGTH_LONG,
+                        )
+                        sharePdfExportAudio(file)
+                    }
+
+                    override fun onError(message: String) {
+                        if (isFinishing || isDestroyed) return
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        setPdfExportProgressUi(false)
+                        Toasts.show(
+                            this@PdfReadingActivity,
+                            getString(R.string.tts_export_fail, message),
+                            android.widget.Toast.LENGTH_LONG,
+                        )
+                    }
+
+                    override fun onCancelled() {
+                        if (isFinishing || isDestroyed) return
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        setPdfExportProgressUi(false)
+                        Toasts.show(this@PdfReadingActivity, R.string.tts_export_cancelled)
+                    }
+                },
+            )
+        }
+    }
+
+    /** 从已提取缓存拼页范围文本；段末无句读标点则补「。」 */
+    private fun buildExportTextForPages(from0: Int, to0: Int): String {
+        val sb = StringBuilder()
+        // 优先用分段段落（阅读 TTS 同源）
+        if (paraLinks.isNotEmpty() && ttsParagraphs.isNotEmpty()) {
+            for (i in paraLinks.indices) {
+                val link = paraLinks[i]
+                if (link.pageIndex !in from0..to0) continue
+                val t = ttsParagraphs.getOrNull(i)?.text?.trim().orEmpty()
+                if (t.isEmpty()) continue
+                sb.append(ensurePdfExportSentenceEnd(t))
+            }
+        }
+        if (sb.isNotEmpty()) return sb.toString()
+        // 回退：按页字符流
+        for (p in from0..to0) {
+            val chars = pageChars[p] ?: rawPageCache[p] ?: continue
+            val pageText = chars.joinToString("") { it.char.toString() }.trim()
+            if (pageText.isEmpty()) continue
+            sb.append(ensurePdfExportSentenceEnd(pageText))
+        }
+        return sb.toString()
+    }
+
+    private fun ensurePdfExportSentenceEnd(s: String): String {
+        val t = s.trim()
+        if (t.isEmpty()) return ""
+        var i = t.lastIndex
+        while (i >= 0 && t[i] in "\"'”’」』》〉）)]｝}") i--
+        if (i < 0) return "$t。"
+        if (t[i] in "。！？.!?;；…‥~～") return t
+        return "$t。"
+    }
+
+    private fun setPdfExportProgressUi(
+        active: Boolean,
+        done: Int = 0,
+        total: Int = 1,
+        label: String? = null,
+    ) {
+        if (!::exportPanel.isInitialized) return
+        exportPanel.progressExport.isVisible = active
+        exportPanel.tvExportProgress.isVisible = active
+        exportPanel.btnCancelExport.isVisible = active
+        exportPanel.btnStartExport.isEnabled = !active
+        exportPanel.etPageFrom.isEnabled = !active
+        exportPanel.etPageTo.isEnabled = !active
+        exportPanel.btnPageAll.isEnabled = !active
+        val needBitrate = exportPanel.rbFormatMp3.isChecked || exportPanel.rbFormatM4a.isChecked
+        exportPanel.spExportBitrate.isEnabled = !active && needBitrate
+        exportPanel.rbFormatMp3.isEnabled = !active && Mp3Encoder.isAvailable()
+        exportPanel.rbFormatM4a.isEnabled = !active
+        exportPanel.rbFormatWav.isEnabled = !active
+        if (active) {
+            val t = total.coerceAtLeast(1)
+            exportPanel.progressExport.max = t
+            exportPanel.progressExport.progress = done.coerceIn(0, t)
+            exportPanel.tvExportProgress.text = label
+                ?: getString(R.string.tts_export_progress, done, t)
+        }
+    }
+
+    private fun sharePdfExportAudio(file: File) {
+        val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "audio/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            startActivity(Intent.createChooser(intent, getString(R.string.tts_export_share)))
         }
     }
 
@@ -2225,24 +2632,40 @@ class PdfReadingActivity : AppCompatActivity() {
     }
 
     private fun applyChromeVisibility() {
-        binding.topBar.isVisible = chromeVisible
-        binding.ttsBar.isVisible = !chromeVisible && ttsBarOpen
-        val host = binding.readMenuHost
-        if (chromeVisible) {
-            host.visibility = View.VISIBLE
+        binding.topBar.isVisible = chromeVisible && !exportPanelOpen
+        binding.ttsBar.isVisible = !chromeVisible && !exportPanelOpen && ttsBarOpen
+        val menuHost = binding.readMenuHost
+        val exportHost = binding.ttsExportHost
+        if (exportPanelOpen) {
+            // 合成面板独占底部：强制收起菜单
+            menuHost.visibility = View.GONE
+            readMenu.root.visibility = View.GONE
+            exportHost.visibility = View.VISIBLE
+            exportPanel.root.visibility = View.VISIBLE
+            exportHost.bringToFront()
+            binding.readStatusBar.bringToFront()
+            binding.bottomChrome.bringToFront()
+        } else if (chromeVisible) {
+            exportHost.visibility = View.GONE
+            exportPanel.root.visibility = View.GONE
+            menuHost.visibility = View.VISIBLE
             readMenu.root.visibility = View.VISIBLE
-            val lp = host.layoutParams
+            val lp = menuHost.layoutParams
             lp.width = ViewGroup.LayoutParams.MATCH_PARENT
             lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
-            host.layoutParams = lp
-            host.bringToFront()
+            menuHost.layoutParams = lp
+            menuHost.bringToFront()
             binding.readStatusBar.bringToFront()
             binding.bottomChrome.bringToFront()
             binding.topBar.bringToFront()
             // 二次测量：父曾 GONE 时首次 VISIBLE 可能高度正确但子树未参与绘制
-            host.post { if (chromeVisible) forceMenuLayout() }
+            menuHost.post { if (chromeVisible && !exportPanelOpen) forceMenuLayout() }
         } else {
-            host.visibility = View.GONE
+            menuHost.visibility = View.GONE
+            exportHost.visibility = View.GONE
+            if (::exportPanel.isInitialized) {
+                exportPanel.root.visibility = View.GONE
+            }
         }
     }
 
@@ -2264,12 +2687,20 @@ class PdfReadingActivity : AppCompatActivity() {
             ?: binding.root.width.takeIf { it > 0 }
             ?: resources.displayMetrics.widthPixels
         if (parentW <= 0) return
+        // 两页各占满一屏，避免 9 个图标挤在一屏
+        for (page in listOf(readMenu.menuPage0, readMenu.menuPage1)) {
+            val lp = page.layoutParams
+            lp.width = parentW
+            page.layoutParams = lp
+        }
         val wSpec = View.MeasureSpec.makeMeasureSpec(parentW, View.MeasureSpec.EXACTLY)
         val hSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         readMenu.root.measure(wSpec, hSpec)
         host.measure(wSpec, hSpec)
         host.requestLayout()
         binding.bottomChrome.requestLayout()
+        readMenu.menuPager.settleToPage(0, smooth = false)
+        updateMenuPageDots(0)
     }
 
     private fun showPageJumpDialog() {
@@ -2467,7 +2898,48 @@ class PdfReadingActivity : AppCompatActivity() {
         return fromChars(extracted) ?: getString(R.string.pdf_bookmark_no_text)
     }
 
-    /** 目录（树）+ 书签，可滑动切换 */
+    /**
+     * 打开 PDF 后预加载目录到 [outlineRoots]（磁盘缓存优先，否则从会话 PDFBox 解析）。
+     */
+    private fun preloadOutlineAsync(uri: Uri) {
+        if (outlineLoading) return
+        // 已有内存结果
+        outlineRoots?.let { return }
+        // 先试磁盘/全局内存缓存（快）
+        val hit = com.whj.reader.data.PdfOutlineCache.get(this, uri)
+        if (hit != null) {
+            outlineRoots = hit
+            android.util.Log.i("PdfReading", "outline memory from cache nodes=${hit.size}")
+            return
+        }
+        outlineLoading = true
+        lifecycleScope.launch {
+            val roots = withContext(Dispatchers.IO) {
+                try {
+                    // 会话内解析，避免再整本 load
+                    val fromSession = PdfTextExtractor.withSessionDocument { doc ->
+                        com.whj.reader.data.PdfOutlineLoader.loadFromDocument(doc)
+                    }
+                    val list = fromSession
+                        ?: com.whj.reader.data.PdfOutlineCache.loadOrParse(
+                            this@PdfReadingActivity,
+                            uri,
+                        )
+                    com.whj.reader.data.PdfOutlineCache.put(this@PdfReadingActivity, uri, list)
+                    list
+                } catch (t: Throwable) {
+                    android.util.Log.e("PdfReading", "preload outline", t)
+                    emptyList()
+                }
+            }
+            outlineLoading = false
+            if (isFinishing || isDestroyed) return@launch
+            outlineRoots = roots
+            android.util.Log.i("PdfReading", "outline preloaded nodes=${roots.size}")
+        }
+    }
+
+    /** 目录（树）+ 书签，可滑动切换；优先用打开时已缓存的大纲 */
     private fun showPageToc() {
         val uriStr = intent.getStringExtra(EXTRA_URI)
         if (uriStr.isNullOrBlank()) {
@@ -2479,22 +2951,44 @@ class PdfReadingActivity : AppCompatActivity() {
             return
         }
         val uri = Uri.parse(uriStr)
-        val cached = com.whj.reader.data.PdfOutlineCache.get(this, uri)
-        if (cached == null) {
+        // 已在内存：立刻展示
+        outlineRoots?.let { roots ->
+            try {
+                showPdfTocAndBookmarkSheet(roots)
+            } catch (t: Throwable) {
+                android.util.Log.e("PdfReading", "show toc UI failed", t)
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.pdf_toc_title)
+                    .setMessage(R.string.pdf_toc_empty)
+                    .setPositiveButton(R.string.confirm, null)
+                    .show()
+            }
+            return
+        }
+        // 尚未预加载完：提示并等待
+        if (outlineLoading) {
+            Toasts.show(this, R.string.pdf_toc_loading)
+        } else {
+            // 异常路径：补一次预加载
+            preloadOutlineAsync(uri)
             Toasts.show(this, R.string.pdf_toc_loading)
         }
         lifecycleScope.launch {
-            val roots = withContext(Dispatchers.IO) {
-                try {
-                    com.whj.reader.data.PdfOutlineCache.loadOrParse(
-                        this@PdfReadingActivity,
-                        uri,
-                    )
-                } catch (t: Throwable) {
-                    android.util.Log.e("PdfReading", "outline load", t)
-                    emptyList()
-                }
+            // 等预加载结束（最多约数秒）
+            var wait = 0
+            while (outlineRoots == null && wait < 80) {
+                kotlinx.coroutines.delay(50)
+                wait++
             }
+            val roots = outlineRoots
+                ?: withContext(Dispatchers.IO) {
+                    runCatching {
+                        com.whj.reader.data.PdfOutlineCache.loadOrParse(
+                            this@PdfReadingActivity,
+                            uri,
+                        )
+                    }.getOrDefault(emptyList())
+                }.also { outlineRoots = it }
             if (isFinishing || isDestroyed) return@launch
             try {
                 showPdfTocAndBookmarkSheet(roots)
@@ -2517,7 +3011,8 @@ class PdfReadingActivity : AppCompatActivity() {
         val cur = mostVisiblePage()
         fun jumpPage(page: Int) {
             dialog.dismiss()
-            restorePosition(page.coerceIn(0, (pageCount - 1).coerceAtLeast(0)))
+            // 目录/书签跳转也记入历史，便于顶栏后退
+            navigateToPageWithHistory(page.coerceIn(0, (pageCount - 1).coerceAtLeast(0)))
         }
 
         // 页 0：目录树
@@ -2678,6 +3173,137 @@ class PdfReadingActivity : AppCompatActivity() {
             }
             else -> toggleChrome()
         }
+    }
+
+    // ─── 书内链接 ─────────────────────────────────────────
+
+    private fun loadPdfLinksAsync(uri: Uri) {
+        lifecycleScope.launch {
+            val links = withContext(Dispatchers.IO) {
+                if (!PdfTextExtractor.hasSession(uri)) {
+                    PdfTextExtractor.openSession(this@PdfReadingActivity, uri)
+                }
+                PdfTextExtractor.extractLinksFromSession()
+            }
+            if (isFinishing || isDestroyed) return@launch
+            pageLinks = links
+            android.util.Log.i(
+                "PdfReading",
+                "links ready pages=${links.size} total=${links.values.sumOf { it.size }}",
+            )
+        }
+    }
+
+    /**
+     * 点击是否命中书内/外部链接。
+     * @return true 已处理（不再开关菜单）
+     */
+    private fun tryHandlePdfLinkTap(containerX: Float, containerY: Float): Boolean {
+        if (pageLinks.isEmpty()) return false
+        if (hasTextSelection()) return false
+        val hit = hitTestLink(containerX, containerY) ?: return false
+        when {
+            hit.targetPage != null -> {
+                val target = hit.targetPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                if (target == currentVisiblePage()) return true
+                navigateToPageWithHistory(target)
+                Toasts.show(this, getString(R.string.pdf_link_jumped, target + 1))
+                return true
+            }
+            !hit.uri.isNullOrBlank() -> {
+                confirmOpenExternalUri(hit.uri)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun hitTestLink(containerX: Float, containerY: Float): PdfLinkIndex.Link? {
+        val content = binding.pdfContainer.mapToContent(containerX, containerY)
+        return when (pageMode) {
+            PdfPageMode.SINGLE -> {
+                val page = pageIndex
+                val links = pageLinks[page] ?: return null
+                val pageXY = viewToPageCoords(binding.ivPdfPage, content.x, content.y, page)
+                    ?: return null
+                links.firstOrNull { it.contains(pageXY[0], pageXY[1]) }
+            }
+            PdfPageMode.CONTINUOUS -> {
+                val rv = binding.rvPdfPages
+                val child = rv.findChildViewUnder(content.x, content.y) ?: return null
+                val pos = rv.getChildAdapterPosition(child)
+                if (pos == RecyclerView.NO_POSITION) return null
+                val links = pageLinks[pos] ?: return null
+                val iv = child.findViewById<ImageView>(R.id.ivPage) ?: return null
+                val localX = content.x - child.left - iv.left
+                val localY = content.y - child.top - iv.top
+                val pageXY = viewToPageCoords(iv, localX, localY, pos) ?: return null
+                links.firstOrNull { it.contains(pageXY[0], pageXY[1]) }
+            }
+        }
+    }
+
+    private fun navigateToPageWithHistory(targetPage: Int) {
+        val from = currentVisiblePage()
+        if (from == targetPage) return
+        navBackStack.addLast(from)
+        navForwardStack.clear()
+        if (chromeVisible) hideChrome()
+        restorePosition(targetPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0)))
+        updateHistNavButtons()
+        updateProgressLabel()
+        updatePdfBookmarkButton()
+    }
+
+    private fun navigateHistoryBack() {
+        if (navBackStack.isEmpty()) return
+        val cur = currentVisiblePage()
+        val target = navBackStack.removeLast()
+        navForwardStack.addLast(cur)
+        restorePosition(target.coerceIn(0, (pageCount - 1).coerceAtLeast(0)))
+        updateHistNavButtons()
+        updateProgressLabel()
+        updatePdfBookmarkButton()
+    }
+
+    private fun navigateHistoryForward() {
+        if (navForwardStack.isEmpty()) return
+        val cur = currentVisiblePage()
+        val target = navForwardStack.removeLast()
+        navBackStack.addLast(cur)
+        restorePosition(target.coerceIn(0, (pageCount - 1).coerceAtLeast(0)))
+        updateHistNavButtons()
+        updateProgressLabel()
+        updatePdfBookmarkButton()
+    }
+
+    private fun updateHistNavButtons() {
+        if (!::binding.isInitialized) return
+        val canBack = navBackStack.isNotEmpty()
+        val canFwd = navForwardStack.isNotEmpty()
+        binding.btnHistBack.isEnabled = canBack
+        binding.btnHistBack.alpha = if (canBack) 1f else 0.35f
+        binding.btnHistForward.isEnabled = canFwd
+        binding.btnHistForward.alpha = if (canFwd) 1f else 0.35f
+    }
+
+    private fun confirmOpenExternalUri(uriStr: String) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pdf_link_external)
+            .setMessage(uriStr)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                runCatching {
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(uriStr)).addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK,
+                        ),
+                    )
+                }.onFailure {
+                    Toasts.show(this, it.message ?: "error")
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     // ─── 长按选字 / 坐标映射 ──────────────────────────────
@@ -3096,6 +3722,7 @@ class PdfReadingActivity : AppCompatActivity() {
     private fun showChrome() {
         chromeVisible = true
         chromeShownAtMs = android.os.SystemClock.uptimeMillis()
+        updateOrientMenuIcon()
         // 打开 8 图标菜单时收起 TTS 条（与 TXT 一致）
         applyChromeVisibility()
         binding.topBar.post { updatePdfBookmarkButton() }

@@ -127,6 +127,11 @@ data class ReadStyle(
     val lineSpacingMult: Float = 1.4f,
     val paraSpacingDp: Int = 8,
     val letterSpacing: Float = 0f,
+    /**
+     * 系统字体预设 id：default / sans / serif / mono
+     * @see com.whj.reader.util.ReaderFonts
+     */
+    val fontFamily: String = "default",
 )
 
 /** 阅读页屏幕常亮 */

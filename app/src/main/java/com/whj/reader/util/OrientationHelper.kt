@@ -3,6 +3,7 @@ package com.whj.reader.util
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import com.whj.reader.R
 import com.whj.reader.model.OrientationMode
 
 /**
@@ -30,6 +31,13 @@ object OrientationHelper {
         }
     }
 
+    /** 底部菜单「视角」图标：竖屏 / 横屏 / 自动 */
+    fun menuIconRes(mode: OrientationMode): Int = when (mode) {
+        OrientationMode.PORTRAIT -> R.drawable.ic_menu_orient_portrait
+        OrientationMode.LANDSCAPE -> R.drawable.ic_menu_orient_landscape
+        OrientationMode.AUTO -> R.drawable.ic_menu_orient_auto
+    }
+
     private fun lockToCurrentOrientation(activity: Activity): Int {
         val orient = activity.resources.configuration.orientation
         return if (orient == Configuration.ORIENTATION_LANDSCAPE) {
@@ -39,3 +47,4 @@ object OrientationHelper {
         }
     }
 }
+

@@ -49,117 +49,202 @@
         android:layout_height="1dp"
         android:background="#E0DCD0" />
 
-    <!-- 第一行：风格 偏好 跳转 目录书签 -->
+    <!-- 两屏分页：第1屏 8 图标（2×4），右滑第2屏第 9 项；惯性 + 整屏吸附 -->
+    <com.whj.reader.ui.MenuPagerScrollView
+        android:id="@+id/menuPager"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/menuPagerContent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <!-- 第 1 屏：8 个固定图标 -->
+            <LinearLayout
+                android:id="@+id/menuPage0"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingTop="10dp"
+                android:paddingBottom="6dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/menuStyle"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_menu_style" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_style" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/menuPref"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_settings" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_pref" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/menuJump"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_menu_jump" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_jump" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/menuToc"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_toc" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_toc" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/menuOrient"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_menu_orient" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_orient" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/menuFullscreen"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_menu_fullscreen" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_fullscreen" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/menuNight"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_menu_night" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_night" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/menuRead"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_voice" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_read" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 第 2 屏：第 9 项合成语音（与第 1 屏同格布局，左上对齐） -->
+            <LinearLayout
+                android:id="@+id/menuPage1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingTop="10dp"
+                android:paddingBottom="6dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/menuSynth"
+                        style="@style/ReadMenuItem">
+                        <ImageView
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:src="@drawable/ic_menu_synth" />
+                        <TextView
+                            style="@style/ReadMenuLabel"
+                            android:text="@string/menu_synth" />
+                    </LinearLayout>
+
+                    <!-- 占位，保持 4 列网格 -->
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="1dp"
+                        android:layout_weight="1" />
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="1dp"
+                        android:layout_weight="1" />
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="1dp"
+                        android:layout_weight="1" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </com.whj.reader.ui.MenuPagerScrollView>
+
+    <!-- 页指示：两屏小圆点 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:gravity="center"
         android:orientation="horizontal"
-        android:paddingTop="10dp"
-        android:paddingBottom="4dp">
+        android:paddingBottom="2dp">
 
-        <LinearLayout
-            android:id="@+id/menuStyle"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_menu_style" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_style" />
-        </LinearLayout>
+        <View
+            android:id="@+id/menuDot0"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_menu_dot_on" />
 
-        <LinearLayout
-            android:id="@+id/menuPref"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_settings" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_pref" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/menuJump"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_menu_jump" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_jump" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/menuToc"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_toc" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_toc" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <!-- 第二行：视角 全屏显示 夜间 朗读 -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingBottom="6dp">
-
-        <LinearLayout
-            android:id="@+id/menuOrient"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_menu_orient" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_orient" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/menuFullscreen"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_menu_fullscreen" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_fullscreen" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/menuNight"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_menu_night" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_night" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/menuRead"
-            style="@style/ReadMenuItem">
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@drawable/ic_voice" />
-            <TextView
-                style="@style/ReadMenuLabel"
-                android:text="@string/menu_read" />
-        </LinearLayout>
+        <View
+            android:id="@+id/menuDot1"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:background="@drawable/bg_menu_dot_off" />
     </LinearLayout>
 
 </LinearLayout>

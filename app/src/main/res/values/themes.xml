@@ -46,6 +46,17 @@
         <item name="android:paddingBottom">10dp</item>
     </style>
 
+    <!-- 横滑菜单项：宽度约屏宽 1/4，由代码或 minWidth 保证 -->
+    <style name="ReadMenuItemScroll">
+        <item name="android:layout_width">90dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:background">?attr/selectableItemBackground</item>
+        <item name="android:gravity">center_horizontal</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:paddingTop">10dp</item>
+        <item name="android:paddingBottom">10dp</item>
+    </style>
+
     <style name="ReadMenuLabel">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
@@ -54,4 +65,5 @@
         <item name="android:textSize">12sp</item>
     </style>
 </resources>
+
 

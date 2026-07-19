@@ -11,15 +11,17 @@ import java.net.URLDecoder
 
 /**
  * 书架根目录「阅读历史」：
- * 聚合 [ReadingProgressStore] / 书架 / 最近打开，按时间取最近 [MAX] 条。
+ * 聚合 [ReadingProgressStore] / 书架 / 最近打开，按时间排序，**不限制条数**。
  * 虚拟文件夹，不写入书架 folders 配置。
  */
 object ReadingHistoryStore {
     const val FOLDER_ID = "__reading_history__"
-    const val MAX = 100
 
     fun isHistoryFolderId(id: String?): Boolean =
         id == FOLDER_ID
+
+    fun isHistoryBookId(id: String?): Boolean =
+        id != null && id.startsWith("hist_")
 
     fun folder(ctx: Context): ShelfFolder =
         ShelfFolder(
@@ -30,15 +32,15 @@ object ReadingHistoryStore {
         )
 
     fun count(ctx: Context): Int =
-        listAsBooks(ctx, MAX).size
+        listAsBooks(ctx).size
 
-    fun listItems(ctx: Context, limit: Int = MAX): List<ShelfItem> =
-        listAsBooks(ctx, limit).map { ShelfItem.Book(it) }
+    fun listItems(ctx: Context): List<ShelfItem> =
+        listAsBooks(ctx).map { ShelfItem.Book(it) }
 
     /**
      * 最近阅读记录 → [ShelfBook]（id 为 hist_ 前缀，勿当作真实书架 id 删除）。
      */
-    fun listAsBooks(ctx: Context, limit: Int = MAX): List<ShelfBook> {
+    fun listAsBooks(ctx: Context): List<ShelfBook> {
         data class Acc(
             var lastOpened: Long,
             var position: Int,
@@ -112,7 +114,6 @@ object ReadingHistoryStore {
 
         return map.entries
             .sortedByDescending { it.value.lastOpened }
-            .take(limit.coerceAtLeast(0))
             .mapIndexed { index, (uri, acc) ->
                 val name = acc.displayName?.takeIf { it.isNotBlank() }
                     ?: displayNameFromUri(uri)
@@ -128,6 +129,30 @@ object ReadingHistoryStore {
                     sortOrder = index,
                 )
             }
+    }
+
+    /**
+     * 删除一条阅读历史：进度、最近打开、PDF OCR/目录缓存、书签与视图状态等。
+     * 书架上的书条目保留，但 [BookshelfStore.clearLastOpenedForUri] 后不再出现在历史里。
+     */
+    fun removeRecord(ctx: Context, uri: String) {
+        if (uri.isBlank()) return
+        ReadingProgressStore.remove(ctx, uri)
+        RecentStore.remove(ctx, uri)
+        BookshelfStore.clearLastOpenedForUri(ctx, uri)
+        BookmarkStore.removeAllForFile(ctx, uri)
+        // PDF 相关缓存（按 fileKey=uri 字符串）
+        PdfOcrCacheStore.removeBook(ctx, uri)
+        PdfOutlineCache.remove(ctx, uri)
+        AppSettings.clearPdfViewState(ctx, uri)
+        if (AppSettings.lastBookUri(ctx) == uri) {
+            // 清空上次打开记录
+            AppSettings.setLastBook(ctx, "", "")
+        }
+    }
+
+    fun removeRecords(ctx: Context, uris: Collection<String>) {
+        uris.distinct().forEach { removeRecord(ctx, it) }
     }
 
     private fun displayNameFromUri(uri: String): String {

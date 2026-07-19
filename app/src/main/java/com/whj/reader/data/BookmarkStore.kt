@@ -57,6 +57,11 @@ object BookmarkStore {
         )
     }
 
+    fun removeAllForFile(ctx: Context, fileKey: String) {
+        if (fileKey.isBlank()) return
+        save(ctx, all(ctx).filterNot { it.fileKey == fileKey })
+    }
+
     fun has(ctx: Context, fileKey: String, paragraphIndex: Int): Boolean {
         return all(ctx).any {
             it.fileKey == fileKey && it.paragraphIndex == paragraphIndex

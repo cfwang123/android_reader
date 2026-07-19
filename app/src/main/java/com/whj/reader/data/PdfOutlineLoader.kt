@@ -32,21 +32,36 @@ object PdfOutlineLoader {
 
     fun load(context: Context, uri: Uri): List<Node> {
         PdfTextExtractor.ensureInit(context)
+        // 优先用已打开的阅读会话，避免整本再 load 一遍
+        val fromSession = PdfTextExtractor.withSessionDocument { doc ->
+            loadFromDocument(doc)
+        }
+        if (fromSession != null) return fromSession
         return try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 PDDocument.load(input).use { doc ->
-                    val outline = try {
-                        doc.documentCatalog?.documentOutline
-                    } catch (t: Throwable) {
-                        Log.w(TAG, "get outline failed", t)
-                        null
-                    } ?: return emptyList()
-                    val idGen = AtomicInteger(0)
-                    parseKids(outline, doc, idGen)
+                    loadFromDocument(doc)
                 }
             } ?: emptyList()
         } catch (t: Throwable) {
             Log.e(TAG, "load outline failed", t)
+            emptyList()
+        }
+    }
+
+    /** 从已打开的 PDDocument 解析大纲（不关闭文档） */
+    fun loadFromDocument(doc: PDDocument): List<Node> {
+        return try {
+            val outline = try {
+                doc.documentCatalog?.documentOutline
+            } catch (t: Throwable) {
+                Log.w(TAG, "get outline failed", t)
+                null
+            } ?: return emptyList()
+            val idGen = AtomicInteger(0)
+            parseKids(outline, doc, idGen)
+        } catch (t: Throwable) {
+            Log.e(TAG, "loadFromDocument failed", t)
             emptyList()
         }
     }

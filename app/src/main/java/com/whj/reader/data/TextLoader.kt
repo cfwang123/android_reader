@@ -26,11 +26,13 @@ object TextLoader {
     /** 单段字符上限，过大则切开，保护布局与 TTS */
     private const val MAX_PARA_CHARS = 1200
 
+    /**
+     * 章节标题仅认「第X章/节…」「Chapter N」等明确格式。
+     * 不认「一、」「二、」「1.」——正文条目/列表常见，勿加粗。
+     */
     private val CHAPTER_PATTERNS = listOf(
         Pattern.compile("^\\s*第[0-9零一二三四五六七八九十百千两]+[章节回卷部篇集].{0,40}$"),
         Pattern.compile("^\\s*Chapter\\s+\\d+.{0,40}$", Pattern.CASE_INSENSITIVE),
-        Pattern.compile("^\\s*[第]?[0-9]{1,4}[\\.、\\s].{1,40}$"),
-        Pattern.compile("^\\s*[一二三四五六七八九十百千]+[、\\.．].{1,40}$"),
     )
 
     /**
@@ -73,36 +75,23 @@ object TextLoader {
         chineseMode: ChineseConvert.Mode = ChineseConvert.Mode.OFF,
     ): LoadedBook {
         val body = ChineseConvert.apply(text, chineseMode)
-        val rawParas = body
+        // 一个回车 = 一段（空行跳过），便于阅读/合成选起点终点
+        val lineParas = body
             .replace("\r\n", "\n")
             .replace('\r', '\n')
             .split("\n")
-            .map { it.trimEnd() }
-            .fold(mutableListOf<StringBuilder>()) { acc, line ->
-                if (line.isBlank()) {
-                    if (acc.isEmpty() || acc.last().isNotEmpty()) {
-                        acc.add(StringBuilder())
-                    }
-                } else {
-                    if (acc.isEmpty()) acc.add(StringBuilder())
-                    val last = acc.last()
-                    if (last.isNotEmpty()) last.append('\n')
-                    last.append(line.trim())
-                }
-                acc
-            }
-            .map { it.toString().trim() }
+            .map { it.trim() }
             .filter { it.isNotEmpty() }
 
-        // 若几乎没有空行分段，按双换行再试；仍失败则按句号粗分
+        // 整篇几乎无换行时：双换行或按句号粗分，避免全书一段
         val paragraphsText = when {
-            rawParas.size >= 3 -> rawParas
+            lineParas.size >= 2 -> lineParas
             else -> {
-                val byBlank = text.split(Regex("\\n\\s*\\n+"))
+                val byBlank = body.split(Regex("\\n\\s*\\n+"))
                     .map { it.replace('\n', ' ').trim() }
                     .filter { it.isNotEmpty() }
-                if (byBlank.size >= 3) byBlank
-                else splitLongText(text)
+                if (byBlank.size >= 2) byBlank
+                else splitLongText(body)
             }
         }
 

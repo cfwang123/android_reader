@@ -33,6 +33,7 @@ object AppSettings {
             lineSpacingMult = p.getFloat("lineSpacing", 1.4f),
             paraSpacingDp = p.getInt("paraSpacing", 8),
             letterSpacing = p.getFloat("letterSpacing", 0f),
+            fontFamily = p.getString("fontFamily", "default") ?: "default",
         )
     }
 
@@ -43,6 +44,7 @@ object AppSettings {
             .putFloat("lineSpacing", style.lineSpacingMult)
             .putInt("paraSpacing", style.paraSpacingDp)
             .putFloat("letterSpacing", style.letterSpacing)
+            .putString("fontFamily", style.fontFamily)
             .apply()
     }
 
@@ -111,6 +113,14 @@ object AppSettings {
 
     fun setTtsPitch(ctx: Context, value: Float) {
         prefs(ctx).edit().putFloat("ttsPitch", value).apply()
+    }
+
+    /** 合成导出 AAC 码率（kbps），默认 64 */
+    fun ttsExportBitrateKbps(ctx: Context): Int =
+        prefs(ctx).getInt("ttsExportBitrateKbps", 64).coerceIn(16, 320)
+
+    fun setTtsExportBitrateKbps(ctx: Context, kbps: Int) {
+        prefs(ctx).edit().putInt("ttsExportBitrateKbps", kbps.coerceIn(16, 320)).apply()
     }
 
     fun voiceName(ctx: Context): String? =
@@ -341,6 +351,26 @@ object AppSettings {
             panY = p.getFloat("pdf_panY_$k", 0f),
             scrollY = p.getInt("pdf_scrollY_$k", 0).coerceAtLeast(0),
         )
+    }
+
+    /** 清除单本 PDF 的进度/缩放等视图状态 */
+    fun clearPdfViewState(ctx: Context, fileKey: String) {
+        if (fileKey.isBlank()) return
+        val k = fileKey.hashCode().toString()
+        pdfPrefs(ctx).edit()
+            .remove("pdf_progress_$fileKey")
+            .remove("pdf_zoom_$k")
+            .remove("pdf_panX_$k")
+            .remove("pdf_panY_$k")
+            .remove("pdf_scrollY_$k")
+            .apply()
+        if (lastPdfUri(ctx) == fileKey) {
+            pdfPrefs(ctx).edit()
+                .remove("lastPdfUri")
+                .remove("lastPdfTitle")
+                .remove("lastPdfAt")
+                .apply()
+        }
     }
 
     fun lastPdfUri(ctx: Context): String? =

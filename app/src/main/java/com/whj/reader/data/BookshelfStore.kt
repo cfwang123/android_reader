@@ -148,7 +148,7 @@ object BookshelfStore {
     ): List<ShelfItem> {
         if (ReadingHistoryStore.isHistoryFolderId(folderId)) {
             // 历史固定按最近阅读；名称排序可选
-            val books = ReadingHistoryStore.listAsBooks(ctx, ReadingHistoryStore.MAX)
+            val books = ReadingHistoryStore.listAsBooks(ctx)
             return when (sort) {
                 ShelfSort.NAME -> {
                     val collator = Collator.getInstance(Locale.getDefault())
@@ -439,6 +439,17 @@ object BookshelfStore {
 
     fun removeBookByUri(ctx: Context, uri: String) {
         saveBooks(ctx, books(ctx).filterNot { it.uri == uri })
+    }
+
+    /** 阅读历史删除时：保留书架条目，但 lastOpened=0 使历史列表不再收录 */
+    fun clearLastOpenedForUri(ctx: Context, uri: String) {
+        if (uri.isBlank()) return
+        saveBooks(
+            ctx,
+            books(ctx).map {
+                if (it.uri == uri) it.copy(lastOpened = 0L, lastParagraph = 0) else it
+            },
+        )
     }
 
     fun moveBook(ctx: Context, bookId: String, targetFolderId: String?) {

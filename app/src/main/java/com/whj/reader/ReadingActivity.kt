@@ -14,10 +14,13 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.SeekBar
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -38,11 +41,14 @@ import com.whj.reader.data.TextLoader
 import com.whj.reader.databinding.ActivityReadingBinding
 import com.whj.reader.databinding.PanelReadMenuBinding
 import com.whj.reader.databinding.PanelReadSettingsBinding
+import com.whj.reader.databinding.PanelTtsExportBinding
 import com.whj.reader.databinding.SheetTocBinding
 import com.whj.reader.model.EdgeSwipeAction
 import com.whj.reader.model.OrientationMode
 import com.whj.reader.model.ReadStyle
 import com.whj.reader.model.ReadTheme
+import com.whj.reader.tts.Mp3Encoder
+import com.whj.reader.tts.TtsExportHelper
 import com.whj.reader.tts.TtsManager
 import com.whj.reader.ui.ParagraphAdapter
 import com.whj.reader.ui.TocAdapter
@@ -51,9 +57,11 @@ import com.whj.reader.ui.VirtualReaderView
 import com.whj.reader.util.KeepScreenController
 import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.OrientationHelper
+import com.whj.reader.util.ReaderFonts
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
 import com.whj.reader.util.TtsVoicePicker
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -74,16 +82,26 @@ class ReadingActivity : AppCompatActivity() {
     private lateinit var binding: ActivityReadingBinding
     private lateinit var settingsPanel: PanelReadSettingsBinding
     private lateinit var readMenu: PanelReadMenuBinding
+    private lateinit var exportPanel: PanelTtsExportBinding
     private lateinit var reader: VirtualReaderView
     private lateinit var tts: TtsManager
+    private var ttsExport: TtsExportHelper? = null
 
     private var book: LoadedBook? = null
     private var style: ReadStyle = ReadStyle()
     private var chromeVisible = false
     /** 用户通过「朗读」打开过 TTS 条；停止后关闭 */
     private var ttsBarOpen = false
+    /** 合成语音面板打开 */
+    private var exportPanelOpen = false
+    private enum class ExportPickMode { NONE, START, END }
+    private var exportPickMode = ExportPickMode.NONE
+    private var exportStartPara = -1
+    private var exportEndPara = -1
     private var immersive = false
     private var chromeShownAtMs = 0L
+    /** 主题/排版重布局触发的滚动回调期间，勿收起底部菜单（如点「夜间」） */
+    private var ignoreScrollChromeHideUntilMs = 0L
     private var fileKey: String = ""
     private var displayTitle: String = ""
     /** 加载并恢复进度完成前，禁止把「第 0 段」写回进度（否则会冲掉上次位置） */
@@ -167,24 +185,38 @@ class ReadingActivity : AppCompatActivity() {
         settingsPanel = binding.settingsPanel
         // 菜单 inflate 到 host，并预测量避免首次空白
         readMenu = PanelReadMenuBinding.inflate(layoutInflater, binding.readMenuHost, true)
+        exportPanel = PanelTtsExportBinding.inflate(layoutInflater, binding.ttsExportHost, true)
         reader = binding.readerView
         premeasureReadMenu()
 
         style = AppSettings.loadStyle(this)
 
+        reader.onParagraphPicked = { para ->
+            bumpIdleTimer()
+            onExportParagraphPicked(para)
+        }
         reader.onZoneTap = { zone ->
             bumpIdleTimer()
-            if (!binding.settingsPanelContainer.isVisible) {
-                when (zone) {
-                    0 -> {
-                        if (chromeVisible) hideChrome()
-                        pageTurn(forward = false)
+            when {
+                exportPanelOpen -> {
+                    // 合成面板打开时：左右仍可翻页，中心不关面板
+                    when (zone) {
+                        0 -> pageTurn(forward = false)
+                        2 -> pageTurn(forward = true)
                     }
-                    2 -> {
-                        if (chromeVisible) hideChrome()
-                        pageTurn(forward = true)
+                }
+                !binding.settingsPanelContainer.isVisible -> {
+                    when (zone) {
+                        0 -> {
+                            if (chromeVisible) hideChrome()
+                            pageTurn(forward = false)
+                        }
+                        2 -> {
+                            if (chromeVisible) hideChrome()
+                            pageTurn(forward = true)
+                        }
+                        else -> toggleChrome()
                     }
-                    else -> toggleChrome()
                 }
             }
         }
@@ -205,9 +237,11 @@ class ReadingActivity : AppCompatActivity() {
             if (chromeVisible) {
                 updateBookmarkButton()
             }
-            // 滚动时收菜单（叠加底栏后不再因布局高度变化误关）
+            // 用户滚动时收菜单；主题切换等程序重布局触发的滚动不收
+            val now = android.os.SystemClock.uptimeMillis()
             if (chromeVisible &&
-                android.os.SystemClock.uptimeMillis() - chromeShownAtMs > 200L
+                now > ignoreScrollChromeHideUntilMs &&
+                now - chromeShownAtMs > 200L
             ) {
                 hideChrome()
             }
@@ -244,8 +278,10 @@ class ReadingActivity : AppCompatActivity() {
         setupTopBar()
         setupReadMenu()
         setupTtsBar()
+        setupExportPanel()
         setupSettingsPanel()
         setupBottomChromeInsets()
+        setupBackPress()
         applyStyleToUi()
         hideChrome()
         updateClock()
@@ -257,6 +293,45 @@ class ReadingActivity : AppCompatActivity() {
         keepScreen.apply()
 
         loadContent()
+    }
+
+    /**
+     * 返回键优先级：
+     * 合成面板 → 风格面板 → TTS 朗读/TTS 条 → 底部菜单 → 退出阅读
+     */
+    private fun setupBackPress() {
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    val ttsActive = ::tts.isInitialized &&
+                        tts.currentState().state != TtsManager.State.IDLE
+                    when {
+                        exportPanelOpen -> {
+                            closeExportPanel()
+                        }
+                        binding.settingsPanelContainer.isVisible -> {
+                            binding.settingsPanelContainer.isVisible = false
+                        }
+                        // 朗读中或 TTS 条打开：只停播并关条，不退出阅读
+                        ttsBarOpen || ttsActive -> {
+                            if (::tts.isInitialized) tts.stop()
+                            if (::reader.isInitialized) reader.clearHighlight()
+                            ttsBarOpen = false
+                            applyChromeVisibility()
+                        }
+                        chromeVisible -> {
+                            hideChrome()
+                        }
+                        else -> {
+                            isEnabled = false
+                            onBackPressedDispatcher.onBackPressed()
+                            isEnabled = true
+                        }
+                    }
+                }
+            },
+        )
     }
 
     private fun setupBottomChromeInsets() {
@@ -396,6 +471,8 @@ class ReadingActivity : AppCompatActivity() {
         idleHandler.removeCallbacks(idleExitRunnable)
         if (::keepScreen.isInitialized) keepScreen.onDestroy()
         sleepTimer.cancel()
+        ttsExport?.shutdown()
+        ttsExport = null
         if (::tts.isInitialized) {
             tts.listener = null
             tts.shutdown()
@@ -696,7 +773,22 @@ class ReadingActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateOrientMenuIcon() {
+        if (!::readMenu.isInitialized) return
+        val mode = AppSettings.orientationMode(this)
+        val iv = readMenu.menuOrient.getChildAt(0) as? android.widget.ImageView ?: return
+        iv.setImageResource(OrientationHelper.menuIconRes(mode))
+        val label = when (mode) {
+            OrientationMode.PORTRAIT -> getString(R.string.orient_portrait)
+            OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
+            OrientationMode.AUTO -> getString(R.string.orient_auto)
+        }
+        (readMenu.menuOrient.getChildAt(1) as? android.widget.TextView)?.text = label
+    }
+
     private fun setupReadMenu() {
+        setupMenuPagerSnap()
+        updateOrientMenuIcon()
         readMenu.btnPrevChapter.setOnClickListener { jumpChapter(-1) }
         readMenu.btnNextChapter.setOnClickListener { jumpChapter(1) }
         readMenu.menuStyle.setOnClickListener {
@@ -724,6 +816,7 @@ class ReadingActivity : AppCompatActivity() {
             }
             AppSettings.setOrientationMode(this, next)
             applyOrientationMode(next, toast = true)
+            updateOrientMenuIcon()
         }
         // 全屏显示（沉浸）
         readMenu.menuFullscreen.setOnClickListener {
@@ -739,11 +832,14 @@ class ReadingActivity : AppCompatActivity() {
             )
         }
         readMenu.menuNight.setOnClickListener {
+            // 不关菜单；抑制 applyStyle 重布局触发的滚动收栏
+            ignoreScrollChromeHideUntilMs =
+                android.os.SystemClock.uptimeMillis() + 600L
             val next = if (style.theme == ReadTheme.NIGHT) ReadTheme.DEFAULT else ReadTheme.NIGHT
             setTheme(next)
         }
         readMenu.menuRead.setOnClickListener {
-            // 关闭 8 图标菜单，打开 TTS 条并朗读
+            // 关闭菜单，打开 TTS 条并朗读
             chromeVisible = false
             ttsBarOpen = true
             applyChromeVisibility()
@@ -757,6 +853,369 @@ class ReadingActivity : AppCompatActivity() {
             } else {
                 tts.playPauseToggle()
             }
+        }
+        readMenu.menuSynth.setOnClickListener {
+            openExportPanel()
+        }
+    }
+
+    private fun setupExportPanel() {
+        exportPanel.btnExportClose.setOnClickListener { closeExportPanel() }
+        exportPanel.btnExportVoice.setOnClickListener {
+            TtsVoicePicker.show(this, tts) {
+                refreshExportVoiceLabel()
+            }
+        }
+        exportPanel.btnPickStart.setOnClickListener {
+            exportPickMode = ExportPickMode.START
+            reader.paragraphPickEnabled = true
+            exportPanel.tvExportHint.text = getString(R.string.tts_export_pick_start_hint)
+            Toasts.show(this, R.string.tts_export_pick_start_hint)
+        }
+        exportPanel.btnPickEnd.setOnClickListener {
+            exportPickMode = ExportPickMode.END
+            reader.paragraphPickEnabled = true
+            exportPanel.tvExportHint.text = getString(R.string.tts_export_pick_end_hint)
+            Toasts.show(this, R.string.tts_export_pick_end_hint)
+        }
+        exportPanel.btnPickAll.setOnClickListener {
+            selectExportAll()
+            Toasts.show(this, R.string.tts_export_all_set)
+        }
+        exportPanel.btnStartExport.setOnClickListener { startRangeExport() }
+        exportPanel.btnCancelExport.setOnClickListener {
+            ttsExport?.cancel()
+        }
+        setupExportBitrateSpinner()
+        setupExportFormatOptions()
+        exportPanel.rgExportFormat.setOnCheckedChangeListener { _, _ ->
+            refreshExportBitrateEnabled()
+        }
+        refreshExportVoiceLabel()
+        updateExportRangeUi()
+        refreshExportBitrateEnabled()
+    }
+
+    private fun setupExportFormatOptions() {
+        val mp3Ok = Mp3Encoder.isAvailable()
+        exportPanel.rbFormatMp3.isEnabled = mp3Ok
+        if (mp3Ok) {
+            exportPanel.rbFormatMp3.isChecked = true
+        } else {
+            exportPanel.rbFormatMp3.alpha = 0.45f
+            exportPanel.rbFormatM4a.isChecked = true
+        }
+    }
+
+    private val exportBitrateOptions = intArrayOf(32, 48, 64, 96, 128, 160, 192)
+
+    private fun setupExportBitrateSpinner() {
+        val labels = exportBitrateOptions.map {
+            getString(R.string.tts_export_bitrate_kbps, it)
+        }
+        exportPanel.spExportBitrate.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            labels,
+        )
+        val saved = AppSettings.ttsExportBitrateKbps(this)
+        val idx = exportBitrateOptions.indexOf(saved).takeIf { it >= 0 }
+            ?: exportBitrateOptions.indexOf(64).coerceAtLeast(0)
+        exportPanel.spExportBitrate.setSelection(idx)
+        exportPanel.spExportBitrate.onItemSelectedListener =
+            object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: android.widget.AdapterView<*>?,
+                    view: View?,
+                    position: Int,
+                    id: Long,
+                ) {
+                    val kbps = exportBitrateOptions.getOrNull(position) ?: 64
+                    AppSettings.setTtsExportBitrateKbps(this@ReadingActivity, kbps)
+                }
+
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+    }
+
+    private fun refreshExportBitrateEnabled() {
+        if (!::exportPanel.isInitialized) return
+        // 码率对 MP3 / M4A 有效，WAV 忽略
+        val needBitrate = exportPanel.rbFormatMp3.isChecked || exportPanel.rbFormatM4a.isChecked
+        exportPanel.spExportBitrate.isEnabled = needBitrate
+        exportPanel.tvBitrateLabel.alpha = if (needBitrate) 1f else 0.4f
+        exportPanel.spExportBitrate.alpha = if (needBitrate) 1f else 0.4f
+    }
+
+    private fun selectedExportBitrateKbps(): Int {
+        val pos = exportPanel.spExportBitrate.selectedItemPosition
+        return exportBitrateOptions.getOrNull(pos)
+            ?: AppSettings.ttsExportBitrateKbps(this)
+    }
+
+    private fun openExportPanel() {
+        // 释放朗读占用的 TTS 引擎，避免与合成实例抢引擎导致卡死
+        if (::tts.isInitialized) {
+            tts.stop()
+        }
+        chromeVisible = false
+        ttsBarOpen = false
+        exportPanelOpen = true
+        exportPickMode = ExportPickMode.NONE
+        reader.paragraphPickEnabled = false
+        // 默认全文
+        selectExportAll()
+        refreshExportVoiceLabel()
+        setExportProgressUi(active = false)
+        applyChromeVisibility()
+        exportPanel.tvExportHint.text = getString(R.string.tts_export_hint)
+    }
+
+    /** 选择全书（默认） */
+    private fun selectExportAll() {
+        exportPickMode = ExportPickMode.NONE
+        reader.paragraphPickEnabled = false
+        val last = book?.paragraphs?.lastIndex ?: -1
+        if (last < 0) {
+            exportStartPara = -1
+            exportEndPara = -1
+        } else {
+            exportStartPara = 0
+            exportEndPara = last
+        }
+        exportPanel.tvExportHint.text = getString(R.string.tts_export_hint)
+        updateExportRangeUi()
+    }
+
+    private fun closeExportPanel() {
+        if (ttsExport?.isWorking() == true) {
+            ttsExport?.cancel()
+        }
+        exportPanelOpen = false
+        exportPickMode = ExportPickMode.NONE
+        reader.paragraphPickEnabled = false
+        // 关闭时去掉正文范围高亮与选区状态
+        exportStartPara = -1
+        exportEndPara = -1
+        if (::reader.isInitialized) {
+            reader.clearExportRangeHighlight()
+        }
+        if (::exportPanel.isInitialized) {
+            exportPanel.tvExportRange.text = getString(R.string.tts_export_range_none)
+            exportPanel.tvExportHint.text = getString(R.string.tts_export_hint)
+            setExportProgressUi(active = false)
+        }
+        applyChromeVisibility()
+    }
+
+    private fun onExportParagraphPicked(para: Int) {
+        val last = book?.paragraphs?.lastIndex ?: return
+        val p = para.coerceIn(0, last)
+        when (exportPickMode) {
+            ExportPickMode.START -> {
+                exportStartPara = p
+                if (exportEndPara < 0) exportEndPara = p
+                Toasts.show(this, getString(R.string.tts_export_start_set, p + 1))
+            }
+            ExportPickMode.END -> {
+                exportEndPara = p
+                if (exportStartPara < 0) exportStartPara = p
+                Toasts.show(this, getString(R.string.tts_export_end_set, p + 1))
+            }
+            ExportPickMode.NONE -> return
+        }
+        exportPickMode = ExportPickMode.NONE
+        reader.paragraphPickEnabled = false
+        exportPanel.tvExportHint.text = getString(R.string.tts_export_hint)
+        normalizeExportRange()
+        updateExportRangeUi()
+    }
+
+    private fun normalizeExportRange() {
+        if (exportStartPara >= 0 && exportEndPara >= 0 && exportStartPara > exportEndPara) {
+            val t = exportStartPara
+            exportStartPara = exportEndPara
+            exportEndPara = t
+        }
+    }
+
+    /**
+     * 合成用文本：范围内每段（一行）单独处理；
+     * 段末若无句读停顿标点，自动补「。」。
+     */
+    private fun buildExportSpeechText(
+        book: LoadedBook,
+        start: Int,
+        end: Int,
+    ): String {
+        val sb = StringBuilder()
+        for (i in start..end) {
+            val raw = book.paragraphs.getOrNull(i)?.text.orEmpty()
+            // 段内若仍含换行，按行再拆
+            for (line in raw.replace("\r\n", "\n").replace('\r', '\n').split('\n')) {
+                val piece = ensureSentenceTerminator(line)
+                if (piece.isEmpty()) continue
+                sb.append(piece)
+            }
+        }
+        return sb.toString()
+    }
+
+    /** 行尾无。！？等则补中文句号 */
+    private fun ensureSentenceTerminator(line: String): String {
+        val t = line.trim()
+        if (t.isEmpty()) return ""
+        var i = t.lastIndex
+        // 跳过尾部引号/括号
+        while (i >= 0 && t[i] in "\"'”’」』》〉）)]｝}") i--
+        if (i < 0) return "$t。"
+        val c = t[i]
+        if (c in "。！？.!?;；…‥~～") return t
+        return "$t。"
+    }
+
+    private fun updateExportRangeUi() {
+        if (!::exportPanel.isInitialized || !::reader.isInitialized) return
+        if (exportStartPara < 0 || exportEndPara < 0) {
+            exportPanel.tvExportRange.text = getString(R.string.tts_export_range_none)
+            reader.clearExportRangeHighlight()
+            return
+        }
+        normalizeExportRange()
+        val b = book
+        val chars = if (b != null) {
+            (exportStartPara..exportEndPara).sumOf { i ->
+                b.paragraphs.getOrNull(i)?.text?.length ?: 0
+            }
+        } else {
+            0
+        }
+        exportPanel.tvExportRange.text = getString(
+            R.string.tts_export_range,
+            exportStartPara + 1,
+            exportEndPara + 1,
+            chars,
+        )
+        reader.setExportRangeHighlight(exportStartPara, exportEndPara)
+    }
+
+    private fun refreshExportVoiceLabel() {
+        if (!::exportPanel.isInitialized || !::tts.isInitialized) return
+        val name = tts.currentVoiceName()
+            ?: AppSettings.voiceName(this)
+            ?: getString(R.string.tts_voice)
+        exportPanel.tvExportVoice.text = name
+    }
+
+    private fun startRangeExport() {
+        val b = book
+        if (b == null || exportStartPara < 0 || exportEndPara < 0) {
+            Toasts.show(this, R.string.tts_export_need_range)
+            return
+        }
+        if (ttsExport?.isWorking() == true) return
+        normalizeExportRange()
+        // 按段拼接；段末无句号等则补「。」，避免换行处连读不清
+        val text = buildExportSpeechText(b, exportStartPara, exportEndPara)
+        if (text.isBlank()) {
+            Toasts.show(this, R.string.tts_export_need_range)
+            return
+        }
+        var format = when {
+            exportPanel.rbFormatWav.isChecked -> TtsExportHelper.Format.WAV
+            exportPanel.rbFormatMp3.isChecked -> TtsExportHelper.Format.MP3
+            else -> TtsExportHelper.Format.M4A
+        }
+        // 选了 MP3 但本机无 LAME（非 arm64 等）→ 自动改用 M4A
+        if (format == TtsExportHelper.Format.MP3 && !Mp3Encoder.isAvailable()) {
+            format = TtsExportHelper.Format.M4A
+            exportPanel.rbFormatM4a.isChecked = true
+            Toasts.show(this, R.string.tts_export_mp3_unsupported)
+        }
+        val bitRateKbps = selectedExportBitrateKbps()
+        AppSettings.setTtsExportBitrateKbps(this, bitRateKbps)
+        val helper = TtsExportHelper(this).also { ttsExport = it }
+        setExportProgressUi(active = true, done = 0, total = 1)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        helper.export(
+            text = text,
+            format = format,
+            filePrefix = "book",
+            bitRateKbps = bitRateKbps,
+            listener = object : TtsExportHelper.Listener {
+                override fun onProgress(done: Int, total: Int, phase: String) {
+                    if (isFinishing || isDestroyed) return
+                    val label = when (phase) {
+                        "encode" -> getString(R.string.tts_export_encoding)
+                        "merge" -> getString(R.string.tts_export_progress, total, total)
+                        else -> getString(R.string.tts_export_progress, done.coerceAtMost(total), total)
+                    }
+                    setExportProgressUi(active = true, done = done, total = total.coerceAtLeast(1), label = label)
+                }
+
+                override fun onSuccess(file: File) {
+                    if (isFinishing || isDestroyed) return
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    setExportProgressUi(active = false)
+                    // 若请求 MP3 却落到 m4a/wav，文件名可看出；成功 toast 显示实际文件名
+                    Toasts.show(this@ReadingActivity, getString(R.string.tts_export_ok, file.name), android.widget.Toast.LENGTH_LONG)
+                    shareExportedAudio(file)
+                }
+
+                override fun onError(message: String) {
+                    if (isFinishing || isDestroyed) return
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    setExportProgressUi(active = false)
+                    Toasts.show(this@ReadingActivity, getString(R.string.tts_export_fail, message), android.widget.Toast.LENGTH_LONG)
+                }
+
+                override fun onCancelled() {
+                    if (isFinishing || isDestroyed) return
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    setExportProgressUi(active = false)
+                    Toasts.show(this@ReadingActivity, R.string.tts_export_cancelled)
+                }
+            },
+        )
+    }
+
+    private fun setExportProgressUi(
+        active: Boolean,
+        done: Int = 0,
+        total: Int = 1,
+        label: String? = null,
+    ) {
+        if (!::exportPanel.isInitialized) return
+        exportPanel.progressExport.isVisible = active
+        exportPanel.tvExportProgress.isVisible = active
+        exportPanel.btnCancelExport.isVisible = active
+        exportPanel.btnStartExport.isEnabled = !active
+        exportPanel.btnPickStart.isEnabled = !active
+        exportPanel.btnPickEnd.isEnabled = !active
+        exportPanel.btnPickAll.isEnabled = !active
+        val needBitrate = exportPanel.rbFormatMp3.isChecked || exportPanel.rbFormatM4a.isChecked
+        exportPanel.spExportBitrate.isEnabled = !active && needBitrate
+        exportPanel.rbFormatMp3.isEnabled = !active && Mp3Encoder.isAvailable()
+        exportPanel.rbFormatM4a.isEnabled = !active
+        exportPanel.rbFormatWav.isEnabled = !active
+        if (active) {
+            val t = total.coerceAtLeast(1)
+            exportPanel.progressExport.max = t
+            exportPanel.progressExport.progress = done.coerceIn(0, t)
+            exportPanel.tvExportProgress.text = label
+                ?: getString(R.string.tts_export_progress, done, t)
+        }
+    }
+
+    private fun shareExportedAudio(file: File) {
+        val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "audio/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            startActivity(Intent.createChooser(intent, getString(R.string.tts_export_share)))
         }
     }
 
@@ -976,6 +1435,17 @@ class ReadingActivity : AppCompatActivity() {
         settingsPanel.chipThemeSepia.setOnClickListener { setTheme(ReadTheme.SEPIA) }
         settingsPanel.chipThemeNight.setOnClickListener { setTheme(ReadTheme.NIGHT) }
 
+        fun setFont(id: String) {
+            style = style.copy(fontFamily = id)
+            persistAndApplyStyle(keepAnchor = true)
+            refreshFontChips()
+        }
+        settingsPanel.chipFontDefault.setOnClickListener { setFont(ReaderFonts.ID_DEFAULT) }
+        settingsPanel.chipFontSans.setOnClickListener { setFont(ReaderFonts.ID_SANS) }
+        settingsPanel.chipFontSerif.setOnClickListener { setFont(ReaderFonts.ID_SERIF) }
+        settingsPanel.chipFontMono.setOnClickListener { setFont(ReaderFonts.ID_MONO) }
+        refreshFontChips()
+
         settingsPanel.btnLayoutCompact.setOnClickListener {
             style = style.copy(fontSizeSp = 16f, lineSpacingMult = 1.2f, paraSpacingDp = 4)
             bindSeekers()
@@ -1006,6 +1476,20 @@ class ReadingActivity : AppCompatActivity() {
     private fun setTheme(theme: ReadTheme) {
         style = style.copy(theme = theme)
         persistAndApplyStyle(keepAnchor = true)
+    }
+
+    private fun refreshFontChips() {
+        if (!::settingsPanel.isInitialized) return
+        val id = style.fontFamily
+        // 用描边按钮的 alpha 简单标出当前项
+        fun mark(btn: com.google.android.material.button.MaterialButton, selected: Boolean) {
+            btn.alpha = if (selected) 1f else 0.55f
+            btn.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
+        }
+        mark(settingsPanel.chipFontDefault, id == ReaderFonts.ID_DEFAULT)
+        mark(settingsPanel.chipFontSans, id == ReaderFonts.ID_SANS)
+        mark(settingsPanel.chipFontSerif, id == ReaderFonts.ID_SERIF)
+        mark(settingsPanel.chipFontMono, id == ReaderFonts.ID_MONO)
     }
 
     private fun persistAndApplyStyle(keepAnchor: Boolean = true) {
@@ -1374,6 +1858,7 @@ class ReadingActivity : AppCompatActivity() {
     private fun showChrome() {
         chromeVisible = true
         chromeShownAtMs = android.os.SystemClock.uptimeMillis()
+        updateOrientMenuIcon()
         applyChromeVisibility()
         // 等顶栏布局后再算书签锚点（避免 height=0 / 旧图标状态）
         binding.topBar.post { updateBookmarkButton() }
@@ -1392,29 +1877,39 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     /**
-     * 菜单（顶栏+8 图标）与 TTS 条互斥：
-     * - 有菜单 → 隐藏 TTS 条
+     * 菜单（顶栏+图标）/ 合成面板 / TTS 条互斥：
+     * - 有菜单 → 隐藏 TTS 与合成面板
+     * - 合成面板 → 隐藏菜单与 TTS
      * - 无菜单且已打开朗读 → 显示 TTS 条
-     * - 停止朗读后 ttsBarOpen=false → 隐藏 TTS 条
      */
     private fun applyChromeVisibility() {
-        binding.topBar.isVisible = chromeVisible
-        binding.ttsBar.isVisible = !chromeVisible && ttsBarOpen
-        val host = binding.readMenuHost
-        if (chromeVisible) {
-            host.visibility = View.VISIBLE
+        binding.topBar.isVisible = chromeVisible && !exportPanelOpen
+        binding.ttsBar.isVisible = !chromeVisible && !exportPanelOpen && ttsBarOpen
+        val menuHost = binding.readMenuHost
+        val exportHost = binding.ttsExportHost
+        if (exportPanelOpen) {
+            menuHost.visibility = View.GONE
+            exportHost.visibility = View.VISIBLE
+            exportPanel.root.visibility = View.VISIBLE
+            exportHost.bringToFront()
+            binding.readStatusBar.bringToFront()
+            binding.bottomChrome.bringToFront()
+        } else if (chromeVisible) {
+            exportHost.visibility = View.GONE
+            menuHost.visibility = View.VISIBLE
             readMenu.root.visibility = View.VISIBLE
-            val lp = host.layoutParams
+            val lp = menuHost.layoutParams
             lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
             lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-            host.layoutParams = lp
-            host.bringToFront()
+            menuHost.layoutParams = lp
+            menuHost.bringToFront()
             binding.readStatusBar.bringToFront()
             binding.bottomChrome.bringToFront()
             binding.topBar.bringToFront()
-            host.post { if (chromeVisible) forceMenuLayout() }
+            menuHost.post { if (chromeVisible && !exportPanelOpen) forceMenuLayout() }
         } else {
-            host.visibility = View.GONE
+            menuHost.visibility = View.GONE
+            exportHost.visibility = View.GONE
         }
     }
 
@@ -1427,18 +1922,51 @@ class ReadingActivity : AppCompatActivity() {
         }
     }
 
+    /** 两屏分页：惯性 fling 落到目标屏，慢滑吸附最近屏 */
+    private fun setupMenuPagerSnap() {
+        val pager = readMenu.menuPager
+        pager.pageCount = 2
+        pager.onPageSettled = { page -> updateMenuPageDots(page) }
+        pager.setOnScrollChangeListener { _, _, _, _, _ ->
+            updateMenuPageDots()
+        }
+    }
+
+    private fun updateMenuPageDots(page: Int? = null) {
+        if (!::readMenu.isInitialized) return
+        val pager = readMenu.menuPager
+        val pageW = pager.width.coerceAtLeast(1)
+        val p = page ?: ((pager.scrollX + pageW / 2f) / pageW).toInt().coerceIn(0, 1)
+        readMenu.menuDot0.setBackgroundResource(
+            if (p == 0) R.drawable.bg_menu_dot_on else R.drawable.bg_menu_dot_off,
+        )
+        readMenu.menuDot1.setBackgroundResource(
+            if (p == 1) R.drawable.bg_menu_dot_on else R.drawable.bg_menu_dot_off,
+        )
+    }
+
     private fun forceMenuLayout() {
         val host = binding.readMenuHost
         val parentW = binding.bottomChrome.width.takeIf { it > 0 }
             ?: binding.root.width.takeIf { it > 0 }
             ?: resources.displayMetrics.widthPixels
         if (parentW <= 0) return
+        // 两页各占满一屏宽度
+        val pageW = parentW
+        for (page in listOf(readMenu.menuPage0, readMenu.menuPage1)) {
+            val lp = page.layoutParams
+            lp.width = pageW
+            page.layoutParams = lp
+        }
         val wSpec = View.MeasureSpec.makeMeasureSpec(parentW, View.MeasureSpec.EXACTLY)
         val hSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         readMenu.root.measure(wSpec, hSpec)
         host.measure(wSpec, hSpec)
         host.requestLayout()
         binding.bottomChrome.requestLayout()
+        // 打开菜单时回到第 1 屏
+        readMenu.menuPager.settleToPage(0, smooth = false)
+        updateMenuPageDots(0)
     }
 
     private fun jumpChapter(delta: Int) {

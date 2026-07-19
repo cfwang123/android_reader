@@ -59,6 +59,12 @@ class VirtualReaderView @JvmOverloads constructor(
     /** 左/右边缘是否启用（由设置决定；未启用则走普通滚动） */
     var leftEdgeEnabled: Boolean = true
     var rightEdgeEnabled: Boolean = true
+    /**
+     * 为 true 时：轻点段落回调 [onParagraphPicked]，不翻页/不弹菜单。
+     * 用于合成语音选择起终点。
+     */
+    var paragraphPickEnabled: Boolean = false
+    var onParagraphPicked: ((paraIndex: Int) -> Unit)? = null
 
     private var paragraphs: List<Paragraph> = emptyList()
     private var style: ReadStyle = ReadStyle()
@@ -68,6 +74,9 @@ class VirtualReaderView @JvmOverloads constructor(
     private var highlightParagraph: Int = -1
     private var highlightStart: Int = 0
     private var highlightEnd: Int = 0
+    /** 合成导出范围高亮：段索引 inclusive，-1 表示无 */
+    private var exportRangeStart: Int = -1
+    private var exportRangeEnd: Int = -1
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         isSubpixelText = true
@@ -78,6 +87,7 @@ class VirtualReaderView @JvmOverloads constructor(
     }
     private val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x663B82F6 }
+    private val exportRangePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x5534D399 }
 
     private val contentPaddingH: Int
     private val contentPaddingV: Int
@@ -309,6 +319,25 @@ class VirtualReaderView @JvmOverloads constructor(
      * 高亮某段内 [start, end) 字符（TTS 当前句）。
      * index &lt; 0 或 end &lt;= start 时清除。
      */
+    /** 合成导出范围高亮（段 inclusive）；start&lt;0 清除 */
+    fun setExportRangeHighlight(startPara: Int, endPara: Int) {
+        if (startPara < 0 || endPara < 0 || paragraphs.isEmpty()) {
+            if (exportRangeStart < 0) return
+            exportRangeStart = -1
+            exportRangeEnd = -1
+            invalidate()
+            return
+        }
+        val a = minOf(startPara, endPara).coerceIn(0, paragraphs.lastIndex)
+        val b = maxOf(startPara, endPara).coerceIn(0, paragraphs.lastIndex)
+        if (exportRangeStart == a && exportRangeEnd == b) return
+        exportRangeStart = a
+        exportRangeEnd = b
+        invalidate()
+    }
+
+    fun clearExportRangeHighlight() = setExportRangeHighlight(-1, -1)
+
     fun setHighlightRange(index: Int, start: Int, end: Int) {
         if (index < 0 || end <= start) {
             if (highlightParagraph < 0) return
@@ -960,7 +989,14 @@ class VirtualReaderView @JvmOverloads constructor(
                     } else {
                         val dt = SystemClock.uptimeMillis() - downTime
                         if (dt < ViewConfiguration.getLongPressTimeout()) {
-                            onZoneTap?.invoke(downZone)
+                            if (paragraphPickEnabled) {
+                                val hit = hitTest(event.x, event.y, allowBuild = true)
+                                if (hit != null) {
+                                    onParagraphPicked?.invoke(hit.para)
+                                }
+                            } else {
+                                onZoneTap?.invoke(downZone)
+                            }
                         }
                     }
                 } else if (edgeSide == 0 &&
@@ -1147,6 +1183,15 @@ class VirtualReaderView @JvmOverloads constructor(
             }
 
             if (layout != null && y + blockH >= contentTop - lineHeight) {
+                if (exportRangeStart >= 0 && i in exportRangeStart..exportRangeEnd) {
+                    canvas.drawRect(
+                        0f,
+                        y,
+                        width.toFloat(),
+                        y + layout.height,
+                        exportRangePaint,
+                    )
+                }
                 if (i == highlightParagraph && highlightEnd > highlightStart) {
                     drawHighlightRange(canvas, i, layout, y)
                 }
@@ -1285,12 +1330,12 @@ class VirtualReaderView @JvmOverloads constructor(
             resources.displayMetrics,
         )
         textPaint.textSize = sizePx
-        textPaint.typeface = Typeface.DEFAULT
+        textPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(style.fontFamily, bold = false)
         textPaint.letterSpacing = style.letterSpacing
         textPaint.color = textColor
 
         chapterPaint.textSize = sizePx
-        chapterPaint.typeface = Typeface.DEFAULT_BOLD
+        chapterPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(style.fontFamily, bold = true)
         chapterPaint.letterSpacing = style.letterSpacing
         chapterPaint.color = textColor
 

@@ -172,4 +172,14 @@ object PdfOcrCacheStore {
         idx.remove(pageIndex)
         saveIndex(ctx, fileKey, idx)
     }
+
+    /** 删除某 PDF 的全部 OCR 缓存目录 */
+    fun removeBook(ctx: Context, fileKey: String) {
+        if (fileKey.isBlank()) return
+        val hash = sha1(fileKey).take(24)
+        val dir = File(rootDir(ctx), hash)
+        runCatching {
+            if (dir.isDirectory) dir.deleteRecursively()
+        }.onFailure { Log.w(TAG, "removeBook $hash: ${it.message}") }
+    }
 }

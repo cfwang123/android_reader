@@ -121,6 +121,35 @@ object PdfTextExtractor {
         }
     }
 
+    /**
+     * 在已 [openSession] 的文档上提取书内链接；无会话则返回空。
+     * 须在后台线程调用。
+     */
+    fun extractLinksFromSession(): Map<Int, List<PdfLinkIndex.Link>> {
+        synchronized(sessionLock) {
+            val doc = sessionDoc ?: return emptyMap()
+            return runCatching { PdfLinkIndex.extractAll(doc) }
+                .onFailure { Log.w(TAG, "extractLinks", it) }
+                .getOrDefault(emptyMap())
+        }
+    }
+
+    /**
+     * 在会话文档上执行 [block]（持锁）；无会话返回 null。
+     * [block] 内勿长时间阻塞 UI 线程。
+     */
+    fun <T> withSessionDocument(block: (PDDocument) -> T): T? {
+        synchronized(sessionLock) {
+            val doc = sessionDoc ?: return null
+            return try {
+                block(doc)
+            } catch (t: Throwable) {
+                Log.w(TAG, "withSessionDocument", t)
+                null
+            }
+        }
+    }
+
     fun extractAll(context: Context, uri: Uri): Extracted {
         ensureInit(context)
         return withDocument(context, uri) { doc ->
