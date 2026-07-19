@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 /**
- * OCR 测试页：TFLite PP-OCRv4 mobile（Umi-OCR Rapid 同源），NNAPI / GPU / CPU。
+ * OCR 测试页：TFLite PP-OCRv4 mobile（Umi-OCR Rapid 同源），GPU / CPU。
  */
 class OcrTestActivity : AppCompatActivity() {
 
@@ -32,7 +32,6 @@ class OcrTestActivity : AppCompatActivity() {
 
     private val backends = listOf(
         TfliteOcrEngine.Backend.AUTO,
-        TfliteOcrEngine.Backend.NNAPI,
         TfliteOcrEngine.Backend.GPU,
         TfliteOcrEngine.Backend.CPU,
     )
@@ -70,7 +69,6 @@ class OcrTestActivity : AppCompatActivity() {
 
         val labels = listOf(
             getString(R.string.ocr_backend_auto),
-            getString(R.string.ocr_backend_nnapi),
             getString(R.string.ocr_backend_gpu),
             getString(R.string.ocr_backend_cpu),
         )

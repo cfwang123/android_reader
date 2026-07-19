@@ -115,7 +115,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     // PDF 文字提取（TTS）
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-    // OCR：PP-OCRv4 mobile TFLite（NNAPI / GPU / CPU）
+    // OCR：PP-OCRv4 mobile TFLite（GPU / CPU）
     implementation("org.tensorflow:tensorflow-lite:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-gpu-api:2.14.0")

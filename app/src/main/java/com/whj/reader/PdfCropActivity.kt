@@ -155,17 +155,20 @@ class PdfCropActivity : AppCompatActivity() {
                 val page = r.openPage(pageIndex.coerceIn(0, r.pageCount - 1))
                 val maxW = (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtLeast(200)
                 val maxH = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(200)
-                val scale = minOf(
+                // 等比缩放：宽高共用同一 scale，避免超高页被非等比压扁
+                var scale = minOf(
                     maxW / page.width.toFloat(),
                     maxH / page.height.toFloat(),
                     2.5f,
-                )
-                val bw = (page.width * scale).toInt().coerceIn(1, 4096)
-                val bh = (page.height * scale).toInt().coerceIn(1, 4096)
+                ).coerceAtLeast(0.02f)
+                if (page.width * scale > 4096) scale = 4096f / page.width
+                if (page.height * scale > 4096) scale = 4096f / page.height
+                val bw = (page.width * scale).toInt().coerceAtLeast(1)
+                val bh = (page.height * scale).toInt().coerceAtLeast(1)
                 val old = fullBitmap
                 val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
                 val matrix = Matrix()
-                matrix.postScale(bw / page.width.toFloat(), bh / page.height.toFloat())
+                matrix.postScale(scale, scale)
                 page.render(bmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                 page.close()
                 fullBitmap = bmp

@@ -168,11 +168,10 @@
     <string name="tts_synth_ready">引擎就绪</string>
     <string name="ocr_title">OCR 识图</string>
     <string name="ocr_test_title">OCR 调试（TFLite）</string>
-    <string name="ocr_test_hint">Umi-OCR Rapid 同源 PP-OCRv4 mobile（det/cls/rec）。推理后端优先 NNAPI（NPU）→ GPU → CPU。</string>
+    <string name="ocr_test_hint">Umi-OCR Rapid 同源 PP-OCRv4 mobile（det/cls/rec）。推理后端优先 GPU → CPU。</string>
     <string name="ocr_probe_title">环境 / 模型</string>
     <string name="ocr_backend_title">推理后端</string>
-    <string name="ocr_backend_auto">自动（NNAPI→GPU→CPU）</string>
-    <string name="ocr_backend_nnapi">NNAPI（NPU/DSP）</string>
+    <string name="ocr_backend_auto">自动（GPU→CPU）</string>
     <string name="ocr_backend_gpu">GPU</string>
     <string name="ocr_backend_cpu">CPU</string>
     <string name="ocr_image_preview">图片预览</string>
