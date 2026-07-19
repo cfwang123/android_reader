@@ -1,5 +1,6 @@
 package com.whj.reader
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -174,6 +175,14 @@ class PdfReadingActivity : AppCompatActivity() {
             showOpenFailGuide(OpenFailGuide.Reason.PERMISSION, detail = null)
         }
     }
+
+    private val ttsNotifPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) {
+        pendingTtsAfterNotif?.invoke()
+        pendingTtsAfterNotif = null
+    }
+    private var pendingTtsAfterNotif: (() -> Unit)? = null
     private var ttsParagraphs: List<Paragraph> = emptyList()
     private var ttsBarOpen = false
     private var ttsExtracting = false
@@ -1950,6 +1959,7 @@ class PdfReadingActivity : AppCompatActivity() {
                     com.whj.reader.data.TextLoader.SentenceLineBreakMode.NONE,
                 )
             }
+            tts.setSessionTitle(displayTitle)
         }
         if (!preserveTtsPosition) {
             hlPage = -1
@@ -2347,15 +2357,30 @@ class PdfReadingActivity : AppCompatActivity() {
         chromeVisible = false
         ttsBarOpen = true
         applyChromeVisibility()
-        if (!tts.isReady()) {
-            tts.reinit()
-            Toasts.show(this, R.string.tts_not_ready)
+        withTtsNotificationPermission {
+            if (!tts.isReady()) {
+                tts.reinit()
+                Toasts.show(this, R.string.tts_not_ready)
+            }
+            val snap = tts.currentState()
+            if (snap.state == TtsManager.State.IDLE) {
+                startTtsFromViewport()
+            } else {
+                tts.playPauseToggle()
+            }
         }
-        val snap = tts.currentState()
-        if (snap.state == TtsManager.State.IDLE) {
-            startTtsFromViewport()
+    }
+
+    private fun withTtsNotificationPermission(then: () -> Unit) {
+        if (TtsManager.hasNotificationPermission(this)) {
+            then()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            pendingTtsAfterNotif = then
+            ttsNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            tts.playPauseToggle()
+            then()
         }
     }
 
@@ -2464,6 +2489,7 @@ class PdfReadingActivity : AppCompatActivity() {
         // 确保文档是完整提取结果
         if (::tts.isInitialized) {
             tts.setDocument(ttsParagraphs)
+            tts.setSessionTitle(displayTitle)
         }
         val mapped = mapPageCharToParaOffset(page, charIdx)
         chromeVisible = false
@@ -2484,11 +2510,13 @@ class PdfReadingActivity : AppCompatActivity() {
     private fun setupTtsBar() {
         binding.btnTtsPrev.setOnClickListener { tts.previousSentence() }
         binding.btnTtsPlayPause.setOnClickListener {
-            val snap = tts.currentState()
-            if (snap.state == TtsManager.State.IDLE) {
-                startTtsFromViewport()
-            } else {
-                tts.playPauseToggle()
+            withTtsNotificationPermission {
+                val snap = tts.currentState()
+                if (snap.state == TtsManager.State.IDLE) {
+                    startTtsFromViewport()
+                } else {
+                    tts.playPauseToggle()
+                }
             }
         }
         binding.btnTtsNext.setOnClickListener { tts.nextSentence() }

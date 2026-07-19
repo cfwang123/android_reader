@@ -20,7 +20,40 @@ data class LoadedBook(
     val chapters: List<Chapter>,
     val encoding: String,
     val uri: String,
+    /**
+     * 是否已全部解析完毕。
+     * false 时 [paragraphs] 仅为前缀，后台流式追加中。
+     */
+    val isComplete: Boolean = true,
+    /** 流式：已处理章节/spine 数（展示进度用） */
+    val streamCurrent: Int = 1,
+    /** 流式：总章节/spine 数 */
+    val streamTotal: Int = 1,
+    /**
+     * 站内超链接目标：键为 id / 文件名 / path / path#id（及小写变体）→ 段落索引。
+     * EPUB/MOBI 填充；TXT 为空。
+     */
+    val linkTargets: Map<String, Int> = emptyMap(),
 )
+
+/**
+ * 打开结果：首屏 [book] 可立即显示；若 [streamer] 非空需在 UI 线程注册后 [BookStreamer.start]。
+ */
+data class BookOpenResult(
+    val book: LoadedBook,
+    val streamer: BookStreamer? = null,
+)
+
+/** EPUB/MOBI 后台续载 */
+interface BookStreamer {
+    fun start(
+        onUpdate: (LoadedBook) -> Unit,
+        onComplete: (LoadedBook) -> Unit,
+        onProgress: LoadProgressListener? = null,
+    )
+
+    fun cancel()
+}
 
 object TextLoader {
     /** 单段字符上限，过大则切开，保护布局与 TTS */

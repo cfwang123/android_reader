@@ -28,7 +28,7 @@ class ParagraphAdapter(
 
     fun applyStyle(style: ReadStyle) {
         this.style = style
-        val (tc, hc) = themeColors(style.theme)
+        val (tc, hc) = themeColors(style.theme, style.customBgColor)
         textColor = tc
         highlightColor = hc
         notifyDataSetChanged()
@@ -110,26 +110,49 @@ class ParagraphAdapter(
     }
 
     companion object {
-        fun themeColors(theme: ReadTheme): Pair<Int, Int> {
+        /**
+         * @return (正文色, TTS 高亮底)
+         * [customBg] 仅 [ReadTheme.CUSTOM] 时有效
+         */
+        fun themeColors(theme: ReadTheme, customBg: Int = 0xFFFFFFFF.toInt()): Pair<Int, Int> {
             return when (theme) {
                 ReadTheme.DEFAULT -> 0xFF2C2C2C.toInt() to 0x66FFE082.toInt()
+                ReadTheme.WHITE -> 0xFF222222.toInt() to 0x66FFE082.toInt()
                 ReadTheme.GREEN -> 0xFF1E3A24.toInt() to 0x66A8E0B0.toInt()
                 ReadTheme.BLUE -> 0xFF1A3344.toInt() to 0x66B8DCF0.toInt()
                 ReadTheme.PURPLE -> 0xFF2E2438.toInt() to 0x66D8C8E8.toInt()
                 ReadTheme.SEPIA -> 0xFF3E3224.toInt() to 0x66E8D4A8.toInt()
                 ReadTheme.NIGHT -> 0xFFC8C8C8.toInt() to 0x883A4A5A.toInt()
+                ReadTheme.CUSTOM -> {
+                    val text = textColorForBackground(customBg)
+                    val hl = if (isLightColor(customBg)) 0x66FFE082.toInt() else 0x884A90C0.toInt()
+                    text to hl
+                }
             }
         }
 
-        fun backgroundColor(theme: ReadTheme): Int {
+        fun backgroundColor(theme: ReadTheme, customBg: Int = 0xFFFFFFFF.toInt()): Int {
             return when (theme) {
                 ReadTheme.DEFAULT -> 0xFFF7F4ED.toInt()
+                ReadTheme.WHITE -> 0xFFFFFFFF.toInt()
                 ReadTheme.GREEN -> 0xFFC7EDCC.toInt()
                 ReadTheme.BLUE -> 0xFFDCEEF8.toInt()
                 ReadTheme.PURPLE -> 0xFFF0E8F5.toInt()
                 ReadTheme.SEPIA -> 0xFFF4ECD8.toInt()
                 ReadTheme.NIGHT -> 0xFF1A1A1A.toInt()
+                ReadTheme.CUSTOM -> customBg or 0xFF000000.toInt()
             }
         }
+
+        fun isLightColor(color: Int): Boolean {
+            val r = android.graphics.Color.red(color)
+            val g = android.graphics.Color.green(color)
+            val b = android.graphics.Color.blue(color)
+            // 感知亮度
+            return (0.299 * r + 0.587 * g + 0.114 * b) >= 160
+        }
+
+        fun textColorForBackground(bg: Int): Int =
+            if (isLightColor(bg)) 0xFF222222.toInt() else 0xFFE0E0E0.toInt()
     }
 }

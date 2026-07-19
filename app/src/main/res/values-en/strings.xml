@@ -38,7 +38,14 @@
     <string name="shelf_sort_by_name">By name</string>
     <string name="shelf_sort_by_custom">Custom</string>
     <string name="selection_mode">Multi-select</string>
-    <string name="multiselect_shelf_only">Multi-select is only for virtual shelves</string>
+    <string name="multiselect_shelf_only">Multi-select is not available in linked folders</string>
+    <string name="history_delete_record">Remove from history</string>
+    <string name="history_delete_title">Remove reading record?</string>
+    <string name="history_delete_msg">Clears progress and history for this book. Shelf entry and source file are kept.</string>
+    <string name="history_batch_delete_title">Remove reading records?</string>
+    <string name="history_batch_delete_msg">Clear progress and history for %1$d selected items. Shelf entries and source files are kept.</string>
+    <string name="history_batch_removed">Removed %1$d history items</string>
+    <string name="history_no_move">History does not support move — use remove from history</string>
     <string name="selection_count">%1$d selected</string>
     <string name="select_all">Select all</string>
     <string name="drag_to_reorder">Drag to reorder</string>
@@ -140,7 +147,7 @@
     <string name="shelf_refreshed">Refreshed</string>
     <string name="pdf_prev_page">Previous page</string>
     <string name="pdf_next_page">Next page</string>
-    <string name="import_none_books">No TXT or PDF found in the folder</string>
+    <string name="import_none_books">No TXT / PDF / EPUB / MOBI found in the folder</string>
     <string name="grant_permission">Grant permission</string>
     <string name="settings">Settings</string>
     <string name="more_options">More</string>
@@ -230,7 +237,7 @@
     <string name="search_failed">Search failed: %1$s</string>
     <string name="book_count">%1$d books</string>
     <string name="import_done">Imported %1$d book(s) into “%2$s”</string>
-    <string name="import_none">No TXT or PDF found in the folder</string>
+    <string name="import_none">No TXT / PDF / EPUB / MOBI found in the folder</string>
     <string name="create_shelf_title">New shelf</string>
     <string name="create_shelf_hint">Shelf name</string>
     <string name="rename_shelf">Rename shelf</string>
@@ -370,6 +377,9 @@
 
     <string name="theme_section">Theme</string>
     <string name="theme_default">Default</string>
+    <string name="theme_white">White</string>
+    <string name="theme_custom">Custom</string>
+    <string name="theme_pick_bg">Background color</string>
     <string name="theme_green">Eye-care green</string>
     <string name="theme_blue">Light blue</string>
     <string name="theme_purple">Soft purple</string>
@@ -403,7 +413,7 @@
     <string name="settings_idle_screen_off_hint">In always-on mode, allow system sleep after this idle time (0 = never)</string>
     <string name="settings_idle_screen_off_value">%1$d min</string>
     <string name="settings_idle_screen_off_never">Disabled</string>
-    <string name="settings_auto_scroll">Auto-scroll to current paragraph while speaking</string>
+    <string name="settings_auto_scroll">While speaking: scroll sentence to top if not fully visible</string>
     <string name="settings_idle_exit">Idle exit</string>
     <string name="settings_idle_exit_hint">Exit reading after this idle time (0 = never)</string>
     <string name="settings_idle_exit_value">%1$d min</string>
@@ -424,6 +434,21 @@
     <string name="cancel">Cancel</string>
     <string name="delete">Delete</string>
     <string name="close">Close</string>
+    <string name="loading_book">Opening…</string>
+    <string name="load_stage_copy">Copying file…</string>
+    <string name="load_stage_parse">Parsing…</string>
+    <string name="load_stage_done">Done</string>
+    <string name="load_progress_detail">%1$d / %2$d</string>
+    <string name="load_stream_title">%1$s · Loading %2$d%%</string>
+    <string name="link_not_found">Link target not found</string>
+    <string name="link_open_fail">Cannot open link</string>
+    <string name="link_loading_target">Target chapter still loading…</string>
+    <string name="search_result_count_live">Found %1$d so far…</string>
+    <string name="image_gallery_index">%1$d / %2$d</string>
+    <string name="image_gallery_empty">No images to view</string>
+    <string name="image_gallery_load_fail">Failed to load image</string>
+    <string name="image_gallery_first">Already the first image</string>
+    <string name="image_gallery_last">Already the last image</string>
     <string name="menu">Menu</string>
     <string name="more">More</string>
     <string name="goto_paragraph">Go to paragraph</string>

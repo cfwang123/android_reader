@@ -1,5 +1,6 @@
 package com.whj.reader
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -36,6 +37,7 @@ import com.whj.reader.data.BookmarkStore
 import com.whj.reader.data.BookshelfStore
 import com.whj.reader.data.ChineseConvert
 import com.whj.reader.data.ReadingProgressStore
+import com.whj.reader.data.BookLoader
 import com.whj.reader.data.LoadedBook
 import com.whj.reader.data.TextLoader
 import com.whj.reader.databinding.ActivityReadingBinding
@@ -88,6 +90,9 @@ class ReadingActivity : AppCompatActivity() {
     private var ttsExport: TtsExportHelper? = null
 
     private var book: LoadedBook? = null
+    private var bookStreamer: com.whj.reader.data.BookStreamer? = null
+    /** 流式加载时待恢复的段落（内容够长后再滚） */
+    private var pendingRestorePara: Int = -1
     private var style: ReadStyle = ReadStyle()
     private var chromeVisible = false
     /** 用户通过「朗读」打开过 TTS 条；停止后关闭 */
@@ -146,6 +151,19 @@ class ReadingActivity : AppCompatActivity() {
         updateProgressLabel()
     }
 
+    /** 全屏看图退出后滚到当前图对应段落 */
+    private val imageGalleryLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val para = result.data?.getIntExtra(ImageGalleryActivity.RESULT_PARA_INDEX, -1) ?: -1
+        if (para < 0 || !::reader.isInitialized) return@registerForActivityResult
+        hideChrome()
+        reader.scrollToParagraph(para)
+        if (allowProgressSave) saveProgress(para)
+        updateProgressLabel()
+    }
+
     /** 打开失败：重新选文件 */
     private val reselectDocLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -155,6 +173,16 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     /** 打开失败：授予全盘权限后重试 */
+    /** 朗读前申请通知权限（Android 13+ 前台服务通知，锁屏续播依赖） */
+    private val ttsNotifPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) {
+        // 无论是否授权都继续；无权限时系统仍可能限制 FGS 通知
+        pendingTtsAfterNotif?.invoke()
+        pendingTtsAfterNotif = null
+    }
+    private var pendingTtsAfterNotif: (() -> Unit)? = null
+
     private val openFailPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -194,6 +222,10 @@ class ReadingActivity : AppCompatActivity() {
         reader.onParagraphPicked = { para ->
             bumpIdleTimer()
             onExportParagraphPicked(para)
+        }
+        reader.onImageLongPress = { paraIndex ->
+            bumpIdleTimer()
+            openImageGallery(paraIndex)
         }
         reader.onZoneTap = { zone ->
             bumpIdleTimer()
@@ -249,6 +281,11 @@ class ReadingActivity : AppCompatActivity() {
                 saveProgress(first)
             }
             updateProgressLabel()
+            updateChapterTitleBar(first)
+        }
+        reader.onLinkClick = { href ->
+            bumpIdleTimer()
+            handleLinkClick(href)
         }
         reader.onReadFromParagraph = { paraIndex, charOffset ->
             bumpIdleTimer()
@@ -447,12 +484,17 @@ class ReadingActivity : AppCompatActivity() {
                 if (AppSettings.autoScroll(this@ReadingActivity) &&
                     st != TtsManager.State.IDLE
                 ) {
-                    // 句未全在视窗 → 滚到句顶；已全在屏内不动
-                    reader.scrollToHighlightIfNeeded(
-                        paragraphIndex,
-                        startOffset,
-                        endOffset,
-                    )
+                    // 下一句未完全在屏内 → 翻到句首正好贴正文区顶；全在屏内不动
+                    // TTS 条高度计入不可见区
+                    reader.post {
+                        if (!::reader.isInitialized || isFinishing || isDestroyed) return@post
+                        syncReaderBottomObscured()
+                        reader.scrollToHighlightIfNeeded(
+                            paragraphIndex,
+                            startOffset,
+                            endOffset,
+                        )
+                    }
                 }
                 saveProgress(paragraphIndex)
             }
@@ -467,6 +509,8 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        bookStreamer?.cancel()
+        bookStreamer = null
         stopClockAndBattery()
         idleHandler.removeCallbacks(idleExitRunnable)
         if (::keepScreen.isInitialized) keepScreen.onDestroy()
@@ -694,56 +738,65 @@ class ReadingActivity : AppCompatActivity() {
         if (::tts.isInitialized) {
             tts.stop()
         }
+        bookStreamer?.cancel()
+        bookStreamer = null
+        showLoadOverlay(getString(R.string.loading_book))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     when {
-                        asset != null -> TextLoader.loadFromAssets(
-                            this@ReadingActivity,
-                            asset,
-                            titleExtra ?: getString(R.string.unnamed),
-                            preferredEncoding = preferredEncoding,
-                            chineseMode = chineseMode,
+                        asset != null -> com.whj.reader.data.BookOpenResult(
+                            book = TextLoader.loadFromAssets(
+                                this@ReadingActivity,
+                                asset,
+                                titleExtra ?: getString(R.string.unnamed),
+                                preferredEncoding = preferredEncoding,
+                                chineseMode = chineseMode,
+                            ),
                         )
-                        uriStr != null -> TextLoader.loadFromUri(
+                        uriStr != null -> BookLoader.openFromUri(
                             this@ReadingActivity,
                             Uri.parse(uriStr),
                             titleExtra,
                             preferredEncoding = preferredEncoding,
                             chineseMode = chineseMode,
+                            onProgress = { msg, cur, tot ->
+                                runOnUiThread { updateLoadOverlay(msg, cur, tot) }
+                            },
                         )
                         else -> error("未指定文件")
                     }
                 }
             }
-            result.onSuccess { loaded ->
-                book = loaded
-                fileKey = loaded.uri
-                displayTitle = loaded.title
-                binding.tvReadTitle.text = loaded.title
-                if (!loaded.encoding.equals("UTF-8", ignoreCase = true) &&
-                    BookEncodingStore.get(this@ReadingActivity, loaded.uri) == null
-                ) {
-                    BookEncodingStore.set(this@ReadingActivity, loaded.uri, loaded.encoding)
-                }
-                allowProgressSave = false
-                val progress = keepPara.coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0))
-                reader.setContent(loaded.paragraphs)
-                applyStyleToUi(keepAnchor = false)
-                tts.setDocument(
-                    loaded.paragraphs,
-                    TextLoader.SentenceLineBreakMode.NEWLINE,
-                )
-                reader.post {
-                    if (progress in loaded.paragraphs.indices) {
-                        reader.scrollToParagraph(progress)
-                    }
-                    updateProgressLabel()
+            hideLoadOverlay()
+            result.onSuccess { open ->
+                pendingRestorePara = keepPara
+                applyLoadedBook(open.book, isInitial = true)
+                val streamer = open.streamer
+                if (streamer != null) {
+                    bookStreamer = streamer
+                    streamer.start(
+                        onUpdate = { b ->
+                            runOnUiThread {
+                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                applyLoadedBook(b, isInitial = false)
+                            }
+                        },
+                        onComplete = { b ->
+                            runOnUiThread {
+                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                bookStreamer = null
+                                applyLoadedBook(b, isInitial = false)
+                                updateStreamTitle(b)
+                                updateBookmarkButton()
+                            }
+                        },
+                    )
+                } else {
                     updateBookmarkButton()
-                    allowProgressSave = true
-                    saveProgress(reader.firstVisibleParagraph())
                 }
             }.onFailure { e ->
+                hideLoadOverlay()
                 // 重载失败：引导权限/重选；已有正文时不因关闭对话框而退出
                 showOpenFailGuide(
                     reason = OpenFailGuide.reasonFrom(e),
@@ -752,6 +805,67 @@ class ReadingActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    private fun showLoadOverlay(message: String) {
+        if (!::binding.isInitialized) return
+        binding.loadOverlay.isVisible = true
+        binding.tvLoadMessage.text = message
+        binding.tvLoadDetail.text = ""
+        binding.progressLoad.isIndeterminate = true
+    }
+
+    private fun updateLoadOverlay(message: String, current: Int, total: Int) {
+        if (!::binding.isInitialized) return
+        binding.loadOverlay.isVisible = true
+        binding.tvLoadMessage.text = message.ifBlank { getString(R.string.loading_book) }
+        if (total > 0) {
+            binding.progressLoad.isIndeterminate = false
+            binding.progressLoad.max = total
+            binding.progressLoad.progress = current.coerceIn(0, total)
+            binding.tvLoadDetail.text = getString(R.string.load_progress_detail, current, total)
+        } else {
+            binding.progressLoad.isIndeterminate = true
+            binding.tvLoadDetail.text = ""
+        }
+    }
+
+    private fun hideLoadOverlay() {
+        if (!::binding.isInitialized) return
+        binding.loadOverlay.isVisible = false
+    }
+
+    /** 长按图片 → 全屏看图（书内全部图片可滑动切换） */
+    private fun openImageGallery(paraIndex: Int) {
+        val paras = book?.paragraphs.orEmpty()
+        if (paras.isEmpty()) return
+        val paths = ArrayList<String>()
+        val indices = ArrayList<Int>()
+        for (p in paras) {
+            // 看图模式只收集整行图（行内小图仍在正文内显示）
+            val path = p.imagePath?.takeIf { it.isNotBlank() } ?: continue
+            if (!java.io.File(path).isFile) continue
+            paths.add(path)
+            indices.add(p.index)
+        }
+        if (paths.isEmpty()) {
+            Toasts.show(this, R.string.image_gallery_empty)
+            return
+        }
+        var start = indices.indexOf(paraIndex)
+        if (start < 0) {
+            // 容错：按段落序号找最近的图片
+            start = indices.indexOfFirst { it >= paraIndex }.takeIf { it >= 0 }
+                ?: indices.indexOfLast { it <= paraIndex }.coerceAtLeast(0)
+        }
+        imageGalleryLauncher.launch(
+            ImageGalleryActivity.intent(
+                this,
+                paths = paths,
+                paraIndices = indices.toIntArray(),
+                startIndex = start,
+            ),
+        )
     }
 
     /** 瞬时翻页：下翻末行顶置，上翻首行底置；第 1 行在标题栏下完整显示 */
@@ -843,15 +957,17 @@ class ReadingActivity : AppCompatActivity() {
             chromeVisible = false
             ttsBarOpen = true
             applyChromeVisibility()
-            if (!tts.isReady()) {
-                tts.reinit()
-                Toasts.show(this, R.string.tts_not_ready)
-            }
-            val snap = tts.currentState()
-            if (snap.state == TtsManager.State.IDLE) {
-                startTtsFromViewport()
-            } else {
-                tts.playPauseToggle()
+            withTtsNotificationPermission {
+                if (!tts.isReady()) {
+                    tts.reinit()
+                    Toasts.show(this, R.string.tts_not_ready)
+                }
+                val snap = tts.currentState()
+                if (snap.state == TtsManager.State.IDLE) {
+                    startTtsFromViewport()
+                } else {
+                    tts.playPauseToggle()
+                }
             }
         }
         readMenu.menuSynth.setOnClickListener {
@@ -1225,6 +1341,22 @@ class ReadingActivity : AppCompatActivity() {
         tts.playFromParagraphOffset(para, off)
     }
 
+    /**
+     * 朗读前尽量拿到通知权限：Android 13+ 无通知时前台服务易被系统在锁屏后杀掉。
+     */
+    private fun withTtsNotificationPermission(then: () -> Unit) {
+        if (TtsManager.hasNotificationPermission(this)) {
+            then()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            pendingTtsAfterNotif = then
+            ttsNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            then()
+        }
+    }
+
     private val sleepTimer = com.whj.reader.tts.TtsSleepTimer(
         onTick = { left ->
             if (!isFinishing && !isDestroyed) {
@@ -1239,15 +1371,17 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun setupTtsBar() {
         binding.btnTtsPlayPause.setOnClickListener {
-            if (!tts.isReady()) {
-                tts.reinit()
-                Toasts.show(this, R.string.tts_reinit)
-            }
-            val snap = tts.currentState()
-            if (snap.state == TtsManager.State.IDLE) {
-                startTtsFromViewport()
-            } else {
-                tts.playPauseToggle()
+            withTtsNotificationPermission {
+                if (!tts.isReady()) {
+                    tts.reinit()
+                    Toasts.show(this, R.string.tts_reinit)
+                }
+                val snap = tts.currentState()
+                if (snap.state == TtsManager.State.IDLE) {
+                    startTtsFromViewport()
+                } else {
+                    tts.playPauseToggle()
+                }
             }
         }
         binding.btnTtsPrev.setOnClickListener { tts.previousSentence() }
@@ -1429,11 +1563,14 @@ class ReadingActivity : AppCompatActivity() {
         })
 
         settingsPanel.chipThemeDefault.setOnClickListener { setTheme(ReadTheme.DEFAULT) }
+        settingsPanel.chipThemeWhite.setOnClickListener { setTheme(ReadTheme.WHITE) }
+        settingsPanel.chipThemeCustom.setOnClickListener { showCustomBgPicker() }
         settingsPanel.chipThemeGreen.setOnClickListener { setTheme(ReadTheme.GREEN) }
         settingsPanel.chipThemeBlue.setOnClickListener { setTheme(ReadTheme.BLUE) }
         settingsPanel.chipThemePurple.setOnClickListener { setTheme(ReadTheme.PURPLE) }
         settingsPanel.chipThemeSepia.setOnClickListener { setTheme(ReadTheme.SEPIA) }
         settingsPanel.chipThemeNight.setOnClickListener { setTheme(ReadTheme.NIGHT) }
+        refreshThemeChips()
 
         fun setFont(id: String) {
             style = style.copy(fontFamily = id)
@@ -1476,6 +1613,68 @@ class ReadingActivity : AppCompatActivity() {
     private fun setTheme(theme: ReadTheme) {
         style = style.copy(theme = theme)
         persistAndApplyStyle(keepAnchor = true)
+        refreshThemeChips()
+    }
+
+    /** 自定义背景色：预设色板 */
+    private fun showCustomBgPicker() {
+        val colors = intArrayOf(
+            0xFFFFFFFF.toInt(),
+            0xFFFAFAFA.toInt(),
+            0xFFF5F5F5.toInt(),
+            0xFFF7F4ED.toInt(),
+            0xFFFFF8E7.toInt(),
+            0xFFF4ECD8.toInt(),
+            0xFFE8F5E9.toInt(),
+            0xFFE3F2FD.toInt(),
+            0xFFF3E5F5.toInt(),
+            0xFFFFEBEE.toInt(),
+            0xFFECEFF1.toInt(),
+            0xFF212121.toInt(),
+            0xFF1A1A1A.toInt(),
+            0xFF263238.toInt(),
+            0xFF1B2A1B.toInt(),
+            0xFF1A237E.toInt(),
+        )
+        val labels = arrayOf(
+            "纯白", "浅灰1", "浅灰2", "米黄", "象牙", "羊皮纸",
+            "淡绿", "淡蓝", "淡紫", "淡粉", "蓝灰",
+            "深灰", "近黑", "蓝黑", "墨绿", "深蓝",
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.theme_pick_bg)
+            .setItems(labels) { _, which ->
+                val c = colors[which]
+                style = style.copy(theme = ReadTheme.CUSTOM, customBgColor = c)
+                settingsPanel.chipThemeCustom.backgroundTintList =
+                    android.content.res.ColorStateList.valueOf(c)
+                persistAndApplyStyle(keepAnchor = true)
+                refreshThemeChips()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun refreshThemeChips() {
+        if (!::settingsPanel.isInitialized) return
+        fun mark(btn: com.google.android.material.button.MaterialButton, selected: Boolean) {
+            btn.alpha = if (selected) 1f else 0.55f
+            btn.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
+        }
+        val t = style.theme
+        mark(settingsPanel.chipThemeDefault, t == ReadTheme.DEFAULT)
+        mark(settingsPanel.chipThemeWhite, t == ReadTheme.WHITE)
+        mark(settingsPanel.chipThemeCustom, t == ReadTheme.CUSTOM)
+        mark(settingsPanel.chipThemeGreen, t == ReadTheme.GREEN)
+        mark(settingsPanel.chipThemeBlue, t == ReadTheme.BLUE)
+        mark(settingsPanel.chipThemePurple, t == ReadTheme.PURPLE)
+        mark(settingsPanel.chipThemeSepia, t == ReadTheme.SEPIA)
+        mark(settingsPanel.chipThemeNight, t == ReadTheme.NIGHT)
+        // 自定义钮显示当前色
+        settingsPanel.chipThemeCustom.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(style.customBgColor)
+        val customText = ParagraphAdapter.textColorForBackground(style.customBgColor)
+        settingsPanel.chipThemeCustom.setTextColor(customText)
     }
 
     private fun refreshFontChips() {
@@ -1498,28 +1697,33 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun applyStyleToUi(keepAnchor: Boolean = true) {
-        val bg = ParagraphAdapter.backgroundColor(style.theme)
-        val (textColor, hl) = ParagraphAdapter.themeColors(style.theme)
+        val bg = ParagraphAdapter.backgroundColor(style.theme, style.customBgColor)
+        val (textColor, hl) = ParagraphAdapter.themeColors(style.theme, style.customBgColor)
         binding.rootReading.setBackgroundColor(bg)
         reader.setBackgroundColor(bg)
         window.statusBarColor = bg
         window.navigationBarColor = bg
-        val night = style.theme == ReadTheme.NIGHT
-        val metaColor = if (night) 0xFF9A9A9A.toInt() else 0xFF888888.toInt()
+        val darkChrome = style.theme == ReadTheme.NIGHT ||
+            (style.theme == ReadTheme.CUSTOM && !ParagraphAdapter.isLightColor(bg))
+        val metaColor = if (darkChrome) 0xFF9A9A9A.toInt() else 0xFF888888.toInt()
+        binding.tvBookName.setTextColor(metaColor)
+        binding.tvChapterTitle.setTextColor(metaColor)
         binding.tvReadTitle.setTextColor(metaColor)
         binding.tvBattery.setTextColor(metaColor)
         binding.tvClock.setTextColor(metaColor)
         binding.tvProgress.setTextColor(metaColor)
         binding.readStatusBar.setBackgroundColor(bg)
+        binding.readTitleBar.setBackgroundColor(bg)
         binding.tvReadTitle.setBackgroundColor(bg)
         @Suppress("DEPRECATION")
-        if (night || immersive) {
+        if (darkChrome || immersive) {
             window.decorView.systemUiVisibility = 0
         } else {
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
         }
         reader.applyStyle(style, textColor, hl, keepAnchor = keepAnchor)
         updateProgressLabel()
+        if (::settingsPanel.isInitialized) refreshThemeChips()
     }
 
     /**
@@ -1623,90 +1827,75 @@ class ReadingActivity : AppCompatActivity() {
             ChineseConvert.Mode.OFF
         }
 
+        bookStreamer?.cancel()
+        bookStreamer = null
+        showLoadOverlay(getString(R.string.loading_book))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     when {
-                        asset != null -> TextLoader.loadFromAssets(
-                            this@ReadingActivity,
-                            asset,
-                            titleExtra ?: getString(R.string.unnamed),
-                            preferredEncoding = preferredEncoding,
-                            chineseMode = chineseMode,
+                        asset != null -> com.whj.reader.data.BookOpenResult(
+                            book = TextLoader.loadFromAssets(
+                                this@ReadingActivity,
+                                asset,
+                                titleExtra ?: getString(R.string.unnamed),
+                                preferredEncoding = preferredEncoding,
+                                chineseMode = chineseMode,
+                            ),
+                            streamer = null,
                         )
-                        uriStr != null -> TextLoader.loadFromUri(
+                        uriStr != null -> BookLoader.openFromUri(
                             this@ReadingActivity,
                             Uri.parse(uriStr),
                             titleExtra,
                             preferredEncoding = preferredEncoding,
                             chineseMode = chineseMode,
+                            onProgress = { msg, cur, tot ->
+                                runOnUiThread { updateLoadOverlay(msg, cur, tot) }
+                            },
                         )
                         else -> error("未指定文件")
                     }
                 }
             }
-            result.onSuccess { loaded ->
-                book = loaded
-                fileKey = loaded.uri
-                displayTitle = loaded.title
-                binding.tvReadTitle.text = loaded.title
-
-                // 非 UTF-8：记忆编码供书架展示（已有手动设置则保留）
-                val usedEnc = loaded.encoding
-                if (!usedEnc.equals("UTF-8", ignoreCase = true)) {
-                    val key = loaded.uri
-                    if (BookEncodingStore.get(this@ReadingActivity, key) == null) {
-                        BookEncodingStore.set(this@ReadingActivity, key, usedEnc)
-                    }
-                }
-
-                // 先读进度（在 setContent/applyStyle 触发滚动回调之前），并暂时禁止写回
-                allowProgressSave = false
-                val saved = AppSettings.progressFor(this@ReadingActivity, loaded.uri)
-                val shelfPara = BookshelfStore.findBookByUri(this@ReadingActivity, loaded.uri)
-                    ?.lastParagraph ?: 0
-                val progress = maxOf(saved, shelfPara)
-                    .coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0))
-
-                reader.setContent(loaded.paragraphs)
-                applyStyleToUi(keepAnchor = false)
-                tts.setDocument(
-                    loaded.paragraphs,
-                    com.whj.reader.data.TextLoader.SentenceLineBreakMode.NEWLINE,
-                )
-                applyChromeVisibility()
-
-                // 仅更新已在书架上的书，不自动新增（绑定文件夹打开的书不进主书架）
-                BookshelfStore.updateIfExists(
-                    this@ReadingActivity,
-                    uri = loaded.uri,
-                    displayName = loaded.title,
-                    lastParagraph = progress,
-                )
-                ReadingProgressStore.saveTxt(
-                    this@ReadingActivity,
-                    loaded.uri,
-                    progress,
-                    loaded.paragraphs.size,
-                )
-                AppSettings.setLastBook(this@ReadingActivity, loaded.uri, loaded.title)
-
-                // 恢复上次阅读位置（等一帧布局后再滚一次，减少估算高度误差）
-                fun restorePos() {
-                    if (progress > 0 && progress in loaded.paragraphs.indices) {
-                        reader.scrollToParagraph(progress)
-                    }
-                    updateProgressLabel()
-                }
-                reader.post {
-                    restorePos()
-                    reader.post {
-                        restorePos()
-                        allowProgressSave = true
-                        saveProgress(reader.firstVisibleParagraph())
-                    }
+            result.onSuccess { open ->
+                // 先铺内容并恢复进度，再关遮罩，避免闪第一页/封面
+                applyLoadedBook(open.book, isInitial = true)
+                val streamer = open.streamer
+                if (streamer != null) {
+                    bookStreamer = streamer
+                    streamer.start(
+                        onUpdate = { b ->
+                            runOnUiThread {
+                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                applyLoadedBook(b, isInitial = false)
+                            }
+                        },
+                        onComplete = { b ->
+                            runOnUiThread {
+                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                bookStreamer = null
+                                applyLoadedBook(b, isInitial = false)
+                                updateStreamTitle(b)
+                            }
+                        },
+                        onProgress = { msg, cur, tot ->
+                            runOnUiThread {
+                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                updateStreamTitle(
+                                    book?.copy(
+                                        streamCurrent = cur,
+                                        streamTotal = tot.coerceAtLeast(1),
+                                        isComplete = false,
+                                    ) ?: return@runOnUiThread,
+                                    msg,
+                                )
+                            }
+                        },
+                    )
                 }
             }.onFailure { e ->
+                hideLoadOverlay()
                 showOpenFailGuide(
                     reason = OpenFailGuide.reasonFrom(e),
                     detail = e.message,
@@ -1714,6 +1903,258 @@ class ReadingActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    private fun applyLoadedBook(loaded: LoadedBook, isInitial: Boolean) {
+        book = loaded
+        fileKey = loaded.uri
+        displayTitle = loaded.title
+        updateStreamTitle(loaded)
+
+        if (isInitial) {
+            val usedEnc = loaded.encoding
+            if (!usedEnc.equals("UTF-8", ignoreCase = true)) {
+                if (BookEncodingStore.get(this, loaded.uri) == null) {
+                    BookEncodingStore.set(this, loaded.uri, usedEnc)
+                }
+            }
+            allowProgressSave = false
+            val saved = AppSettings.progressFor(this, loaded.uri)
+            val shelfPara = BookshelfStore.findBookByUri(this, loaded.uri)?.lastParagraph ?: 0
+            pendingRestorePara = maxOf(saved, shelfPara)
+
+            // 恢复完成前隐藏正文，避免闪封面/第 1 页
+            reader.visibility = android.view.View.INVISIBLE
+            reader.setContent(loaded.paragraphs)
+            applyStyleToUi(keepAnchor = false)
+            tts.setDocument(
+                loaded.paragraphs,
+                TextLoader.SentenceLineBreakMode.NEWLINE,
+            )
+            tts.setSessionTitle(displayTitle.ifBlank { loaded.title })
+            applyChromeVisibility()
+
+            BookshelfStore.updateIfExists(
+                this,
+                uri = loaded.uri,
+                displayName = loaded.title,
+                lastParagraph = pendingRestorePara.coerceAtLeast(0),
+            )
+            ReadingProgressStore.saveTxt(
+                this,
+                loaded.uri,
+                pendingRestorePara.coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0)),
+                loaded.paragraphs.size,
+            )
+            AppSettings.setLastBook(this, loaded.uri, loaded.title)
+
+            // 布局完成后再测高并滚到进度，然后显示
+            reader.post(object : Runnable {
+                override fun run() {
+                    if (isFinishing || isDestroyed) return
+                    tryRestoreProgress(loaded)
+                    reader.visibility = android.view.View.VISIBLE
+                    hideLoadOverlay()
+                    allowProgressSave = true
+                    saveProgress(reader.firstVisibleParagraph())
+                    // 二次校正：首帧 contentWidth 偶发不准
+                    reader.post {
+                        if (isFinishing || isDestroyed) return@post
+                        if (pendingRestorePara > 0) tryRestoreProgress(loaded)
+                    }
+                }
+            })
+        } else {
+            reader.updateContent(loaded.paragraphs, keepScroll = true)
+            if (::tts.isInitialized) {
+                tts.updateDocumentKeepPosition(
+                    loaded.paragraphs,
+                    TextLoader.SentenceLineBreakMode.NEWLINE,
+                )
+            }
+            tryRestoreProgress(loaded)
+            updateProgressLabel()
+            // 总段数变化时刷新进度存储的 total
+            ReadingProgressStore.saveTxt(
+                this,
+                loaded.uri,
+                reader.firstVisibleParagraph(),
+                loaded.paragraphs.size,
+            )
+        }
+    }
+
+    private fun tryRestoreProgress(loaded: LoadedBook) {
+        val target = pendingRestorePara
+        if (target <= 0) {
+            updateProgressLabel()
+            return
+        }
+        if (target in loaded.paragraphs.indices) {
+            reader.scrollToParagraph(target)
+            if (loaded.isComplete || target < loaded.paragraphs.size - 5) {
+                pendingRestorePara = -1
+            }
+        }
+        updateProgressLabel()
+    }
+
+    private fun updateStreamTitle(loaded: LoadedBook, progressMsg: String? = null) {
+        if (!::binding.isInitialized) return
+        displayTitle = loaded.title
+        val base = loaded.title
+        // 加载中时左侧文件名后附加百分比
+        val left = when {
+            loaded.isComplete -> base
+            progressMsg != null -> "$base · $progressMsg"
+            else -> {
+                val tot = loaded.streamTotal.coerceAtLeast(1)
+                val cur = loaded.streamCurrent.coerceIn(0, tot)
+                val pct = (cur * 100 / tot).coerceIn(0, 99)
+                getString(R.string.load_stream_title, base, pct)
+            }
+        }
+        binding.tvBookName.text = left
+        binding.tvReadTitle.text = left // 兼容
+        if (::reader.isInitialized) {
+            updateChapterTitleBar(reader.firstVisibleParagraph())
+        } else {
+            binding.tvChapterTitle.text = ""
+        }
+    }
+
+    /** 顶部右侧：当前章节标题（根据可见段向前找最近章节） */
+    private fun updateChapterTitleBar(firstVisiblePara: Int) {
+        if (!::binding.isInitialized) return
+        val chapters = book?.chapters.orEmpty()
+        if (chapters.isEmpty()) {
+            binding.tvChapterTitle.text = ""
+            return
+        }
+        val p = firstVisiblePara.coerceAtLeast(0)
+        val ch = chapters.lastOrNull { it.paragraphIndex <= p }
+            ?: chapters.firstOrNull()
+        binding.tvChapterTitle.text = ch?.title.orEmpty()
+    }
+
+    /** 解析 EPUB/MOBI 站内链接并跳转；外链尝试系统浏览器 */
+    private fun handleLinkClick(href: String) {
+        val raw = href.trim()
+        if (raw.isEmpty()) return
+        val lower = raw.lowercase(Locale.ROOT)
+        if (lower.startsWith("http://") || lower.startsWith("https://") ||
+            lower.startsWith("mailto:")
+        ) {
+            runCatching {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(raw)).addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK,
+                    ),
+                )
+            }.onFailure {
+                Toasts.show(this, getString(R.string.link_open_fail))
+            }
+            return
+        }
+        val target = resolveInternalLink(raw)
+        if (target < 0) {
+            Toasts.show(this, getString(R.string.link_not_found))
+            return
+        }
+        // 流式加载未到目标时：记下待恢复位置并尽量滚
+        val maxIdx = book?.paragraphs?.lastIndex ?: -1
+        if (target > maxIdx) {
+            pendingRestorePara = target
+            Toasts.show(this, getString(R.string.link_loading_target))
+            return
+        }
+        hideChrome()
+        reader.scrollToParagraph(target)
+        if (allowProgressSave) saveProgress(target)
+        updateProgressLabel()
+        updateChapterTitleBar(target)
+    }
+
+    private fun resolveInternalLink(href: String): Int {
+        val map = book?.linkTargets.orEmpty()
+        if (map.isEmpty()) return -1
+        var h = href.trim()
+        h = runCatching {
+            java.net.URLDecoder.decode(h, Charsets.UTF_8.name())
+        }.getOrDefault(h)
+        h = h.replace('\\', '/').trim()
+        // 去掉开头 ./
+        while (h.startsWith("./")) h = h.removePrefix("./")
+        val hash = h.substringAfter('#', missingDelimiterValue = "").trim()
+        var path = h.substringBefore('#', missingDelimiterValue = h).trim()
+        // 纯锚点 #id
+        if (path.isEmpty() && hash.isNotEmpty()) {
+            map[hash]?.let { return it }
+            map[hash.lowercase(Locale.ROOT)]?.let { return it }
+            return -1
+        }
+        // 规范化 ../ 与 .
+        if (path.contains("..") || path.contains("./") || path.contains('/')) {
+            val parts = path.split('/')
+            val stack = ArrayList<String>()
+            for (p in parts) {
+                when {
+                    p.isEmpty() || p == "." -> Unit
+                    p == ".." -> if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex)
+                    else -> stack.add(p)
+                }
+            }
+            path = stack.joinToString("/")
+        }
+        val fileName = path.substringAfterLast('/')
+        val candidates = ArrayList<String>(16)
+        // 优先精确：path#id / file#id / id（与 EpubLoader putLinkTarget 键一致）
+        if (hash.isNotEmpty()) {
+            if (path.isNotEmpty()) {
+                candidates += "$path#$hash"
+                candidates += "$fileName#$hash"
+                // OEBPS/text/foo.xhtml#id 等
+                if (!path.startsWith("OEBPS/", ignoreCase = true)) {
+                    candidates += "OEBPS/$path#$hash"
+                    candidates += "OEBPS/text/$path#$hash"
+                    candidates += "OEBPS/Text/$path#$hash"
+                }
+            }
+            candidates += hash
+        }
+        if (path.isNotEmpty()) {
+            candidates += path
+            candidates += fileName
+            candidates += path.trimStart('/')
+            if (path.startsWith("OEBPS/", ignoreCase = true)) {
+                candidates += path.removePrefix("OEBPS/").removePrefix("oebps/")
+            } else {
+                candidates += "OEBPS/$path"
+                candidates += "OEBPS/text/$path"
+                candidates += "OEBPS/Text/$path"
+            }
+            // text/ch1.xhtml
+            if (path.startsWith("text/", ignoreCase = true)) {
+                candidates += path.removePrefix("text/").removePrefix("Text/")
+            }
+        }
+        for (c in candidates) {
+            if (c.isEmpty()) continue
+            map[c]?.let { return it }
+            map[c.lowercase(Locale.ROOT)]?.let { return it }
+        }
+        // 末兜底：仅文件名（忽略目录）对所有 key 后缀匹配 path#hash
+        if (fileName.isNotEmpty()) {
+            val suffix = if (hash.isNotEmpty()) "$fileName#$hash" else fileName
+            val lower = suffix.lowercase(Locale.ROOT)
+            for ((k, v) in map) {
+                val kl = k.lowercase(Locale.ROOT)
+                if (kl == lower || kl.endsWith("/$lower") || kl.endsWith(lower)) {
+                    return v
+                }
+            }
+        }
+        return -1
     }
 
     private fun showOpenFailGuide(
@@ -1911,6 +2352,30 @@ class ReadingActivity : AppCompatActivity() {
             menuHost.visibility = View.GONE
             exportHost.visibility = View.GONE
         }
+        // TTS/底栏高度变化后同步给阅读区（跟读可见判定）
+        binding.bottomChrome.post { syncReaderBottomObscured() }
+    }
+
+    /** TTS 条 + 底栏可见高度 → VirtualReaderView.bottomObscuredPx */
+    private fun syncReaderBottomObscured() {
+        if (!::reader.isInitialized || !::binding.isInitialized) return
+        var h = 0
+        if (binding.readStatusBar.isVisible) {
+            h += binding.readStatusBar.height.coerceAtLeast(0)
+        }
+        if (binding.bottomChrome.isVisible) {
+            // ttsBar / menu 在 bottomChrome 内
+            if (binding.ttsBar.isVisible) {
+                h += binding.ttsBar.height.coerceAtLeast(0)
+            }
+            if (binding.readMenuHost.isVisible && chromeVisible) {
+                h += binding.readMenuHost.height.coerceAtLeast(0)
+            }
+            if (binding.ttsExportHost.isVisible && exportPanelOpen) {
+                h += binding.ttsExportHost.height.coerceAtLeast(0)
+            }
+        }
+        reader.bottomObscuredPx = h.toFloat()
     }
 
     private fun premeasureReadMenu() {

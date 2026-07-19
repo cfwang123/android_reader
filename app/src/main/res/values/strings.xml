@@ -39,7 +39,14 @@
     <string name="shelf_sort_by_custom">自定义</string>
     <string name="shelf_sort_current">排序：%1$s</string>
     <string name="selection_mode">多选</string>
-    <string name="multiselect_shelf_only">请在虚拟书架中使用多选</string>
+    <string name="multiselect_shelf_only">绑定文件夹中不支持多选</string>
+    <string name="history_delete_record">删除记录</string>
+    <string name="history_delete_title">删除阅读记录？</string>
+    <string name="history_delete_msg">将清除该条阅读进度与历史，不会删除书架上的书或源文件</string>
+    <string name="history_batch_delete_title">批量删除阅读记录？</string>
+    <string name="history_batch_delete_msg">将清除选中的 %1$d 条阅读进度与历史，不会删除书架上的书或源文件</string>
+    <string name="history_batch_removed">已删除 %1$d 条历史</string>
+    <string name="history_no_move">阅读历史不支持移动，请使用删除记录</string>
     <string name="selection_count">已选 %1$d 项</string>
     <string name="select_all">全选</string>
     <string name="drag_to_reorder">拖动排序</string>
@@ -140,7 +147,7 @@
     <string name="shelf_refreshed">已刷新</string>
     <string name="pdf_prev_page">上一页</string>
     <string name="pdf_next_page">下一页</string>
-    <string name="import_none_books">文件夹中未找到 TXT 或 PDF</string>
+    <string name="import_none_books">文件夹中未找到 TXT / PDF / EPUB / MOBI</string>
     <string name="grant_permission">授予权限</string>
     <string name="settings">设置</string>
     <string name="more_options">更多</string>
@@ -230,7 +237,7 @@
     <string name="search_failed">搜索失败：%1$s</string>
     <string name="book_count">%1$d 本</string>
     <string name="import_done">已导入 %1$d 本到「%2$s」</string>
-    <string name="import_none">文件夹中未找到 TXT 或 PDF</string>
+    <string name="import_none">文件夹中未找到 TXT / PDF / EPUB / MOBI</string>
     <string name="create_shelf_title">新建书架</string>
     <string name="create_shelf_hint">书架名称</string>
     <string name="rename_shelf">重命名书架</string>
@@ -370,6 +377,9 @@
 
     <string name="theme_section">主题</string>
     <string name="theme_default">默认</string>
+    <string name="theme_white">纯白</string>
+    <string name="theme_custom">自定义</string>
+    <string name="theme_pick_bg">选择背景色</string>
     <string name="theme_green">护眼绿</string>
     <string name="theme_blue">浅草蓝</string>
     <string name="theme_purple">漫点紫</string>
@@ -403,7 +413,7 @@
     <string name="settings_idle_screen_off_hint">始终常亮时，无操作超过该时间后允许系统锁屏（0=禁用）</string>
     <string name="settings_idle_screen_off_value">%1$d 分钟</string>
     <string name="settings_idle_screen_off_never">禁用</string>
-    <string name="settings_auto_scroll">朗读时自动滚动到当前段</string>
+    <string name="settings_auto_scroll">朗读时：当前句未完整显示则滚到屏顶</string>
     <string name="settings_idle_exit">空闲退出时间</string>
     <string name="settings_idle_exit_hint">无操作超过该时间后自动退出阅读（0=不退出）</string>
     <string name="settings_idle_exit_value">%1$d 分钟</string>
@@ -424,6 +434,21 @@
     <string name="cancel">取消</string>
     <string name="delete">删除</string>
     <string name="close">关闭</string>
+    <string name="loading_book">正在打开…</string>
+    <string name="load_stage_copy">复制文件…</string>
+    <string name="load_stage_parse">解析中…</string>
+    <string name="load_stage_done">完成</string>
+    <string name="load_progress_detail">%1$d / %2$d</string>
+    <string name="load_stream_title">%1$s · 加载中 %2$d%%</string>
+    <string name="link_not_found">无法定位链接目标</string>
+    <string name="link_open_fail">无法打开链接</string>
+    <string name="link_loading_target">目标章节加载中，请稍后再点</string>
+    <string name="search_result_count_live">已找到 %1$d 条…</string>
+    <string name="image_gallery_index">%1$d / %2$d</string>
+    <string name="image_gallery_empty">没有可查看的图片</string>
+    <string name="image_gallery_load_fail">图片加载失败</string>
+    <string name="image_gallery_first">已是第一张</string>
+    <string name="image_gallery_last">已是最后一张</string>
     <string name="menu">菜单</string>
     <string name="more">更多</string>
     <string name="goto_paragraph">跳转段落</string>

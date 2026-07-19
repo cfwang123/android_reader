@@ -1,6 +1,7 @@
 package com.whj.reader.ui
 
 import android.annotation.SuppressLint
+import android.graphics.BitmapFactory
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -10,6 +11,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.whj.reader.R
 import com.whj.reader.data.BookEncodingStore
 import com.whj.reader.data.BookFileType
+import com.whj.reader.data.CoverStore
 import com.whj.reader.data.ReadingProgressStore
 import com.whj.reader.data.ShelfFileMetaStore
 import com.whj.reader.databinding.ItemRecentBinding
@@ -264,9 +266,11 @@ class ShelfAdapter(
             val isPdf = BookFileType.isPdf(book.pathHint) ||
                 BookFileType.isPdf(book.displayName) ||
                 BookFileType.isPdf(book.uri)
-            binding.ivFileType.setImageResource(
-                if (isPdf) R.drawable.ic_file_pdf else R.drawable.ic_file_txt,
-            )
+            val isEbook = BookFileType.isEpub(book.pathHint) ||
+                BookFileType.isEpub(book.displayName) ||
+                BookFileType.isMobi(book.pathHint) ||
+                BookFileType.isMobi(book.displayName)
+            bindFileIcon(book.uri, isPdf, isEbook)
             binding.tvTitle.text = fullFileName(book.displayName, book.pathHint, isPdf)
             binding.tvPath.visibility = View.GONE
             val (meta, pct) = resolveProgress(
@@ -314,9 +318,8 @@ class ShelfAdapter(
 
         fun bindLinked(item: ShelfItem.LinkedFile) {
             val entry = item.entry
-            binding.ivFileType.setImageResource(
-                if (entry.isPdf) R.drawable.ic_file_pdf else R.drawable.ic_file_txt,
-            )
+            val isEbook = BookFileType.isEpub(entry.name) || BookFileType.isMobi(entry.name)
+            bindFileIcon(entry.uri, entry.isPdf, isEbook)
             binding.tvTitle.text = entry.name.ifBlank {
                 fullFileName(entry.displayName, entry.name, entry.isPdf)
             }
@@ -363,17 +366,23 @@ class ShelfAdapter(
                 return s
             }
 
+            fun defaultExt(): String {
+                BookFileType.extensionOf(pathHint)?.let { return it }
+                BookFileType.extensionOf(displayName)?.let { return it }
+                return if (isPdf) ".pdf" else ".txt"
+            }
+
             val fromHint = extractFileName(pathHint)
             if (fromHint != null && (fromHint.contains('.') || fromHint.length in 1..200)) {
                 return if (fromHint.contains('.')) {
                     fromHint
                 } else {
-                    fromHint + if (isPdf) ".pdf" else ".txt"
+                    fromHint + defaultExt()
                 }
             }
             val fromDisplay = extractFileName(displayName) ?: displayName.ifBlank { "book" }
             if (fromDisplay.contains('.')) return fromDisplay
-            return fromDisplay + if (isPdf) ".pdf" else ".txt"
+            return fromDisplay + defaultExt()
         }
 
         private fun bindProgressBar(percent: Int) {
@@ -381,6 +390,40 @@ class ShelfAdapter(
             val p = percent.coerceIn(0, 100)
             bar.progress = p
             bar.visibility = if (p > 0) View.VISIBLE else View.INVISIBLE
+        }
+
+        /** 有缓存封面则显示缩略图，否则文件类型图标 */
+        private fun bindFileIcon(uri: String, isPdf: Boolean, isEbook: Boolean) {
+            val ctx = binding.root.context
+            val cover = CoverStore.fileFor(ctx, uri)
+            if (cover.isFile && cover.length() > 0L) {
+                val opts = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                BitmapFactory.decodeFile(cover.absolutePath, opts)
+                val maxSide = (48 * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(48)
+                var sample = 1
+                var w = opts.outWidth
+                var h = opts.outHeight
+                while (w / sample > maxSide * 2 || h / sample > maxSide * 2) sample *= 2
+                val bmp = BitmapFactory.decodeFile(
+                    cover.absolutePath,
+                    BitmapFactory.Options().apply { inSampleSize = sample },
+                )
+                if (bmp != null) {
+                    binding.ivFileType.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                    binding.ivFileType.setImageBitmap(bmp)
+                    return
+                }
+            }
+            binding.ivFileType.scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            binding.ivFileType.setImageResource(
+                when {
+                    isPdf -> R.drawable.ic_file_pdf
+                    isEbook -> R.drawable.ic_file
+                    else -> R.drawable.ic_file_txt
+                },
+            )
         }
 
         private fun resolveProgress(

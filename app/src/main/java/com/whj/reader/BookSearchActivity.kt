@@ -4,6 +4,9 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -14,11 +17,13 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.whj.reader.data.AppSettings
+import com.whj.reader.data.BookLoader
 import com.whj.reader.data.BookSearcher
 import com.whj.reader.data.TextLoader
 import com.whj.reader.databinding.ActivityBookSearchBinding
 import com.whj.reader.databinding.ItemSearchResultBinding
 import com.whj.reader.util.Toasts
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -26,7 +31,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * 书内搜索：TXT 显示位置%+上下文；PDF 显示页码+上下文。
- * 点击结果 [setResult] 返回阅读页跳转。
+ * 超长文本边搜边展示结果。
  */
 class BookSearchActivity : AppCompatActivity() {
 
@@ -57,6 +62,7 @@ class BookSearchActivity : AppCompatActivity() {
     private lateinit var binding: ActivityBookSearchBinding
     private var searchJob: Job? = null
     private val adapter = ResultAdapter { hit -> onHitClick(hit) }
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val uriStr: String by lazy { intent.getStringExtra(EXTRA_URI).orEmpty() }
     private val kind: String by lazy { intent.getStringExtra(EXTRA_KIND) ?: KIND_TXT }
@@ -102,22 +108,63 @@ class BookSearchActivity : AppCompatActivity() {
         binding.tvStatus.setText(R.string.search_searching)
         adapter.submit(emptyList())
 
+        val active = AtomicBoolean(true)
+        val pendingUi = ArrayList<BookSearcher.Hit>(24)
+        var lastFlushMs = 0L
+        val flushRunnable = object : Runnable {
+            override fun run() {
+                if (!active.get() || isFinishing || isDestroyed) return
+                if (pendingUi.isEmpty()) return
+                val batch = ArrayList(pendingUi)
+                pendingUi.clear()
+                adapter.append(batch)
+                binding.tvStatus.text = getString(
+                    R.string.search_result_count_live,
+                    adapter.itemCount,
+                )
+            }
+        }
+        fun postHit(hit: BookSearcher.Hit) {
+            mainHandler.post {
+                if (!active.get() || isFinishing || isDestroyed) return@post
+                pendingUi.add(hit)
+                val now = SystemClock.uptimeMillis()
+                if (pendingUi.size >= 10 || now - lastFlushMs >= 80L) {
+                    lastFlushMs = now
+                    mainHandler.removeCallbacks(flushRunnable)
+                    flushRunnable.run()
+                } else {
+                    mainHandler.removeCallbacks(flushRunnable)
+                    mainHandler.postDelayed(flushRunnable, 80L)
+                }
+            }
+        }
+
         searchJob = lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
+                    val all = ArrayList<BookSearcher.Hit>(64)
                     when (kind) {
                         KIND_PDF -> {
                             val uri = Uri.parse(uriStr)
                             BookSearcher.searchPdf(
-                                this@BookSearchActivity,
-                                uri,
-                                q,
-                            ) { page ->
-                                AppSettings.pdfCropMarginsForPage(
-                                    this@BookSearchActivity,
-                                    page,
-                                )
-                            }
+                                context = this@BookSearchActivity,
+                                uri = uri,
+                                query = q,
+                                marginsForPage = { page ->
+                                    AppSettings.pdfCropMarginsForPage(
+                                        this@BookSearchActivity,
+                                        page,
+                                    )
+                                },
+                                isActive = { active.get() },
+                                onHit = { hit ->
+                                    all.add(hit)
+                                    postHit(hit)
+                                    all.size < BookSearcher.MAX_RESULTS
+                                },
+                            )
+                            all
                         }
                         else -> {
                             val uri = Uri.parse(uriStr)
@@ -129,31 +176,58 @@ class BookSearchActivity : AppCompatActivity() {
                                     intent.getStringExtra(EXTRA_TITLE) ?: path,
                                 )
                             } else {
-                                TextLoader.loadFromUri(
+                                BookLoader.loadFromUri(
                                     this@BookSearchActivity,
                                     uri,
                                     intent.getStringExtra(EXTRA_TITLE),
                                 )
                             }
-                            BookSearcher.searchTxt(book.paragraphs, q)
+                            BookSearcher.searchTxtStreaming(
+                                book.paragraphs,
+                                q,
+                                isActive = { active.get() },
+                            ) { hit ->
+                                all.add(hit)
+                                postHit(hit)
+                                all.size < BookSearcher.MAX_RESULTS
+                            }
+                            all
                         }
                     }
                 }
             }
+            active.set(false)
+            mainHandler.removeCallbacks(flushRunnable)
+            // 刷掉剩余
+            if (pendingUi.isNotEmpty() && !isFinishing && !isDestroyed) {
+                adapter.append(ArrayList(pendingUi))
+                pendingUi.clear()
+            }
             binding.progress.isVisible = false
             result.onSuccess { hits ->
-                adapter.submit(hits)
+                if (adapter.itemCount == 0 && hits.isNotEmpty()) {
+                    adapter.submit(hits)
+                }
                 binding.tvStatus.isVisible = true
+                val n = maxOf(adapter.itemCount, hits.size)
                 binding.tvStatus.text = when {
-                    hits.isEmpty() -> getString(R.string.search_no_result)
-                    hits.size >= BookSearcher.MAX_RESULTS ->
-                        getString(R.string.search_result_count_capped, hits.size)
-                    else -> getString(R.string.search_result_count, hits.size)
+                    n == 0 -> getString(R.string.search_no_result)
+                    n >= BookSearcher.MAX_RESULTS ->
+                        getString(R.string.search_result_count_capped, n)
+                    else -> getString(R.string.search_result_count, n)
                 }
             }.onFailure { e ->
                 binding.tvStatus.isVisible = true
                 binding.tvStatus.text = getString(R.string.search_failed, e.message ?: "")
-                Toasts.show(this@BookSearchActivity, getString(R.string.search_failed, e.message ?: ""))
+                Toasts.show(
+                    this@BookSearchActivity,
+                    getString(R.string.search_failed, e.message ?: ""),
+                )
+            }
+        }.also { job ->
+            job.invokeOnCompletion {
+                active.set(false)
+                mainHandler.removeCallbacks(flushRunnable)
             }
         }
     }
@@ -179,15 +253,27 @@ class BookSearchActivity : AppCompatActivity() {
     private inner class ResultAdapter(
         private val onClick: (BookSearcher.Hit) -> Unit,
     ) : RecyclerView.Adapter<ResultAdapter.VH>() {
-        private var items: List<BookSearcher.Hit> = emptyList()
+        private val items = ArrayList<BookSearcher.Hit>(64)
 
         fun submit(list: List<BookSearcher.Hit>) {
-            items = list
+            items.clear()
+            items.addAll(list)
             notifyDataSetChanged()
         }
 
+        fun append(list: List<BookSearcher.Hit>) {
+            if (list.isEmpty()) return
+            val start = items.size
+            items.addAll(list)
+            notifyItemRangeInserted(start, list.size)
+        }
+
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-            val b = ItemSearchResultBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+            val b = ItemSearchResultBinding.inflate(
+                LayoutInflater.from(parent.context),
+                parent,
+                false,
+            )
             return VH(b)
         }
 

@@ -1,10 +1,93 @@
 package com.whj.reader.model
 
+/**
+ * 段内富文本样式区间 [start, end)。
+ * 颜色/背景仅一层（解析时栈顶覆盖，不做多层叠加合成）。
+ */
+data class TextSpanStyle(
+    val start: Int,
+    val end: Int,
+    val bold: Boolean = false,
+    val italic: Boolean = false,
+    val underline: Boolean = false,
+    /** ARGB，null 表示沿用阅读主题字色 */
+    val color: Int? = null,
+    /** ARGB 背景，null 无背景 */
+    val backgroundColor: Int? = null,
+    /**
+     * 超链接目标（HTML href 原值，可能是 #id / 相对路径 / http…）。
+     * 非空时绘制为链接样式，点击由阅读页解析跳转。
+     */
+    val linkHref: String? = null,
+)
+
+/**
+ * HTML 图片显示尺寸（来自 width/height 属性或 style）。
+ * - [widthEm]/[heightEm]：相对正文字号
+ * - [widthPx]/[heightPx]：逻辑像素（已按 density 换算前的 CSS px，绘制时再乘 density）
+ * - [widthPercent]：相对正文宽 0–100
+ * 均为 null 时由阅读器用默认策略（行内≈1em，块图适配宽）。
+ */
+data class ImageDisplaySize(
+    val widthEm: Float? = null,
+    val heightEm: Float? = null,
+    val widthPx: Float? = null,
+    val heightPx: Float? = null,
+    val widthPercent: Float? = null,
+    val heightPercent: Float? = null,
+) {
+    val hasAny: Boolean
+        get() = widthEm != null || heightEm != null ||
+            widthPx != null || heightPx != null ||
+            widthPercent != null || heightPercent != null
+}
+
+/**
+ * 段内行内图：占 [start, end)（通常为单字符 U+FFFC），影响行高与占位宽度。
+ */
+data class InlineImage(
+    val start: Int,
+    val end: Int,
+    /** 本地绝对路径 */
+    val path: String,
+    val displaySize: ImageDisplaySize? = null,
+)
+
+/** 段落水平对齐（HTML text-align / align） */
+enum class TextAlign {
+    START,
+    CENTER,
+    END,
+}
+
 data class Paragraph(
     val index: Int,
     val text: String,
     val isChapter: Boolean = false,
-)
+    /** 富文本区间（TXT 为空） */
+    val spans: List<TextSpanStyle> = emptyList(),
+    /**
+     * **整行/块级**图片：独占一段、居中（或漫画满宽）。
+     * [text] 通常为空（TTS 跳过）。
+     */
+    val imagePath: String? = null,
+    /** 块图 HTML 指定尺寸 */
+    val imageDisplaySize: ImageDisplaySize? = null,
+    /** 行内图片（与 [text] 中的 U+FFFC 对应） */
+    val inlineImages: List<InlineImage> = emptyList(),
+    /** 水平对齐 */
+    val align: TextAlign = TextAlign.START,
+    /**
+     * 预格式化（&lt;pre&gt;）：保留空白与换行，等宽绘制。
+     */
+    val preformatted: Boolean = false,
+) {
+    /** 是否为整行图片段 */
+    val isBlockImage: Boolean get() = !imagePath.isNullOrBlank()
+    /** 兼容旧调用：整行图 */
+    val isImage: Boolean get() = isBlockImage
+    val hasInlineImages: Boolean get() = inlineImages.isNotEmpty()
+}
 
 data class Chapter(
     val title: String,
@@ -114,11 +197,15 @@ data class Bookmark(
 
 enum class ReadTheme {
     DEFAULT,
+    /** 纯白背景 */
+    WHITE,
     GREEN,
     BLUE,
     PURPLE,
     SEPIA,
     NIGHT,
+    /** 自定义背景色，见 [ReadStyle.customBgColor] */
+    CUSTOM,
 }
 
 data class ReadStyle(
@@ -132,6 +219,8 @@ data class ReadStyle(
      * @see com.whj.reader.util.ReaderFonts
      */
     val fontFamily: String = "default",
+    /** [ReadTheme.CUSTOM] 时的背景 ARGB */
+    val customBgColor: Int = 0xFFFFFFFF.toInt(),
 )
 
 /** 阅读页屏幕常亮 */

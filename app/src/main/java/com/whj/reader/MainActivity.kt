@@ -363,6 +363,8 @@ class MainActivity : AppCompatActivity() {
                         "text/plain",
                         "text/*",
                         "application/pdf",
+                        "application/epub+zip",
+                        "application/x-mobipocket-ebook",
                         "application/octet-stream",
                     ),
                 )
@@ -613,9 +615,16 @@ class MainActivity : AppCompatActivity() {
     private fun isInsideHistory(): Boolean =
         ReadingHistoryStore.isHistoryFolderId(currentFolderId)
 
-    /** 绑定目录 / 阅读历史：不支持多选排序 */
-    private fun isBrowseOnlyFolder(): Boolean =
-        isInsideLinked() || isInsideHistory()
+    /** 绑定外部目录：只浏览，不支持多选 */
+    private fun isBrowseOnlyFolder(): Boolean = isInsideLinked()
+
+    /** 虚拟书架 / 阅读历史：可多选；绑定目录不可 */
+    private fun supportsMultiSelect(): Boolean =
+        !isInsideLinked() && !searchMode
+
+    /** 仅虚拟书架支持拖排序；历史按时间排，不可拖 */
+    private fun supportsSelectionDrag(): Boolean =
+        selectionMode && supportsMultiSelect() && !isInsideHistory()
 
     private fun handleIncomingIntent(intent: Intent?): Boolean {
         if (intent == null) return false
@@ -828,6 +837,8 @@ class MainActivity : AppCompatActivity() {
                 "text/plain",
                 "text/*",
                 "application/pdf",
+                "application/epub+zip",
+                "application/x-mobipocket-ebook",
                 "application/octet-stream",
             ),
         )
@@ -1418,7 +1429,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 工具栏多选按钮：进入多选（不预选；点选书籍勾选） */
     private fun startMultiSelectMode() {
-        if (isBrowseOnlyFolder()) {
+        if (isInsideLinked()) {
             Toasts.show(this, R.string.multiselect_shelf_only)
             return
         }
@@ -1452,13 +1463,31 @@ class MainActivity : AppCompatActivity() {
         updateSelectionUi()
     }
 
-    /** 书架书长按菜单 */
+    /** 书架书长按菜单；历史内可多选 / 删除记录 */
     private fun showBookPopupMenu(book: ShelfBook, anchor: android.view.View) {
+        val historyItem = isInsideHistory() ||
+            ReadingHistoryStore.isHistoryBookId(book.id) ||
+            ReadingHistoryStore.isHistoryFolderId(book.folderId)
         val popup = PopupMenu(this, anchor)
-        popup.menu.add(0, 1, 0, R.string.move_book)
-        popup.menu.add(0, 2, 1, R.string.delete_book)
+        if (historyItem) {
+            popup.menu.add(0, 10, 0, R.string.selection_mode)
+            popup.menu.add(0, 2, 1, R.string.history_delete_record)
+        } else {
+            popup.menu.add(0, 1, 0, R.string.move_book)
+            popup.menu.add(0, 2, 1, R.string.delete_book)
+        }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                10 -> {
+                    // 进入多选并勾选当前项
+                    if (!selectionMode) {
+                        selectionMode = true
+                        selectedBookIds.clear()
+                    }
+                    selectedBookIds.add(book.id)
+                    updateSelectionUi()
+                    true
+                }
                 1 -> {
                     showMoveBookDialog(book)
                     true
@@ -1494,8 +1523,12 @@ class MainActivity : AppCompatActivity() {
             ReadingHistoryStore.isHistoryFolderId(book.folderId) ||
             isInsideHistory()
         AlertDialog.Builder(this)
-            .setTitle(R.string.delete_book)
-            .setMessage(R.string.delete_book_msg)
+            .setTitle(
+                if (isHistory) R.string.history_delete_title else R.string.delete_book,
+            )
+            .setMessage(
+                if (isHistory) R.string.history_delete_msg else R.string.delete_book_msg,
+            )
             .setPositiveButton(R.string.delete) { _, _ ->
                 if (isHistory) {
                     // 删除阅读记录 + PDF OCR/目录等缓存
@@ -1510,6 +1543,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectAllBooks() {
+        if (!supportsMultiSelect() && !selectionMode) {
+            Toasts.show(this, R.string.multiselect_shelf_only)
+            return
+        }
         selectedBookIds.clear()
         adapter.currentItems().forEach { item ->
             if (item is ShelfItem.Book) selectedBookIds.add(item.book.id)
@@ -1524,16 +1561,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateSelectionUi() {
         if (!::binding.isInitialized || !::adapter.isInitialized) return
-        val multi = selectionMode && !isBrowseOnlyFolder()
+        val multi = selectionMode && supportsMultiSelect()
         binding.selectionBar.isVisible = multi
         binding.actionScroll.isVisible = !multi
-        binding.btnMultiSelect.isVisible = !isBrowseOnlyFolder() && !searchMode
+        binding.btnMultiSelect.isVisible = supportsMultiSelect()
         binding.tvSelectionCount.text = getString(R.string.selection_count, selectedBookIds.size)
-        // 多选时可拖排序（会切到自定义排序）
+        // 历史：只删不移、不可拖排序
+        val history = isInsideHistory()
+        binding.btnSelectionMove.isVisible = multi && !history
+        binding.btnSelectionRemove.text = getString(
+            if (history) R.string.history_delete_record else R.string.delete_book,
+        )
         adapter.setSelectionState(
             enabled = multi,
             selected = selectedBookIds.toSet(),
-            dragEnabled = multi,
+            dragEnabled = supportsSelectionDrag(),
         )
     }
 
@@ -1544,6 +1586,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun batchMoveSelected() {
+        if (isInsideHistory()) {
+            Toasts.show(this, R.string.history_no_move)
+            return
+        }
         val books = selectedBooks()
         if (books.isEmpty()) {
             Toasts.show(this, R.string.selection_empty)
@@ -1571,30 +1617,49 @@ class MainActivity : AppCompatActivity() {
             Toasts.show(this, R.string.selection_empty)
             return
         }
+        val historyMode = isInsideHistory() || books.all {
+            ReadingHistoryStore.isHistoryBookId(it.id) ||
+                ReadingHistoryStore.isHistoryFolderId(it.folderId)
+        }
         AlertDialog.Builder(this)
-            .setTitle(R.string.batch_delete_books_title)
-            .setMessage(getString(R.string.batch_delete_books_msg, books.size))
+            .setTitle(
+                if (historyMode) R.string.history_batch_delete_title
+                else R.string.batch_delete_books_title,
+            )
+            .setMessage(
+                if (historyMode) {
+                    getString(R.string.history_batch_delete_msg, books.size)
+                } else {
+                    getString(R.string.batch_delete_books_msg, books.size)
+                },
+            )
             .setPositiveButton(R.string.delete) { _, _ ->
-                val historyUris = books
-                    .filter {
-                        ReadingHistoryStore.isHistoryBookId(it.id) ||
-                            ReadingHistoryStore.isHistoryFolderId(it.folderId)
+                if (historyMode || isInsideHistory()) {
+                    // 历史页：全部按 URI 清记录
+                    ReadingHistoryStore.removeRecords(this, books.map { it.uri })
+                    Toasts.show(this, getString(R.string.history_batch_removed, books.size))
+                } else {
+                    val historyUris = books
+                        .filter {
+                            ReadingHistoryStore.isHistoryBookId(it.id) ||
+                                ReadingHistoryStore.isHistoryFolderId(it.folderId)
+                        }
+                        .map { it.uri }
+                    val shelfIds = books
+                        .filterNot {
+                            ReadingHistoryStore.isHistoryBookId(it.id) ||
+                                ReadingHistoryStore.isHistoryFolderId(it.folderId)
+                        }
+                        .map { it.id }
+                        .toSet()
+                    if (historyUris.isNotEmpty()) {
+                        ReadingHistoryStore.removeRecords(this, historyUris)
                     }
-                    .map { it.uri }
-                val shelfIds = books
-                    .filterNot {
-                        ReadingHistoryStore.isHistoryBookId(it.id) ||
-                            ReadingHistoryStore.isHistoryFolderId(it.folderId)
+                    if (shelfIds.isNotEmpty()) {
+                        BookshelfStore.removeBooks(this, shelfIds)
                     }
-                    .map { it.id }
-                    .toSet()
-                if (historyUris.isNotEmpty()) {
-                    ReadingHistoryStore.removeRecords(this, historyUris)
+                    Toasts.show(this, getString(R.string.batch_removed, books.size))
                 }
-                if (shelfIds.isNotEmpty()) {
-                    BookshelfStore.removeBooks(this, shelfIds)
-                }
-                Toasts.show(this, getString(R.string.batch_removed, books.size))
                 exitSelectionMode()
                 refreshShelf()
             }
@@ -1749,7 +1814,7 @@ class MainActivity : AppCompatActivity() {
                 recyclerView: RecyclerView,
                 viewHolder: RecyclerView.ViewHolder,
             ): Int {
-                if (!selectionMode || isBrowseOnlyFolder()) return 0
+                if (!supportsSelectionDrag()) return 0
                 val item = adapter.getItem(viewHolder.bindingAdapterPosition) ?: return 0
                 if (item !is ShelfItem.Book) return 0
                 return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
@@ -1760,7 +1825,7 @@ class MainActivity : AppCompatActivity() {
                 viewHolder: RecyclerView.ViewHolder,
                 target: RecyclerView.ViewHolder,
             ): Boolean {
-                if (!selectionMode || isBrowseOnlyFolder()) return false
+                if (!supportsSelectionDrag()) return false
                 val from = viewHolder.bindingAdapterPosition
                 val to = target.bindingAdapterPosition
                 if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false

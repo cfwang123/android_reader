@@ -3,9 +3,12 @@ package com.whj.reader.data
 import android.content.Context
 import android.net.Uri
 import com.whj.reader.model.Paragraph
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
 /**
  * 书内全文搜索（TXT 段落 / PDF 按页）。
+ * 支持边搜边回调，便于 UI 实时展示。
  */
 object BookSearcher {
 
@@ -27,50 +30,73 @@ object BookSearcher {
     )
 
     fun searchTxt(paragraphs: List<Paragraph>, query: String): List<Hit> {
-        val q = query.trim()
-        if (q.isEmpty() || paragraphs.isEmpty()) return emptyList()
-        val totalChars = paragraphs.sumOf { it.text.length }.coerceAtLeast(1)
-        var charBefore = 0
         val out = ArrayList<Hit>(32)
-        for (p in paragraphs) {
-            val text = p.text
-            var start = 0
-            while (start < text.length) {
-                val idx = text.indexOf(q, start, ignoreCase = true)
-                if (idx < 0) break
-                val absPos = charBefore + idx
-                val pct = ((absPos.toFloat() / totalChars) * 100f).toInt().coerceIn(0, 100)
-                out.add(
-                    Hit(
-                        index = p.index,
-                        offset = idx,
-                        length = q.length,
-                        locationLabelValue = pct,
-                        context = makeContext(text, idx, q.length),
-                        isPdf = false,
-                    ),
-                )
-                if (out.size >= MAX_RESULTS) return out
-                start = idx + q.length.coerceAtLeast(1)
-            }
-            charBefore += text.length
+        searchTxtStreaming(paragraphs, query, isActive = { true }) { hit ->
+            out.add(hit)
+            out.size < MAX_RESULTS
         }
         return out
     }
 
     /**
+     * 流式搜索 TXT。
+     * [onHit] 返回 false 时停止；[isActive] 为 false 时中止（取消搜索）。
+     */
+    fun searchTxtStreaming(
+        paragraphs: List<Paragraph>,
+        query: String,
+        isActive: () -> Boolean = { true },
+        onHit: (Hit) -> Boolean,
+    ): Int {
+        val q = query.trim()
+        if (q.isEmpty() || paragraphs.isEmpty()) return 0
+        val totalChars = paragraphs.sumOf { it.text.length }.coerceAtLeast(1)
+        var charBefore = 0
+        var count = 0
+        for (p in paragraphs) {
+            if (!isActive()) return count
+            val text = p.text
+            var start = 0
+            while (start < text.length) {
+                if (!isActive()) return count
+                val idx = text.indexOf(q, start, ignoreCase = true)
+                if (idx < 0) break
+                val absPos = charBefore + idx
+                val pct = ((absPos.toFloat() / totalChars) * 100f).toInt().coerceIn(0, 100)
+                val hit = Hit(
+                    index = p.index,
+                    offset = idx,
+                    length = q.length,
+                    locationLabelValue = pct,
+                    context = makeContext(text, idx, q.length),
+                    isPdf = false,
+                )
+                count++
+                if (!onHit(hit) || count >= MAX_RESULTS) return count
+                start = idx + q.length.coerceAtLeast(1)
+            }
+            charBefore += text.length
+        }
+        return count
+    }
+
+    /**
      * 搜索 PDF：按页抽取文字后匹配。
-     * [marginsForPage] 可选切边过滤。
+     * [onHit] 非空时边搜边回调，返回 false 停止。
      */
     fun searchPdf(
         context: Context,
         uri: Uri,
         query: String,
         marginsForPage: ((pageIndex: Int) -> FloatArray)? = null,
+        isActive: () -> Boolean = { true },
+        onHit: ((Hit) -> Boolean)? = null,
     ): List<Hit> {
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
+        if (!isActive()) return emptyList()
         val raw = PdfTextExtractor.extractAll(context, uri)
+        if (!isActive()) return emptyList()
         val extracted = if (marginsForPage != null) {
             PdfTextExtractor.filterByCrop(raw, marginsForPage)
         } else {
@@ -93,20 +119,22 @@ object BookSearcher {
             }
         }
         for ((page, text) in pageTexts) {
+            if (!isActive()) return out
             var start = 0
             while (start < text.length) {
+                if (!isActive()) return out
                 val idx = text.indexOf(q, start, ignoreCase = true)
                 if (idx < 0) break
-                out.add(
-                    Hit(
-                        index = page,
-                        offset = idx,
-                        length = q.length,
-                        locationLabelValue = page + 1,
-                        context = makeContext(text, idx, q.length),
-                        isPdf = true,
-                    ),
+                val hit = Hit(
+                    index = page,
+                    offset = idx,
+                    length = q.length,
+                    locationLabelValue = page + 1,
+                    context = makeContext(text, idx, q.length),
+                    isPdf = true,
                 )
+                out.add(hit)
+                if (onHit != null && !onHit(hit)) return out
                 if (out.size >= MAX_RESULTS) return out
                 start = idx + q.length.coerceAtLeast(1)
             }

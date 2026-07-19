@@ -41,6 +41,14 @@
             <data android:mimeType="application/pdf" />
         </intent>
         <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/epub+zip" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/x-mobipocket-ebook" />
+        </intent>
+        <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="image/*" />
         </intent>
@@ -84,12 +92,42 @@
                 <data android:scheme="content" />
                 <data android:scheme="file" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/x-mobipocket-ebook" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.epub" />
+                <data android:pathPattern=".*\\.EPUB" />
+                <data android:pathPattern=".*\\.mobi" />
+                <data android:pathPattern=".*\\.MOBI" />
+                <data android:pathPattern=".*\\.azw3" />
+                <data android:pathPattern=".*\\.azw" />
+            </intent-filter>
         </activity>
 
         <activity
             android:name=".ReadingActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <activity
+            android:name=".ImageGalleryActivity"
+            android:exported="false"
+            android:parentActivityName=".ReadingActivity"
+            android:theme="@style/Theme.WhjReader"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
@@ -137,7 +175,22 @@
         <service
             android:name=".tts.TtsPlaybackService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback"
+            android:stopWithTask="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </service>
+        <!-- 注意：锁屏续播依赖 FGS + WAKE_LOCK + MediaSession；勿对该服务设 process 隔离 -->
+
+        <!-- 耳机线控 / 蓝牙媒体键 → MediaSession（对齐 music-player） -->
+        <receiver
+            android:name="androidx.media.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

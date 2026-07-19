@@ -284,7 +284,12 @@ object FolderImporter {
 
     fun isBookFileName(name: String): Boolean {
         return name.endsWith(".txt", ignoreCase = true) ||
-            name.endsWith(".pdf", ignoreCase = true)
+            name.endsWith(".pdf", ignoreCase = true) ||
+            name.endsWith(".epub", ignoreCase = true) ||
+            name.endsWith(".mobi", ignoreCase = true) ||
+            name.endsWith(".azw", ignoreCase = true) ||
+            name.endsWith(".azw3", ignoreCase = true) ||
+            name.endsWith(".prc", ignoreCase = true)
     }
 
     private fun queryTreeName(treeUri: Uri): String? {

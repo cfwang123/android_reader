@@ -107,22 +107,26 @@ class TfliteOcrEngine(
     )
 
     private fun openModels(preferred: Backend): Models {
-        // AUTO：全量 NNAPI → 混合(det/cls NNAPI + rec CPU) → GPU → CPU
-        // 指定 NNAPI 时也尝试混合，最后才纯 CPU
+        // AUTO：NNAPI(setUseNNAPI) → NNAPI(NnApiDelegate) → 混合 → GPU → CPU
         val attempts: List<() -> Opened> = when (preferred) {
             Backend.AUTO -> listOf(
-                { tryOpenBackend(Backend.NNAPI) },
+                { tryOpenNnapi(mode = NnapiMode.USE_NNAPI_FLAG) },
+                { tryOpenNnapi(mode = NnapiMode.NNAPI_DELEGATE) },
                 { tryOpenHybridNnapi() },
                 { tryOpenBackend(Backend.GPU) },
                 { tryOpenBackend(Backend.CPU) },
             )
             Backend.NNAPI -> listOf(
-                { tryOpenBackend(Backend.NNAPI) },
+                { tryOpenNnapi(mode = NnapiMode.USE_NNAPI_FLAG) },
+                { tryOpenNnapi(mode = NnapiMode.NNAPI_DELEGATE) },
                 { tryOpenHybridNnapi() },
+                // 混合也试 NnApiDelegate
+                { tryOpenHybridNnapiDelegate() },
                 { tryOpenBackend(Backend.CPU) },
             )
             Backend.GPU -> listOf(
                 { tryOpenBackend(Backend.GPU) },
+                { tryOpenGpuForce() },
                 { tryOpenBackend(Backend.CPU) },
             )
             Backend.CPU -> listOf { tryOpenBackend(Backend.CPU) }
@@ -146,27 +150,127 @@ class TfliteOcrEngine(
         throw last ?: IllegalStateException("no OCR backend")
     }
 
+    private enum class NnapiMode { USE_NNAPI_FLAG, NNAPI_DELEGATE }
+
+    private fun nnapiOptions(
+        tag: String,
+        mode: NnapiMode,
+        created: MutableList<AutoCloseable>,
+    ): Interpreter.Options {
+        val o = Interpreter.Options().apply { setNumThreads(4) }
+        when (mode) {
+            NnapiMode.USE_NNAPI_FLAG -> {
+                @Suppress("DEPRECATION")
+                o.setUseNNAPI(true)
+                initLine("  $tag: setUseNNAPI(true)")
+            }
+            NnapiMode.NNAPI_DELEGATE -> {
+                val nnOpt = NnApiDelegate.Options().apply {
+                    setAllowFp16(true)
+                    setExecutionPreference(
+                        NnApiDelegate.Options.EXECUTION_PREFERENCE_SUSTAINED_SPEED,
+                    )
+                    // 允许部分算子回落 CPU，提高 apply 成功率
+                    setUseNnapiCpu(true)
+                }
+                val d = NnApiDelegate(nnOpt)
+                created.add(d)
+                o.addDelegate(d)
+                initLine("  $tag: NnApiDelegate(allowFp16, useNnapiCpu)")
+            }
+        }
+        return o
+    }
+
+    /** 全量 det/cls/rec 走 NNAPI（两种绑定方式分开尝试） */
+    private fun tryOpenNnapi(mode: NnapiMode): Opened {
+        val label = when (mode) {
+            NnapiMode.USE_NNAPI_FLAG -> "NNAPI"
+            NnapiMode.NNAPI_DELEGATE -> "NNAPI-DLG"
+        }
+        initLine("try full $label")
+        val created = ArrayList<AutoCloseable>()
+        return try {
+            val d = Interpreter(loadAsset("ocr/det.tflite"), nnapiOptions("det", mode, created))
+            val c = Interpreter(loadAsset("ocr/cls.tflite"), nnapiOptions("cls", mode, created))
+            val r = Interpreter(loadAsset("ocr/rec.tflite"), nnapiOptions("rec", mode, created))
+            // 立刻跑一次，尽早暴露 apply/allocate 失败
+            warmup(d, c, r)
+            Opened(d, c, r, label, created)
+        } catch (t: Throwable) {
+            created.forEach { runCatching { it.close() } }
+            throw t
+        }
+    }
+
     /**
-     * 实测 rec 模型在本机 NNAPI 上 apply delegate 失败；
-     * det/cls 可用 NNAPI，rec 走 CPU → 标签 NNAPI+CPU。
+     * det/cls 用 setUseNNAPI，rec 走 CPU。
      */
     private fun tryOpenHybridNnapi(): Opened {
-        initLine("try hybrid: det/cls=NNAPI, rec=CPU")
+        initLine("try hybrid: det/cls=setUseNNAPI, rec=CPU")
         val created = ArrayList<AutoCloseable>()
-        fun nnOptions(tag: String): Interpreter.Options {
-            val o = Interpreter.Options().apply { setNumThreads(4) }
-            @Suppress("DEPRECATION")
-            o.setUseNNAPI(true)
-            initLine("  hybrid $tag: setUseNNAPI(true)")
-            return o
-        }
         val cpu = Interpreter.Options().apply { setNumThreads(4) }
         return try {
-            val d = Interpreter(loadAsset("ocr/det.tflite"), nnOptions("det"))
-            val c = Interpreter(loadAsset("ocr/cls.tflite"), nnOptions("cls"))
+            val d = Interpreter(
+                loadAsset("ocr/det.tflite"),
+                nnapiOptions("det", NnapiMode.USE_NNAPI_FLAG, created),
+            )
+            val c = Interpreter(
+                loadAsset("ocr/cls.tflite"),
+                nnapiOptions("cls", NnapiMode.USE_NNAPI_FLAG, created),
+            )
             val r = Interpreter(loadAsset("ocr/rec.tflite"), cpu)
             initLine("  hybrid rec: CPU")
+            warmup(d, c, r)
             Opened(d, c, r, "NNAPI+CPU", created)
+        } catch (t: Throwable) {
+            created.forEach { runCatching { it.close() } }
+            throw t
+        }
+    }
+
+    /** det/cls 用 NnApiDelegate，rec 走 CPU */
+    private fun tryOpenHybridNnapiDelegate(): Opened {
+        initLine("try hybrid: det/cls=NnApiDelegate, rec=CPU")
+        val created = ArrayList<AutoCloseable>()
+        val cpu = Interpreter.Options().apply { setNumThreads(4) }
+        return try {
+            val d = Interpreter(
+                loadAsset("ocr/det.tflite"),
+                nnapiOptions("det", NnapiMode.NNAPI_DELEGATE, created),
+            )
+            val c = Interpreter(
+                loadAsset("ocr/cls.tflite"),
+                nnapiOptions("cls", NnapiMode.NNAPI_DELEGATE, created),
+            )
+            val r = Interpreter(loadAsset("ocr/rec.tflite"), cpu)
+            initLine("  hybrid rec: CPU")
+            warmup(d, c, r)
+            Opened(d, c, r, "NNAPI-DLG+CPU", created)
+        } catch (t: Throwable) {
+            created.forEach { runCatching { it.close() } }
+            throw t
+        }
+    }
+
+    /** CompatibilityList 报不支持时仍强制试 GpuDelegate（部分机型探测偏保守） */
+    private fun tryOpenGpuForce(): Opened {
+        initLine("try GPU force (ignore CompatibilityList)")
+        val created = ArrayList<AutoCloseable>()
+        return try {
+            fun gpuOpt(tag: String): Interpreter.Options {
+                val o = Interpreter.Options().apply { setNumThreads(4) }
+                val d = GpuDelegate()
+                created.add(d)
+                o.addDelegate(d)
+                initLine("  $tag: GpuDelegate() default")
+                return o
+            }
+            val d = Interpreter(loadAsset("ocr/det.tflite"), gpuOpt("det"))
+            val c = Interpreter(loadAsset("ocr/cls.tflite"), gpuOpt("cls"))
+            val r = Interpreter(loadAsset("ocr/rec.tflite"), gpuOpt("rec"))
+            warmup(d, c, r)
+            Opened(d, c, r, "GPU", created)
         } catch (t: Throwable) {
             created.forEach { runCatching { it.close() } }
             throw t
@@ -181,10 +285,7 @@ class TfliteOcrEngine(
         val delegates: List<AutoCloseable>,
     )
 
-    /**
-     * 每个 Interpreter 独立 Options + 独立模型映射。
-     * NNAPI 优先 setUseNNAPI(true)，失败再 NnApiDelegate。
-     */
+    /** CPU / GPU（CompatibilityList）路径 */
     private fun tryOpenBackend(b: Backend): Opened {
         val created = ArrayList<AutoCloseable>()
         val label = when (b) {
@@ -196,32 +297,20 @@ class TfliteOcrEngine(
             val o = Interpreter.Options().apply { setNumThreads(4) }
             when (b) {
                 Backend.NNAPI -> {
-                    try {
-                        @Suppress("DEPRECATION")
-                        o.setUseNNAPI(true)
-                        initLine("  $modelTag: setUseNNAPI(true)")
-                    } catch (t: Throwable) {
-                        initLine("  $modelTag: setUseNNAPI fail ${t.message}")
-                        val nnOpt = NnApiDelegate.Options().apply {
-                            setAllowFp16(true)
-                            setExecutionPreference(
-                                NnApiDelegate.Options.EXECUTION_PREFERENCE_SUSTAINED_SPEED,
-                            )
-                        }
-                        val d = NnApiDelegate(nnOpt)
-                        created.add(d)
-                        o.addDelegate(d)
-                    }
+                    // 走 tryOpenNnapi，这里不应再进
+                    @Suppress("DEPRECATION")
+                    o.setUseNNAPI(true)
+                    initLine("  $modelTag: setUseNNAPI(true)")
                 }
                 Backend.GPU -> {
                     val compat = CompatibilityList()
                     if (!compat.isDelegateSupportedOnThisDevice) {
-                        error("GPU not supported on this device")
+                        error("GPU not supported on this device (CompatibilityList)")
                     }
                     val d = GpuDelegate(compat.bestOptionsForThisDevice)
                     created.add(d)
                     o.addDelegate(d)
-                    initLine("  $modelTag: GpuDelegate ok")
+                    initLine("  $modelTag: GpuDelegate bestOptions")
                 }
                 Backend.CPU, Backend.AUTO -> Unit
             }

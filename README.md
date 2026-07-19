@@ -1,58 +1,108 @@
 # Text Reader (whj.reader)
 
-A lightweight Android reader: bookshelf, TXT/PDF, system TTS, speech export (MP3/M4A/WAV), on-device OCR, Chinese/English UI.
+A lightweight Android reader: bookshelf, TXT / EPUB / MOBI / PDF, system TTS, speech export, on-device OCR, Chinese/English UI. Stream books (TXT/EPUB/MOBI) share one self-drawn reading surface; PDF has its own pipeline.
 
 [中文](README.zh.md)
 
 ## Features
 
-- **Bookshelf**: import TXT/PDF or folders; one-level shelves; bind external trees; multi-select; search
-- **TXT**: virtual list, font presets, encoding/Chinese conversion, sentence TTS, range speech export
-- **PDF**: continuous/single page, zoom, crop, TOC (preloaded on open), in-doc links, TTS, scan OCR
-- **Speech export**: TXT by line range / PDF by page range; **MP3** (arm64 LAME) / **M4A** / **WAV** + bitrate
-- **OCR**: gallery/camera → TFLite PP-OCR → overlay + full text
-- **Orientation**: portrait / landscape / auto (menu icon follows mode); immersive fullscreen
-- **Language**: Settings → App language
+| Area | Capabilities |
+|------|----------------|
+| **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW/AZW3/PRC) or folders; one-level shelves; bind external trees; multi-select; search; backup/restore |
+| **Stream books** | TXT + EPUB + MOBI via `ReadingActivity` / `VirtualReaderView`; fast first paint, background continue-load |
+| **PDF** | Continuous/single page, zoom, crop, TOC preload, in-doc links, TTS, scan OCR, page-range export |
+| **TTS / export** | Sentence highlight, lock-screen continue, media controls; export **MP3** (arm64 LAME) / **M4A** / **WAV** |
+| **OCR** | Gallery/camera → TFLite PP-OCR; scanned PDF page OCR cache |
+| **Other** | Portrait / landscape / auto; immersive fullscreen; app language; keep-screen + idle timeout |
 
 ### Bookshelf
 
-- Import TXT/PDF; import folder; bind folder (browse only)
+- Import files or folders (TXT / PDF / EPUB / MOBI…); bind folder (browse only, no copy)
 - Multi-select: move / remove (does not delete source files)
-- Encoding is set on the **TXT reading screen**, not the shelf
+- Reading history virtual entry; progress and bookmarks keyed by URI
+- **Backup / import** shelves, progress, bookmarks (local only)
+- Overflow: Text to speech, OCR
 
-### TXT reading
+### Stream reading (TXT / EPUB / MOBI)
 
-- Center menu (two-page horizontal swipe): style, prefs, jump, TOC, orientation, fullscreen, night, read, **synthesize**
-- **Fonts**: default / sans / serif / mono (system typefaces)
-- **Paragraphs**: one newline = one unit; only real chapter titles (e.g. “第X章”) are bold — not “一、二、三、” list lines
-- **TTS**: sentence highlight; `QUEUE_ADD` prequeue; back key stops TTS without leaving the book
-- **Export**: default full text; optional start/end lines; auto-append “。” if a line lacks sentence punctuation
+Shared virtual list:
+
+- **Open**: EPUB/MOBI parse OPF/HTML (or PalmDOC); **stream first screen**, then continue in background with progress in the title bar
+- **Themes**: default / white / green / blue / purple / sepia / night / **custom background**
+- **Fonts**: default / sans / serif / mono (system typefaces); size, line spacing, paragraph spacing, letter spacing
+- **TXT**: encoding detect/manual; simplified↔traditional Chinese; one newline = one paragraph
+- **EPUB / MOBI rich subset**:
+  - bold / italic / underline / color / background
+  - **block images** and **inline images** (optical vertical center); HTML width/height / percent
+  - **hyperlinks** (in-book anchors, relative paths, external with confirm)
+  - tap image → **gallery** (zoom, swipe, side-tap)
+- **TOC / bookmarks / jump**; title bar progress, battery, clock
+- **In-book search**: streaming scan, live results, tap to jump
+- **Gestures**: low-latency side-tap page turn, scroll; back can stop TTS only
+- **TTS**: sentence highlight; multi-sentence prequeue; speak-text normalize (e.g. drop spaces in “第 1 段”); **lock-screen / background continue** (below); sleep timer
+- **Export speech**: full text by default; optional line range; auto-append “。”; MP3/M4A/WAV + bitrate
 
 ### PDF reading
 
 - Continuous or single-page; pinch-zoom; margin crop
-- **TOC**: preloaded into memory when the PDF opens (plus disk cache)
-- **Links**: tap GoTo links to jump; external URI with confirm; toolbar **history back/forward**
+- **TOC** preloaded on open (disk cache)
+- **Links**: GoTo jump; external URI confirm; toolbar history back/forward
 - Text selection when a text layer exists; **OCR scanned pages** (range, cancelable, on-disk cache)
-- **Export speech** by **page range** (default current→last; “all pages”); OCR first if no text
-- Menu prev/next page keeps the bottom menu open; orientation icon has 3 states
+- **Export speech** by page range; OCR first if no text
+- Menu prev/next keeps the bottom menu open
 
 ### TTS & export
 
 | Item | Detail |
 |------|--------|
 | System TTS | Engine / language / voice, rate, highlight, sleep timer |
-| Continuity | Prequeue next sentence with `QUEUE_ADD` |
+| Continuity | `QUEUE_ADD` prequeue (depth 5) |
+| Speak text | Normalize CJK/digit spacing before engine |
+| Lock-screen | See **TTS persistence** below |
 | Export pipeline | Chunked `synthesizeToFile` → merge WAV → MP3 or M4A |
-| MP3 | LAME **arm64-only** native lib; fallback M4A then WAV |
+| MP3 | LAME **arm64-only**; fallback M4A then WAV |
 | Bitrate | 32–192 kbps for MP3/M4A |
 | Standalone | Shelf ⋮ → Text to speech |
+
+### TTS persistence (lock screen / background)
+
+Goal: keep reading aloud after lock or backgrounding, with notification / lock-screen media controls.
+
+#### Implementation
+
+| Mechanism | Role | Where |
+|-----------|------|--------|
+| **Foreground service** | `mediaPlayback` FGS + ongoing notification while speaking/paused | `TtsPlaybackService` |
+| **PARTIAL_WAKE_LOCK** | Keep CPU while speaking so utterance callbacks run | same |
+| **MediaSession** | PLAYING/PAUSED; lock-screen panel; headset/BT keys | same + `MediaButtonReceiver` |
+| **Audio focus** | `AUDIOFOCUS_GAIN` + `USAGE_MEDIA`; **ignore LOSS while screen off** (OEM quirk) | same |
+| **MediaSession.onPause** | **Ignore while screen off**; force session back to PLAYING | same |
+| **Sentence pipeline** | Prequeue; `onDone` / `onStop`; per-utterance timeout → force advance | `TtsManager` |
+| **Watchdog** | Empty pipeline while SPEAKING → continue; long stall → re-speak | `TtsManager` |
+| **Notifications** | Request `POST_NOTIFICATIONS` on Android 13+ when user starts TTS | reading activities |
+| **Manifest** | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `WAKE_LOCK`, `POST_NOTIFICATIONS` | `AndroidManifest.xml` |
+
+Activity `onPause` does **not** stop TTS; progress may still be saved.
+
+#### If the device still kills playback
+
+1. Allow notifications on first TTS start  
+2. Settings → Apps → this app → **battery unrestricted**  
+3. Lock the app in recents  
+4. Install a system TTS engine + Chinese voice pack  
+
+#### Quick test
+
+1. Open a book → play → confirm “Speaking” notification  
+2. Lock screen and listen for **1+ minutes**  
+3. Use notification / lock controls: pause, resume, prev/next sentence  
+4. Logs: `adb logcat -s WhjTts:V WhjTtsSvc:V`
 
 ### OCR
 
 - Shelf ⋮ → OCR
 - Models: `app/src/main/assets/ocr/`
-- Overlay selection; fling scrolling for full text
+- Backend: NNAPI → GPU → CPU; overlay selection; fling for full text
 
 ## Requirements
 
@@ -71,6 +121,7 @@ A lightweight Android reader: bookshelf, TXT/PDF, system TTS, speech export (MP3
 1. `local.properties` with `sdk.dir=...` (gitignored)
 2. JDK 17
 3. `adb` on PATH
+4. Signing: `keystore.properties` + `release.keystore` (see `keystore.properties.example`; do not commit secrets)
 
 ## Quick start
 
@@ -95,19 +146,35 @@ reader/
 │   ├── assets/ocr/
 │   ├── java/com/whj/reader/
 │   │   ├── MainActivity.kt
-│   │   ├── ReadingActivity.kt      # TXT + TTS + export
-│   │   ├── PdfReadingActivity.kt   # PDF + links + OCR + page export
+│   │   ├── ReadingActivity.kt      # TXT/EPUB/MOBI + TTS + export
+│   │   ├── PdfReadingActivity.kt
+│   │   ├── BookSearchActivity.kt
+│   │   ├── ImageGalleryActivity.kt
 │   │   ├── OcrActivity.kt
 │   │   ├── TtsSynthActivity.kt
-│   │   ├── data/
+│   │   ├── data/                   # BookLoader, Epub, Mobi, Html…
 │   │   ├── ocr/
-│   │   ├── tts/                    # manager, export, wav/aac/mp3
-│   │   └── ui/
+│   │   ├── tts/                    # TtsManager, TtsPlaybackService (lock-screen)
+│   │   └── ui/                     # VirtualReaderView, …
 │   └── res/
 ├── build.js
 ├── keystore.properties.example
 ├── README.md
 └── README.zh.md
+```
+
+### Load path (short)
+
+```
+URI → BookLoader
+        ├─ TXT   → TextLoader
+        ├─ EPUB  → EpubLoader (zip/OPF + HtmlRichParser, optional streamer)
+        ├─ MOBI  → MobiLoader (PalmDOC + HTML subset)
+        └─ PDF   → PdfReadingActivity
+
+Stream books → ReadingActivity + VirtualReaderView
+
+TTS          → TtsManager (pipeline) + TtsPlaybackService (FGS / WakeLock / MediaSession)
 ```
 
 ## APK size (approx.)
@@ -120,9 +187,17 @@ Largest parts: TFLite natives (multi-ABI) + OCR models; then PDFBox; LAME arm64 
 
 Install a system TTS engine and a Chinese voice pack; check volume.
 
+### TTS stops soon after lock
+
+See **TTS persistence**: allow notifications; unrestricted battery; lock in recents. If logs show focus LOSS while the screen is on, another app may be taking focus.
+
 ### Garbled TXT
 
 Auto-detect or set encoding in the reader.
+
+### EPUB / MOBI slow or incomplete styling
+
+Large books paint the first screen then load in the background. Rich text is a **subset** (b/i/u/color/bg/images/links); complex CSS/tables are unsupported. DRM-encrypted books will not open.
 
 ### Scanned PDF has no text
 
@@ -134,7 +209,7 @@ Only **arm64-v8a** ships LAME; x86/emulators fall back to M4A.
 
 ### Links do nothing
 
-Need real PDF link annotations; pure-text TOC entries use the TOC panel.
+PDF needs real link annotations; EPUB needs parsed `href`. Pure-text TOC entries use the TOC panel.
 
 ## Notes
 

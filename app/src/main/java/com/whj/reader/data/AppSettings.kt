@@ -34,6 +34,7 @@ object AppSettings {
             paraSpacingDp = p.getInt("paraSpacing", 8),
             letterSpacing = p.getFloat("letterSpacing", 0f),
             fontFamily = p.getString("fontFamily", "default") ?: "default",
+            customBgColor = p.getInt("customBgColor", 0xFFFFFFFF.toInt()),
         )
     }
 
@@ -45,6 +46,7 @@ object AppSettings {
             .putInt("paraSpacing", style.paraSpacingDp)
             .putFloat("letterSpacing", style.letterSpacing)
             .putString("fontFamily", style.fontFamily)
+            .putInt("customBgColor", style.customBgColor)
             .apply()
     }
 

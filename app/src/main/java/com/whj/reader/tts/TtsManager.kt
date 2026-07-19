@@ -1,17 +1,21 @@
 package com.whj.reader.tts
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.whj.reader.R
 import com.whj.reader.data.AppSettings
 import com.whj.reader.data.TextLoader
@@ -36,6 +40,18 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         val sentenceIndex: Int,
         val ready: Boolean,
         val statusMessage: String = "",
+    )
+
+    /** 通知栏 / 锁屏媒体控件展示信息 */
+    data class SessionInfo(
+        /** 书名等主标题 */
+        val title: String,
+        /** 当前句预览 */
+        val subtitle: String,
+        /** 是否正在出声 */
+        val playing: Boolean,
+        /** SPEAKING 或 PAUSED（需保持前台服务与控件） */
+        val active: Boolean,
     )
 
     /** 已安装 TTS 引擎；[packageName] 为 null 表示「自动」选择 */
@@ -97,11 +113,49 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private var sentenceGapMs: Long = 0L
     /**
      * 已提交给引擎、尚未 onDone 的 utterance（队首=当前/即将播）。
-     * 深度 2：当前句 + 下一句，避免 onDone 后再 speak 的引擎空档。
+     * 深度加大：锁屏后 onDone 可能延迟/丢失，多预排可多撑几句。
      */
     private val pipeline = ArrayDeque<PendingUtt>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val appCtx = context.applicationContext
+    /** 最近一次引擎 onStart/onDone 时间；用于锁屏后管道静默卡死时重试 */
+    private var lastUttActivityElapsed = 0L
+    /** 避免每句都 startForegroundService */
+    private var playbackServiceRunning = false
+    /** 通知/锁屏标题（书名） */
+    private var sessionTitle: String = ""
+    /** 当前句超时强制推进的 Runnable（可单独 remove） */
+    private var utteranceTimeoutRunnable: Runnable? = null
+
+    private val stallWatchdog = object : Runnable {
+        override fun run() {
+            if (state != State.SPEAKING) return
+            val now = SystemClock.elapsedRealtime()
+            val idle = now - lastUttActivityElapsed
+            // 管道已空但仍 SPEAKING：引擎回调丢失，立刻续读
+            if (pipeline.isEmpty() && lastUttActivityElapsed > 0L && idle >= EMPTY_PIPELINE_MS) {
+                Log.w(TAG, "TTS pipeline empty ${idle}ms while SPEAKING → advance")
+                scheduleAdvanceFromEndOfPipeline()
+            } else if (lastUttActivityElapsed > 0L && idle >= STALL_TIMEOUT_MS) {
+                Log.w(
+                    TAG,
+                    "TTS stall ${idle}ms (screen-off engine freeze?) → re-speak p=$paraIndex s=$sentIndex",
+                )
+                pipeline.clear()
+                cancelUtteranceTimeout()
+                runCatching { tts?.stop() }
+                if (ready && paragraphs.isNotEmpty()) {
+                    speakCurrent(flush = true)
+                }
+            }
+            // 确保前台服务仍在（部分机型会静默干掉 FGS）
+            if (state == State.SPEAKING) {
+                playbackServiceRunning = true
+                TtsPlaybackService.start(appCtx)
+                mainHandler.postDelayed(this, STALL_CHECK_MS)
+            }
+        }
+    }
 
     /** 一次 speak 的一句 */
     private data class PendingUtt(
@@ -440,23 +494,49 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 }
             }
 
+            // API 23+：部分引擎灭屏后只回调 onStop 而不 onDone
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                mainHandler.post {
+                    if (state != State.SPEAKING) return@post
+                    Log.i(TAG, "onStop id=$utteranceId interrupted=$interrupted")
+                    if (!interrupted) {
+                        onUtteranceDone(utteranceId)
+                    }
+                }
+            }
+
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
                 mainHandler.post {
+                    // 灭屏偶发 error：尝试续读当前句而非直接 IDLE
+                    Log.e(TAG, "utterance error id=$utteranceId → retry")
+                    cancelUtteranceTimeout()
                     pipeline.clear()
-                    state = State.IDLE
-                    statusMessage = str(R.string.tts_status_error)
-                    notifyState()
+                    if (ready && paragraphs.isNotEmpty() && state == State.SPEAKING) {
+                        speakCurrent(flush = true)
+                    } else {
+                        state = State.IDLE
+                        statusMessage = str(R.string.tts_status_error)
+                        notifyState()
+                    }
                 }
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
                 mainHandler.post {
+                    Log.e(TAG, "utterance error code=$errorCode id=$utteranceId → retry")
+                    cancelUtteranceTimeout()
                     pipeline.clear()
-                    state = State.IDLE
-                    statusMessage = str(R.string.tts_status_error_code, errorCode)
-                    Log.e(TAG, "utterance error code=$errorCode id=$utteranceId")
-                    notifyState()
+                    if (ready && paragraphs.isNotEmpty() &&
+                        (state == State.SPEAKING || state == State.PAUSED)
+                    ) {
+                        state = State.SPEAKING
+                        speakCurrent(flush = true)
+                    } else {
+                        state = State.IDLE
+                        statusMessage = str(R.string.tts_status_error_code, errorCode)
+                        notifyState()
+                    }
                 }
             }
         })
@@ -569,6 +649,14 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         sentIndex = 0
     }
 
+    /** 设置通知/锁屏展示的书名 */
+    fun setSessionTitle(title: String?) {
+        sessionTitle = title?.trim().orEmpty()
+        if (state == State.SPEAKING || state == State.PAUSED) {
+            TtsPlaybackService.refresh(appCtx)
+        }
+    }
+
     /**
      * 更新文档（例如 PDF 懒加载新页）且尽量保持当前段/句位置，不打断正在播的句子。
      * 新段落应以前缀兼容方式追加，使旧索引仍有效。
@@ -580,6 +668,30 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         sentenceLineBreakMode = lineBreakMode
         val oldP = paraIndex
         val oldS = sentIndex
+        val oldSize = this.paragraphs.size
+        // 流式追加：只重算新增段的分句，避免整本 O(n) 卡顿
+        if (oldSize > 0 &&
+            paragraphs.size >= oldSize &&
+            this.paragraphs.firstOrNull()?.text == paragraphs.firstOrNull()?.text
+        ) {
+            val newSpans = ArrayList(sentenceSpans)
+            val newSents = ArrayList(sentences)
+            for (i in oldSize until paragraphs.size) {
+                val spans = TextLoader.splitSentenceSpans(paragraphs[i].text, lineBreakMode)
+                newSpans.add(spans)
+                newSents.add(spans.map { it.text })
+            }
+            // 若中部被改写则退回全量
+            if (newSpans.size == paragraphs.size) {
+                this.paragraphs = paragraphs
+                this.sentenceSpans = newSpans
+                this.sentences = newSents
+                paraIndex = oldP.coerceIn(0, paragraphs.lastIndex)
+                val sents = sentences.getOrNull(paraIndex).orEmpty()
+                sentIndex = if (sents.isEmpty()) 0 else oldS.coerceIn(0, sents.lastIndex)
+                return
+            }
+        }
         this.paragraphs = paragraphs
         this.sentenceSpans = paragraphs.map {
             TextLoader.splitSentenceSpans(it.text, lineBreakMode)
@@ -916,7 +1028,35 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
 
     private fun clearQueueState() {
         pipeline.clear()
-        mainHandler.removeCallbacksAndMessages(null)
+        cancelUtteranceTimeout()
+        // 勿 removeCallbacksAndMessages(null)：会干掉看门狗与句超时，锁屏后续读失效
+    }
+
+    private fun cancelUtteranceTimeout() {
+        utteranceTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        utteranceTimeoutRunnable = null
+    }
+
+    /** 按句长估算超时；超时仍无 onDone 则强制推进（灭屏引擎丢回调） */
+    private fun scheduleUtteranceTimeout(utt: PendingUtt) {
+        cancelUtteranceTimeout()
+        val r = Runnable {
+            if (state != State.SPEAKING) return@Runnable
+            val head = pipeline.firstOrNull() ?: return@Runnable
+            if (head.id != utt.id) return@Runnable
+            Log.w(TAG, "utterance timeout id=${utt.id} → force onDone")
+            onUtteranceDone(utt.id)
+        }
+        utteranceTimeoutRunnable = r
+        mainHandler.postDelayed(r, estimateSpeakTimeoutMs(utt.text))
+    }
+
+    private fun estimateSpeakTimeoutMs(text: String): Long {
+        val chars = text.length.coerceAtLeast(1)
+        val rate = speechRate.coerceIn(0.5f, 2.5f)
+        // 中文约 4 字/秒 @1x，再留 4s 余量
+        val base = (chars / 4.0f / rate * 1000f).toLong()
+        return (base + 4_000L).coerceIn(5_000L, 90_000L)
     }
 
     /** 等待补充内容失败/无更多页时结束 */
@@ -1007,6 +1147,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     }
 
     private fun shutdownInternal(keepDocument: Boolean) {
+        stopStallWatchdog()
+        cancelUtteranceTimeout()
         mainHandler.removeCallbacksAndMessages(null)
         pendingPlay = null
         runCatching {
@@ -1018,6 +1160,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         initAttempted = false
         state = State.IDLE
         statusMessage = "TTS 已关闭"
+        playbackServiceRunning = false
         TtsPlaybackService.stop(appCtx)
         if (!keepDocument) {
             paragraphs = emptyList()
@@ -1036,9 +1179,14 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private fun onUtteranceStart(utteranceId: String?) {
         if (utteranceId.isNullOrEmpty()) return
         val utt = pipeline.firstOrNull { it.id == utteranceId } ?: return
+        lastUttActivityElapsed = SystemClock.elapsedRealtime()
         paraIndex = utt.para
         sentIndex = utt.sent
         state = State.SPEAKING
+        // 当前句开播时重新设超时（预排句在排队，以队首为准）
+        if (pipeline.firstOrNull()?.id == utteranceId) {
+            scheduleUtteranceTimeout(utt)
+        }
         notifySentenceHighlight()
         notifyState()
         // 开播时补排下一句
@@ -1046,6 +1194,11 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     }
 
     private fun onUtteranceDone(utteranceId: String?) {
+        lastUttActivityElapsed = SystemClock.elapsedRealtime()
+        // 若完成的是队首，取消其超时；完成后为新队首设超时
+        if (!utteranceId.isNullOrEmpty() && pipeline.firstOrNull()?.id == utteranceId) {
+            cancelUtteranceTimeout()
+        }
         if (utteranceId.isNullOrEmpty()) {
             scheduleAdvanceFromEndOfPipeline()
             return
@@ -1084,6 +1237,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 sentIndex = next.sent
                 notifySentenceHighlight()
             }
+            // 为新的队首设超时（灭屏时可能不来 onStart）
+            scheduleUtteranceTimeout(next)
             notifyState()
             fillPipeline()
             return
@@ -1202,6 +1357,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             return
         }
         pipeline.addLast(unit)
+        lastUttActivityElapsed = SystemClock.elapsedRealtime()
+        if (flush) scheduleUtteranceTimeout(unit)
         Log.i(TAG, "speak p=${unit.para} s=${unit.sent} len=${unit.text.length} mode=$mode")
         fillPipeline()
         state = State.SPEAKING
@@ -1266,12 +1423,35 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 text = body.substring(from, span.end).trim()
             }
         }
+        text = normalizeSpeakText(text)
         if (text.isEmpty()) {
             val next = nextSentencePos(para, sent) ?: return null
             return buildSentenceUnit(next.first, next.second, applyOffset = false)
         }
         val id = "p${para}_s${sent}_${System.nanoTime()}"
         return PendingUtt(id, para, sent, text)
+    }
+
+    /**
+     * 朗读用文本规范化：
+     * - 「第 1 段」→「第1段」（汉字/数字之间的空格去掉）
+     * - 零宽字符、不换行空格清理
+     * - 英文词间空格保留
+     */
+    private fun normalizeSpeakText(raw: String): String {
+        if (raw.isEmpty()) return raw
+        var s = raw
+            .replace("\u200B", "")
+            .replace("\u200C", "")
+            .replace("\u200D", "")
+            .replace("\uFEFF", "")
+            .replace('\u00A0', ' ')
+            .replace('\u3000', ' ') // 全角空格：中文语境下也去掉夹缝
+        // 汉字 / 数字（含全角）之间的空白删除
+        s = Companion.CJK_DIGIT_SPACE_RE.replace(s, "")
+        // 连续空白压成单空格（英文）
+        s = Companion.MULTI_SPACE_RE.replace(s, " ").trim()
+        return s
     }
 
     private fun notifySentenceHighlight(clear: Boolean = false) {
@@ -1292,14 +1472,75 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private fun notifyState() {
         val snap = Snapshot(state, paraIndex, sentIndex, ready, statusMessage)
         listener?.onStateChanged(snap)
-        // 仅 SPEAKING 时持有前台服务 + PARTIAL_WAKE_LOCK；
-        // 暂停 / 停止立刻停服务并释放锁（对齐 MediaSession：播时持锁、停/暂停释放）
-        mainHandler.post {
-            when (state) {
-                State.SPEAKING -> TtsPlaybackService.start(appCtx)
-                State.PAUSED, State.IDLE -> TtsPlaybackService.stop(appCtx)
+        // SPEAKING / PAUSED 保持前台服务（通知+锁屏控件）；IDLE 停服务
+        when (state) {
+            State.SPEAKING -> {
+                ensurePlaybackService(true)
+                startStallWatchdog()
+                TtsPlaybackService.refresh(appCtx)
+            }
+            State.PAUSED -> {
+                ensurePlaybackService(true)
+                stopStallWatchdog()
+                TtsPlaybackService.refresh(appCtx)
+            }
+            State.IDLE -> {
+                ensurePlaybackService(false)
+                stopStallWatchdog()
             }
         }
+    }
+
+    private fun ensurePlaybackService(wantRunning: Boolean) {
+        if (wantRunning) {
+            if (!playbackServiceRunning) {
+                playbackServiceRunning = true
+                TtsPlaybackService.start(appCtx)
+            }
+        } else if (playbackServiceRunning) {
+            playbackServiceRunning = false
+            TtsPlaybackService.stop(appCtx)
+        }
+    }
+
+    /** 当前句预览（通知副标题） */
+    fun currentSentencePreview(maxLen: Int = 80): String {
+        val raw = sentences.getOrNull(paraIndex)?.getOrNull(sentIndex)
+            ?: paragraphs.getOrNull(paraIndex)?.text.orEmpty()
+        val t = raw.replace('\n', ' ').trim()
+        if (t.isEmpty()) return ""
+        return if (t.length <= maxLen) t else t.take(maxLen - 1) + "…"
+    }
+
+    fun buildSessionInfo(): SessionInfo {
+        val title = sessionTitle.ifBlank {
+            appCtx.getString(R.string.tts_notif_title)
+        }
+        val sub = currentSentencePreview().ifBlank {
+            when (state) {
+                State.SPEAKING -> str(R.string.tts_speaking)
+                State.PAUSED -> str(R.string.tts_paused)
+                State.IDLE -> str(R.string.tts_idle)
+            }
+        }
+        return SessionInfo(
+            title = title,
+            subtitle = sub,
+            playing = state == State.SPEAKING,
+            active = state == State.SPEAKING || state == State.PAUSED,
+        )
+    }
+
+    private fun startStallWatchdog() {
+        mainHandler.removeCallbacks(stallWatchdog)
+        if (lastUttActivityElapsed <= 0L) {
+            lastUttActivityElapsed = SystemClock.elapsedRealtime()
+        }
+        mainHandler.postDelayed(stallWatchdog, STALL_CHECK_MS)
+    }
+
+    private fun stopStallWatchdog() {
+        mainHandler.removeCallbacks(stallWatchdog)
     }
 
     /** 当前句在段内的 [start, end) */
@@ -1322,13 +1563,68 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
          */
         private const val XIAOMI_SPEED_MIN = 0.55f
         private const val XIAOMI_SPEED_MAX = 1.95f
-        /** 引擎中同时保持的 utterance 数（当前句 + 下一句） */
-        private const val PIPELINE_DEPTH = 2
+        /** 引擎中保持的 utterance 数（锁屏后回调不稳，多预排多撑几句） */
+        private const val PIPELINE_DEPTH = 5
+        /**
+         * 无 onStart/onDone 超过该时间则视为卡死并重发。
+         */
+        private const val STALL_TIMEOUT_MS = 25_000L
+        private const val STALL_CHECK_MS = 5_000L
+        /** 管道空了但仍 SPEAKING：快速续读 */
+        private const val EMPTY_PIPELINE_MS = 2_500L
+        /** 汉字/数字相邻处去掉空白：「第 1 段」→「第1段」 */
+        private val CJK_DIGIT_SPACE_RE = Regex(
+            "(?<=[\\p{Script=Han}0-9０-９])[\\s\\u3000]+(?=[\\p{Script=Han}0-9０-９])",
+        )
+        private val MULTI_SPACE_RE = Regex("[ \\t\\x0B\\f]+")
         private var activeRef: java.lang.ref.WeakReference<TtsManager>? = null
 
         /** 通知栏停止：结束当前朗读 */
         fun stopFromNotification() {
             activeRef?.get()?.stop()
+        }
+
+        /** 通知栏 / 音频焦点丢失：暂停 */
+        fun pauseFromExternal() {
+            activeRef?.get()?.pause()
+        }
+
+        /** 通知栏继续 */
+        fun resumeFromExternal() {
+            activeRef?.get()?.resume()
+        }
+
+        fun playPauseFromExternal() {
+            activeRef?.get()?.playPauseToggle()
+        }
+
+        fun previousSentenceFromExternal() {
+            activeRef?.get()?.previousSentence()
+        }
+
+        fun nextSentenceFromExternal() {
+            activeRef?.get()?.nextSentence()
+        }
+
+        fun sessionInfo(): SessionInfo =
+            activeRef?.get()?.buildSessionInfo()
+                ?: SessionInfo(
+                    title = "",
+                    subtitle = "",
+                    playing = false,
+                    active = false,
+                )
+
+        /**
+         * Android 13+ 通知权限：无权限时前台服务通知可能不稳，锁屏后易被杀。
+         * 在用户点「朗读」时调用；已授权或低版本返回 true。
+         */
+        fun hasNotificationPermission(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < 33) return true
+            return ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
         }
     }
 }

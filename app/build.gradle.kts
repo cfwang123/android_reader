@@ -111,6 +111,7 @@ dependencies {
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("androidx.activity:activity-ktx:1.8.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("androidx.media:media:1.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     // PDF 文字提取（TTS）
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
