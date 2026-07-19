@@ -1,4 +1,4 @@
-# 文本阅读器（whj.reader）
+# 文本阅读器
 
 轻量 Android 阅读器：书架、TXT/PDF 阅读、系统 TTS、OCR 识图、中英文界面。
 

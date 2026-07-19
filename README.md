@@ -1,4 +1,4 @@
-# Text Reader (whj.reader)
+# Text Reader
 
 A lightweight Android reader: bookshelf, TXT/PDF reading, system TTS, on-device OCR, and Chinese/English UI.
 
