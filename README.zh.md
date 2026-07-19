@@ -1,4 +1,4 @@
-# 文本阅读器（whj.reader）
+# 安卓文本阅读器
 
 轻量 Android 阅读器：书架、TXT / EPUB / MOBI / PDF、系统 TTS、语音合成导出、OCR 识图、中英文界面。电子书（TXT/EPUB/MOBI）共用自绘阅读页；PDF 独立渲染链路。
 

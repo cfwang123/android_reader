@@ -1,4 +1,4 @@
-# Text Reader (whj.reader)
+# Android Book Reader
 
 A lightweight Android reader: bookshelf, TXT / EPUB / MOBI / PDF, system TTS, speech export, on-device OCR, Chinese/English UI. Stream books (TXT/EPUB/MOBI) share one self-drawn reading surface; PDF has its own pipeline.
 
