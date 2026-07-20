@@ -10,7 +10,7 @@
 |------|------|
 | **书架** | 导入 TXT/PDF/EPUB/MOBI（及 AZW/AZW3/PRC）或整个文件夹；一级书架；绑定外部目录；多选移动/删除；搜索；数据备份/恢复 |
 | **流式书** | TXT + EPUB + MOBI 共用 `ReadingActivity` / `VirtualReaderView`；大书流式首屏秒开，后台续载 |
-| **PDF** | 连续/单页、缩放、切边、目录预加载、书内链接、TTS、扫描页 OCR、按页合成 |
+| **PDF** | 连续/单页、缩放、切边、快速滚动手柄、目录预加载、书内链接、TTS、扫描页 OCR、按页合成 |
 | **朗读 / 导出** | 系统 TTS 句高亮、锁屏续播、通知/锁屏控件；导出 MP3（arm64 LAME）/ M4A / WAV |
 | **OCR** | 相册/拍照 → 本地 TFLite PP-OCR；扫描 PDF 页 OCR 缓存 |
 | **其它** | 竖/横/自动旋转；全屏沉浸；界面中英文；常亮与空闲息屏 |
@@ -45,10 +45,12 @@
 ### PDF 阅读
 
 - **浏览**：连续滚动 / 单页；双指缩放；切边（含采样自动切边）
+- **快速滚动**：连续模式右侧 Office 风格进度手柄（仅拖动定位；滚动时显示，停约 1 秒后消失）
 - **目录**：打开后后台预加载大纲（磁盘缓存），点目录几乎即时
 - **书内链接**：GoTo 跳页；外链确认；顶栏链接后退 / 前进
 - **文字**：有文本层可选中复制；扫描版可 **识别扫描版 PDF 文字**（页范围 OCR、可取消、磁盘缓存）
 - **朗读 / 合成**：有文本或 OCR 缓存时可用；合成按 **页码范围**
+- **手势**：侧边点按上/下翻页；中部点开菜单；连续滚动时渲染队列可取消、边滑边预览
 - 菜单上一页/下一页不关闭底部菜单
 
 ### TTS 与导出
@@ -109,7 +111,7 @@
 | 项 | 说明 |
 |----|------|
 | 包名 | `com.whj.reader` |
-| 版本 | 1.0.1（见 `app/build.gradle.kts`） |
+| 版本 | 1.0.2（见 `app/build.gradle.kts`） |
 | 语言 | Kotlin |
 | minSdk | 24 |
 | targetSdk / compileSdk | 34 |
@@ -131,15 +133,19 @@ cd reader
 .\gradlew.bat assembleDebug
 node build.js run          # 编译 debug + 安装 + 启动
 node build.js devices
-node build.js release
+node build.js release      # release 包
+node build.js apk          # release 并复制到 release/reader{version}.apk
 ```
 
 APK：
 
 ```
 app/build/outputs/apk/debug/app-debug.apk
-app/build/outputs/apk/release/reader1.0.1.apk   # 有签名时
+app/build/outputs/apk/release/reader1.0.2.apk   # 有签名时
+release/reader1.0.2.apk                        # node build.js apk 输出（目录已 gitignore）
 ```
+
+版本与变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 项目结构
 
@@ -158,9 +164,11 @@ reader/
 │   │   ├── data/                   # BookLoader / Epub / Mobi / Html 解析…
 │   │   ├── ocr/
 │   │   ├── tts/                    # TtsManager、TtsPlaybackService（锁屏续播）
-│   │   └── ui/                     # VirtualReaderView 等
+│   │   └── ui/                     # VirtualReaderView、PdfFastScrollBar 等
 │   └── res/
+├── documents/                      # 设计/说明文档（如 PDF 线程模型）
 ├── build.js
+├── CHANGELOG.md
 ├── keystore.properties.example
 ├── README.md
 └── README.zh.md
@@ -212,6 +220,10 @@ TTS    → TtsManager（句管道）+ TtsPlaybackService（FGS / WakeLock / Medi
 ### PDF 扫图无字
 
 菜单 → **识别扫描版 PDF 文字**；合成/朗读依赖文本层或 OCR 缓存。
+
+### PDF 滚动白页 / 压扁
+
+尽量用最新版；连续模式会边滑边预览、停后再升清。若仍异常，可重新打开该书或清除该本 PDF 视图进度后再试。
 
 ### MP3 不可用
 

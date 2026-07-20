@@ -102,6 +102,7 @@
     <string name="open_failed_permission_granted_retry">已获得权限，正在重试…</string>
     <string name="book_copied_local">已保存到应用目录，可随时从书架打开</string>
     <string name="pdf_page">PDF 页面</string>
+    <string name="pdf_fast_scroll">快速滚动</string>
     <string name="pdf_page_of">%1$d / %2$d</string>
     <string name="pdf_page_of_progress">%1$d / %2$d  %3$d%%</string>
     <string name="pdf_page_jump">跳转页码</string>

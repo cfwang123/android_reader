@@ -13,8 +13,8 @@ android {
         applicationId = "com.whj.reader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
     }
 
     // 与 krdict-android 相同：项目根目录 keystore.properties + release.keystore
@@ -89,7 +89,7 @@ android {
     }
 }
 
-// release 输出：reader1.0.1.apk
+// release 输出：reader{versionName}.apk
 android.applicationVariants.configureEach {
     val vName = versionName
     val isRelease = buildType.name == "release"

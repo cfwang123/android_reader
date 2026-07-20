@@ -116,17 +116,25 @@ class PdfPageSurface @JvmOverloads constructor(
         }
         mode = if (useTiles) Mode.TILES else Mode.EMPTY
 
+        // 高度必须在 bind 时同步定死，避免滚动中途改高导致 RV 回弹。
+        // 仅在宽/高变化时 requestLayout；相同高度再 requestLayout 会在快速滑页时抖动/跳页。
         val lp = layoutParams ?: ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             displayH,
         )
-        if (lp.height != displayH || lp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+        val needResize =
+            lp.height != displayH || lp.width != ViewGroup.LayoutParams.MATCH_PARENT
+        if (needResize) {
             lp.width = ViewGroup.LayoutParams.MATCH_PARENT
             lp.height = displayH
             layoutParams = lp
         }
-        minimumHeight = displayH
-        requestLayout()
+        if (minimumHeight != displayH) {
+            minimumHeight = displayH
+        }
+        if (needResize) {
+            requestLayout()
+        }
         invalidate()
     }
 
@@ -140,12 +148,136 @@ class PdfPageSurface @JvmOverloads constructor(
         invalidate()
     }
 
+    /** 取出整图引用并清空（rebind 时丢给调用方/GC，勿 recycle 正在显示的图） */
+    fun drainFullBitmap(): Bitmap? {
+        val b = fullBitmap
+        fullBitmap = null
+        if (mode == Mode.FULL) mode = Mode.EMPTY
+        return b?.takeUnless { it.isRecycled }
+    }
+
     fun setFullBitmap(bmp: Bitmap?) {
         clearTilesOnly(recycle = false)
         pendingTiles.clear()
         fullBitmap = bmp
         mode = if (bmp != null && !bmp.isRecycled) Mode.FULL else Mode.EMPTY
+        // 位图宽高比纠正 View 高度：防止估算页高过矮把图纵向压扁
+        if (bmp != null && !bmp.isRecycled) {
+            syncHeightToBitmapAspect(bmp)
+        }
         invalidate()
+    }
+
+    /**
+     * 按位图宽高比校正 layout 高度（与 draw 时 stretch 一致）。
+     * 估算页高错误时若不修正，会整页被压成扁条。
+     */
+    fun syncHeightToBitmapAspect(bmp: Bitmap) {
+        if (bmp.isRecycled || bmp.width <= 0) return
+        fun apply(vw: Int) {
+            if (vw <= 0) return
+            val expectedH = max(1, (vw.toFloat() * bmp.height / bmp.width.toFloat()).toInt())
+            val lp = layoutParams ?: return
+            if (kotlin.math.abs(lp.height - expectedH) <= 2) return
+            lp.height = expectedH
+            layoutParams = lp
+            minimumHeight = expectedH
+            requestLayout()
+        }
+        val vw = width.takeIf { it > 0 }
+        if (vw != null) {
+            apply(vw)
+        } else {
+            // 尚未 layout：下一帧再按真实宽度校正
+            post {
+                val b = fullBitmap
+                if (b != null && !b.isRecycled && b === bmp) {
+                    apply(width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels)
+                }
+            }
+        }
+    }
+
+    /**
+     * 用真实 PDF 页尺寸校正显示高度（尺寸异步到达后调用）。
+     * @return 是否发生了高度变化
+     */
+    fun correctDisplayGeometry(
+        pageW: Float,
+        pageH: Float,
+        cropL: Float,
+        cropT: Float,
+        cropR: Float,
+        cropB: Float,
+        targetWidth: Int,
+        tileHeightPx: Int,
+        useTiles: Boolean,
+    ): Boolean {
+        this.pageW = pageW.coerceAtLeast(1f)
+        this.pageH = pageH.coerceAtLeast(1f)
+        this.cropL = cropL.coerceIn(0f, 0.30f)
+        this.cropT = cropT.coerceIn(0f, 0.30f)
+        this.cropR = cropR.coerceIn(0f, 0.30f)
+        this.cropB = cropB.coerceIn(0f, 0.30f)
+        val tw = targetWidth.coerceAtLeast(1)
+        val srcW = this.pageW * (1f - this.cropL - this.cropR).coerceAtLeast(0.2f)
+        val srcH = this.pageH * (1f - this.cropT - this.cropB).coerceAtLeast(0.2f)
+        val displayH = max(1, (tw * srcH / srcW).toInt())
+        val oldH = layoutParams?.height ?: 0
+        val oldTiles = tileCount
+        this.tileHeightPx = tileHeightPx.coerceAtLeast(400)
+        this.tileCount = if (useTiles) {
+            max(1, (displayH + this.tileHeightPx - 1) / this.tileHeightPx)
+        } else {
+            0
+        }
+        val needResize = oldH != displayH
+        if (needResize) {
+            val lp = layoutParams ?: ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                displayH,
+            )
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+            lp.height = displayH
+            layoutParams = lp
+            minimumHeight = displayH
+            requestLayout()
+        }
+        // 矮页↔长页切换或 tile 数变化：清内容等宿主重渲
+        if (useTiles != (mode == Mode.TILES) || (useTiles && oldTiles != tileCount)) {
+            clearBitmapsInternal(recycleTiles = false)
+            pendingTiles.clear()
+            mode = if (useTiles) Mode.TILES else Mode.EMPTY
+            bindGeneration++ // 使旧异步结果失效
+            return true
+        }
+        return needResize
+    }
+
+    /** 矮页已定高但尚未有有效整图（白页），滚动时需补渲 */
+    fun isWaitingFullBitmap(): Boolean {
+        if (pageIndex < 0 || tileCount > 0) return false
+        if (mode == Mode.TILES) return false
+        val b = fullBitmap
+        return b == null || b.isRecycled
+    }
+
+    /** 当前是否几乎无画面（整图空 / 长图无任何 tile）→ 需补渲 */
+    fun needsContent(): Boolean {
+        if (pageIndex < 0) return false
+        if (mode == Mode.FULL) {
+            val b = fullBitmap
+            return b == null || b.isRecycled
+        }
+        if (mode == Mode.TILES || tileCount > 0) {
+            for (i in 0 until tiles.size()) {
+                val b = tiles.valueAt(i)
+                if (b != null && !b.isRecycled) return false
+            }
+            return true
+        }
+        // EMPTY 矮页
+        return true
     }
 
     fun tileTop(index: Int): Int = index * tileHeightPx
@@ -310,8 +442,15 @@ class PdfPageSurface @JvmOverloads constructor(
         val w = width.toFloat().coerceAtLeast(1f)
         when (mode) {
             Mode.FULL -> {
-                val bmp = fullBitmap ?: return
-                if (bmp.isRecycled) return
+                val bmp = fullBitmap
+                if (bmp == null || bmp.isRecycled) {
+                    // 已被 cache 误 recycle 或尚未渲染：只留底色，等待 Activity 补渲
+                    if (bmp != null && bmp.isRecycled) {
+                        fullBitmap = null
+                        mode = Mode.EMPTY
+                    }
+                    return
+                }
                 val h = height.toFloat().coerceAtLeast(1f)
                 canvas.drawBitmap(bmp, null, RectF(0f, 0f, w, h), paint)
             }

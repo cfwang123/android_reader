@@ -4,6 +4,8 @@
 *.aab
 *.dex
 *.class
+*.dm
+*.idsig
 
 # Generated files
 bin/
@@ -16,17 +18,22 @@ release/
 build/
 **/build/
 !gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
 
-# Local configuration (SDK path, etc.)
+# Local configuration (SDK path, machine-specific — do not commit)
 local.properties
+*.local
 
-# Release signing (example keystore.properties.example may be committed)
+# Release signing & secrets (example files may be committed)
 keystore.properties
 release.keystore
 keystore/
 *.jks
 *.keystore
 !debug.keystore
+**/secrets/
+.env
+.env.*
 
 # Android Studio / IntelliJ
 *.iml
@@ -40,6 +47,7 @@ captures/
 *.iws
 *.ipr
 .navigation/
+*.hprof.*
 
 # Kotlin / compiler
 .kotlin/
@@ -49,24 +57,35 @@ captures/
 Thumbs.db
 Desktop.ini
 ehthumbs.db
+$RECYCLE.BIN/
 
-# Logs & temp
+# Logs & temp (including project tmp/ scratch)
 *.log
 *.tmp
 *.temp
 tmp/
 **/tmp/
+*.bak
+*.orig
+*.swp
+*~
 
 # Scratch notes
 1.md
 
 # NDK
 obj/
+*.so.unstripped
 
 # Node helper
 node_modules/
+package-lock.json
 
 # Optional IDE
 .vscode/
-*.swp
-*~
+.history/
+
+# Profiling / crash dumps
+*.trace
+*.prof
+*.profm

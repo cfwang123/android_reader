@@ -10,7 +10,7 @@ A lightweight Android reader: bookshelf, TXT / EPUB / MOBI / PDF, system TTS, sp
 |------|----------------|
 | **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW/AZW3/PRC) or folders; one-level shelves; bind external trees; multi-select; search; backup/restore |
 | **Stream books** | TXT + EPUB + MOBI via `ReadingActivity` / `VirtualReaderView`; fast first paint, background continue-load |
-| **PDF** | Continuous/single page, zoom, crop, TOC preload, in-doc links, TTS, scan OCR, page-range export |
+| **PDF** | Continuous/single page, zoom, crop, fast-scroll thumb, TOC preload, in-doc links, TTS, scan OCR, page-range export |
 | **TTS / export** | Sentence highlight, lock-screen continue, media controls; export **MP3** (arm64 LAME) / **M4A** / **WAV** |
 | **OCR** | Gallery/camera → TFLite PP-OCR; scanned PDF page OCR cache |
 | **Other** | Portrait / landscape / auto; immersive fullscreen; app language; keep-screen + idle timeout |
@@ -45,10 +45,12 @@ Shared virtual list:
 ### PDF reading
 
 - Continuous or single-page; pinch-zoom; margin crop
+- **Fast scroll**: Office-style right-edge thumb in continuous mode (drag only; visible while scrolling, hides ~1s after stop)
 - **TOC** preloaded on open (disk cache)
 - **Links**: GoTo jump; external URI confirm; toolbar history back/forward
 - Text selection when a text layer exists; **OCR scanned pages** (range, cancelable, on-disk cache)
 - **Export speech** by page range; OCR first if no text
+- **Gestures**: side-tap page turn; center-tap menu; cancellable render queue with preview while scrolling
 - Menu prev/next keeps the bottom menu open
 
 ### TTS & export
@@ -109,7 +111,7 @@ Activity `onPause` does **not** stop TTS; progress may still be saved.
 | Item | Value |
 |------|--------|
 | Package | `com.whj.reader` |
-| Version | 1.0.1 (`app/build.gradle.kts`) |
+| Version | 1.0.2 (`app/build.gradle.kts`) |
 | Language | Kotlin |
 | minSdk | 24 |
 | targetSdk / compileSdk | 34 |
@@ -131,12 +133,16 @@ cd reader
 node build.js run
 node build.js devices
 node build.js release
+node build.js apk            # release + copy to release/reader{version}.apk
 ```
 
 ```
 app/build/outputs/apk/debug/app-debug.apk
-app/build/outputs/apk/release/reader1.0.1.apk
+app/build/outputs/apk/release/reader1.0.2.apk
+release/reader1.0.2.apk      # from node build.js apk (folder gitignored)
 ```
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Project layout
 
@@ -155,9 +161,11 @@ reader/
 │   │   ├── data/                   # BookLoader, Epub, Mobi, Html…
 │   │   ├── ocr/
 │   │   ├── tts/                    # TtsManager, TtsPlaybackService (lock-screen)
-│   │   └── ui/                     # VirtualReaderView, …
+│   │   └── ui/                     # VirtualReaderView, PdfFastScrollBar, …
 │   └── res/
+├── documents/                      # notes (e.g. PDF threading)
 ├── build.js
+├── CHANGELOG.md
 ├── keystore.properties.example
 ├── README.md
 └── README.zh.md
@@ -202,6 +210,10 @@ Large books paint the first screen then load in the background. Rich text is a *
 ### Scanned PDF has no text
 
 Use **OCR scanned PDF pages**; export/read need a text layer or OCR cache.
+
+### PDF blank or squashed pages
+
+Prefer the latest build; continuous mode previews while scrolling then upgrades quality when idle. Reopen the book or clear that PDF’s view progress if it persists.
 
 ### MP3 unavailable
 

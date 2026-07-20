@@ -153,6 +153,17 @@
             android:focusable="false" />
     </com.whj.reader.ui.ZoomableFrameLayout>
 
+    <!-- 右侧快速滚动手柄：仅拇指、无全高轨道；叠在内容上不随 PDF 缩放 -->
+    <com.whj.reader.ui.PdfFastScrollBar
+        android:id="@+id/pdfFastScroll"
+        android:layout_width="24dp"
+        android:layout_height="0dp"
+        android:elevation="12dp"
+        android:contentDescription="@string/pdf_fast_scroll"
+        app:layout_constraintBottom_toTopOf="@id/readStatusBar"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvReadTitle" />
+
     <LinearLayout
         android:id="@+id/readStatusBar"
         android:layout_width="0dp"

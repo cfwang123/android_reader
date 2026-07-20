@@ -124,7 +124,50 @@ class PdfReadingActivity : AppCompatActivity() {
         private const val TILE_MAX_PIXELS = 2_500_000
     }
 
-    /** 长图分块异步渲染（PdfRenderer 仍经 renderLock 串行） */
+    /**
+     * PDF 渲染调度：单工作线程 + 可取消优先队列。
+     * - 滑动中也渲染可见页
+     * - 离开可见邻域的任务在开工前丢弃
+     * - 始终先做离当前页最近的任务（避免 FIFO 堆积导致卡顿）
+     */
+    private sealed class PdfRenderTask {
+        abstract val page: Int
+        /** full=0 优先于 tile=1（同距离时） */
+        abstract val kind: Int
+        @Volatile var cancelled: Boolean = false
+
+        class Full(
+            override val page: Int,
+            val surface: PdfPageSurface,
+            val targetWidth: Int,
+            val bindGen: Long,
+        ) : PdfRenderTask() {
+            override val kind: Int = 0
+        }
+
+        class Tile(
+            override val page: Int,
+            val surface: PdfPageSurface,
+            val tileIndex: Int,
+            val tileTopPx: Int,
+            val tileBottomPx: Int,
+            val targetWidth: Int,
+            val bindGen: Long,
+        ) : PdfRenderTask() {
+            override val kind: Int = 1
+        }
+
+        class PageSize(override val page: Int) : PdfRenderTask() {
+            override val kind: Int = 2
+        }
+    }
+
+    private val renderQueueLock = Object()
+    private val renderQueue = ArrayList<PdfRenderTask>(48)
+    @Volatile private var renderWorkerStop = false
+    /** 当前可见页闭区间（含），供后台取消判定 */
+    @Volatile private var visFirst = 0
+    @Volatile private var visLast = 0
     private val tileExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "pdf-tile-render").apply { isDaemon = true }
     }
@@ -190,6 +233,8 @@ class PdfReadingActivity : AppCompatActivity() {
     private var fileKey: String = ""
     private var displayTitle: String = ""
     private var pageCount: Int = 0
+    /** 当前页（0-based）；后台渲染线程可读作锚点，故 volatile */
+    @Volatile
     private var pageIndex: Int = 0
     private var chromeVisible = false
     /** 合成语音面板 */
@@ -308,23 +353,56 @@ class PdfReadingActivity : AppCompatActivity() {
     /** PdfRenderer 同时只能 open 一页 */
     private val renderLock = Any()
     /**
-     * 连续模式仅保留附近几页。
-     * **注意**：淘汰时不要 [Bitmap.recycle]——View 可能仍在显示该图，立刻 recycle 会导致白页。
-     * 依赖 ImageView 解绑 + GC 回收即可。
+     * 连续模式仅保留附近几页矮页整图。
+     *
+     * **禁止在 entryRemoved 里 recycle**：Surface 仍可能握着同一张 Bitmap 在画。
+     * 一旦 recycle，onDraw 发现 isRecycled 直接 return → 中间页只剩白底+页码（见空白页 bug）。
+     * 从 cache 摘掉后靠 Surface 解绑 + GC 回收即可。
      */
     private val bitmapCache = object : LruCache<Int, Bitmap>(BITMAP_CACHE_PAGES) {
         override fun sizeOf(key: Int, value: Bitmap): Int = 1
-        override fun entryRemoved(
-            evicted: Boolean,
-            key: Int,
-            oldValue: Bitmap,
-            newValue: Bitmap?,
-        ) {
-            if (oldValue !== newValue && !oldValue.isRecycled) {
-                runCatching { oldValue.recycle() }
-            }
-        }
+        // 故意不 recycle oldValue
     }
+
+    @Volatile
+    private var rvScrollState: Int = RecyclerView.SCROLL_STATE_IDLE
+    /** 上次刷可见区时间（仅拖动时用；fling 中主线程零渲染调度） */
+    private var lastTileRefreshMs: Long = 0L
+    private val tileRefreshMinIntervalMs = 64L
+    /** 上次进度文字更新 */
+    private var lastProgressUiMs: Long = 0L
+    private val progressUiMinIntervalMs = 120L
+    /** 未知页尺寸时的估算（优先用已见页的平均宽高比） */
+    @Volatile private var estimatedPageAspect: Float = 1.414f // A4 竖向 H/W
+    /**
+     * 每页列表项高度（含页间分隔线），0=未知用估算。
+     * 主流阅读器做法：用已知高度累计定位，避免 RV 变高估算导致拖动手柄跳动。
+     */
+    private var pageItemHeights: IntArray = IntArray(0)
+    private var pageDividerPx: Int = 1
+    /** 已入队的 full / tile / size，用于去重与取消 */
+    private val pendingFullPages = java.util.concurrent.ConcurrentHashMap<Int, PdfRenderTask.Full>()
+    private val pendingTiles = java.util.concurrent.ConcurrentHashMap<Long, PdfRenderTask.Tile>()
+    private val pendingPageSizes = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<Int, Boolean>(),
+    )
+    /**
+     * 滚动中用较低分辨率预渲（后台快、可贴图），停下再升清。
+     * 贴图经 Choreographer 每帧限流，避免 onBind/回帖 同一帧塞多张大图卡 300ms。
+     */
+    private val PREVIEW_WIDTH_FACTOR = 0.5f
+    private val MAX_BITMAP_ATTACH_PER_FRAME = 2
+    private val pendingUiAttaches = java.util.ArrayDeque<UiAttach>()
+    private var uiAttachFrameScheduled = false
+
+    private data class UiAttach(
+        val surface: PdfPageSurface,
+        val page: Int,
+        val bindGen: Long,
+        val bmp: Bitmap,
+        val isTile: Boolean,
+        val tileIndex: Int = 0,
+    )
 
 
     private var batteryReceiverRegistered = false
@@ -425,11 +503,13 @@ class PdfReadingActivity : AppCompatActivity() {
         setupTtsBar()
         setupPageTouch()
         setupRecycler()
+        setupFastScroll()
         setupBottomChromeInsets()
         hideChrome()
         updateClock()
         applyPageModeUi()
         updateHistNavButtons()
+        startRenderWorker()
 
         loadPdf()
     }
@@ -483,9 +563,188 @@ class PdfReadingActivity : AppCompatActivity() {
         ocrEngine = null
         closePdf()
         bitmapCache.evictAll()
+        stopRenderWorker()
         tileExecutor.shutdownNow()
         tileCache.evictAll()
         super.onDestroy()
+    }
+
+    // ─── 渲染队列（可取消 + 近优先） ─────────────────────────
+
+    private fun startRenderWorker() {
+        renderWorkerStop = false
+        tileExecutor.execute {
+            while (!renderWorkerStop && !Thread.currentThread().isInterrupted) {
+                val task = pollBestRenderTask() ?: continue
+                if (task.cancelled || !isPageInRenderWindow(task.page)) {
+                    onRenderTaskFinished(task)
+                    continue
+                }
+                when (task) {
+                    is PdfRenderTask.Full -> runFullPageTask(task)
+                    is PdfRenderTask.Tile -> runTileTask(task)
+                    is PdfRenderTask.PageSize -> {
+                        try {
+                            ensurePageSize(task.page)
+                            val p = task.page
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed) {
+                                    onPageSizeResolved(p)
+                                }
+                            }
+                        } finally {
+                            pendingPageSizes.remove(task.page)
+                        }
+                    }
+                }
+                onRenderTaskFinished(task)
+            }
+        }
+    }
+
+    private fun stopRenderWorker() {
+        renderWorkerStop = true
+        synchronized(renderQueueLock) {
+            for (t in renderQueue) t.cancelled = true
+            renderQueue.clear()
+            renderQueueLock.notifyAll()
+        }
+        pendingFullPages.clear()
+        pendingTiles.clear()
+        pendingPageSizes.clear()
+    }
+
+    /** 可见邻域：前后各多预渲 1～2 页，滑到时已有图；更远则取消 */
+    private fun isPageInRenderWindow(page: Int): Boolean {
+        val f = visFirst
+        val l = visLast
+        if (l < f) return kotlin.math.abs(page - pageIndex) <= CACHE_KEEP_RADIUS
+        // 向前多 2、向后多 1：快速向下滑时先渲下面页
+        return page in (f - 1)..(l + 2)
+    }
+
+    private fun offerRenderTask(task: PdfRenderTask) {
+        if (renderWorkerStop) return
+        synchronized(renderQueueLock) {
+            renderQueue.add(task)
+            renderQueueLock.notify()
+        }
+    }
+
+    /** 取离当前页最近的未取消任务；无任务时 wait */
+    private fun pollBestRenderTask(): PdfRenderTask? {
+        synchronized(renderQueueLock) {
+            while (!renderWorkerStop) {
+                // 丢掉已取消 / 离屏，并清 pending
+                val it = renderQueue.iterator()
+                while (it.hasNext()) {
+                    val t = it.next()
+                    if (t.cancelled || !isPageInRenderWindow(t.page)) {
+                        t.cancelled = true
+                        it.remove()
+                        onRenderTaskFinished(t)
+                    }
+                }
+                if (renderQueue.isEmpty()) {
+                    try {
+                        renderQueueLock.wait(500)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return null
+                    }
+                    continue
+                }
+                val anchor = pageIndex
+                var bestIdx = 0
+                var bestScore = Int.MAX_VALUE
+                for (i in renderQueue.indices) {
+                    val t = renderQueue[i]
+                    val score = kotlin.math.abs(t.page - anchor) * 10 + t.kind
+                    if (score < bestScore) {
+                        bestScore = score
+                        bestIdx = i
+                    }
+                }
+                return renderQueue.removeAt(bestIdx)
+            }
+        }
+        return null
+    }
+
+    private fun onRenderTaskFinished(task: PdfRenderTask) {
+        when (task) {
+            is PdfRenderTask.Full -> pendingFullPages.remove(task.page, task)
+            is PdfRenderTask.Tile -> {
+                val key = tileCacheKey(task.page, task.tileIndex)
+                pendingTiles.remove(key, task)
+            }
+            is PdfRenderTask.PageSize -> pendingPageSizes.remove(task.page)
+        }
+    }
+
+    /** 仅原子更新可见窗；取消在 worker poll 时做，避免主线程每帧抢锁 */
+    private fun updateVisibleRangeFromRv() {
+        val lm = binding.rvPdfPages.layoutManager as? LinearLayoutManager ?: return
+        val first = lm.findFirstVisibleItemPosition()
+        val last = lm.findLastVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION) return
+        visFirst = first
+        visLast = last.coerceAtLeast(first)
+        if (first >= 0) pageIndex = first
+    }
+
+    /** 滚动中（拖动或惯性）用预览分辨率，便于边滑边出图 */
+    private fun preferPreviewQuality(): Boolean =
+        rvScrollState != RecyclerView.SCROLL_STATE_IDLE
+
+    /**
+     * 主线程贴图限流：每帧最多 [MAX_BITMAP_ATTACH_PER_FRAME] 张。
+     * 解决快速滑时 onBind + 多任务同时 setFullBitmap 导致 UI 卡死约 0.3s。
+     */
+    private fun enqueueUiAttach(attach: UiAttach) {
+        synchronized(pendingUiAttaches) {
+            // 同 surface 只保留最新
+            pendingUiAttaches.removeAll {
+                it.surface === attach.surface && it.isTile == attach.isTile &&
+                    (!it.isTile || it.tileIndex == attach.tileIndex)
+            }
+            pendingUiAttaches.addLast(attach)
+        }
+        scheduleUiAttachFlush()
+    }
+
+    private fun scheduleUiAttachFlush() {
+        if (uiAttachFrameScheduled) return
+        uiAttachFrameScheduled = true
+        val choreographer = android.view.Choreographer.getInstance()
+        choreographer.postFrameCallback {
+            uiAttachFrameScheduled = false
+            if (isFinishing || isDestroyed) {
+                synchronized(pendingUiAttaches) { pendingUiAttaches.clear() }
+                return@postFrameCallback
+            }
+            var n = 0
+            while (n < MAX_BITMAP_ATTACH_PER_FRAME) {
+                val a = synchronized(pendingUiAttaches) {
+                    if (pendingUiAttaches.isEmpty()) null else pendingUiAttaches.removeFirst()
+                } ?: break
+                if (a.bmp.isRecycled) continue
+                if (a.surface.pageIndex != a.page || a.surface.bindGeneration != a.bindGen) {
+                    if (a.isTile) unpinTileBitmap(a.bmp)
+                    continue
+                }
+                // surface 仍绑该页就贴；勿因可见窗短暂收窄丢弃（会导致第 N 页白屏）
+                if (a.isTile) {
+                    deliverTile(a.surface, a.tileIndex, a.bmp, a.bindGen)
+                    a.surface.setNightMode(night)
+                } else {
+                    a.surface.setFullBitmap(a.bmp)
+                }
+                n++
+            }
+            val more = synchronized(pendingUiAttaches) { pendingUiAttaches.isNotEmpty() }
+            if (more) scheduleUiAttachFlush()
+        }
     }
 
     override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
@@ -605,6 +864,7 @@ class PdfReadingActivity : AppCompatActivity() {
                     renderer = r
                     pageCount = r.pageCount
                     if (pageCount <= 0) error("PDF 无页面")
+                    initPageHeightTable(pageCount)
 
                     allowProgressSave = false
                     // 恢复页码 / 缩放 / 平移 / 滚动（切边为全局设置，onCreate 已加载）
@@ -653,11 +913,16 @@ class PdfReadingActivity : AppCompatActivity() {
                             binding.tvLoading.isVisible = false
                             allowProgressSave = true
                             updateProgressLabel()
+                            updateFastScrollEnabled()
                             // 布局/滚动稳定后再刷一次长图条带，避免首帧空白
-                            refreshVisiblePageTiles()
-                            binding.rvPdfPages.post { refreshVisiblePageTiles() }
+                            refreshVisiblePageTiles(forceRender = true)
+                            binding.rvPdfPages.post {
+                                refreshVisiblePageTiles(forceRender = true)
+                            }
                         }
                     }
+                    // 后台预取当前附近页尺寸，避免 onBind 主线程抢 renderLock
+                    prefetchPageSizesAround(pageIndex)
                     // 打开后立即后台：PDFBox 进内存 + 当前页附近文字缓存，之后按需预取
                     startNearbyTextExtraction(uri)
                     // 后台加载书内链接
@@ -915,6 +1180,7 @@ class PdfReadingActivity : AppCompatActivity() {
         rebindZoomTarget()
         updateModeButtons()
         refreshSelectionOverlay()
+        updateFastScrollEnabled()
     }
 
     /** 单页模式左上角页码（在 zoomTarget 外，天然不随内容缩放） */
@@ -962,6 +1228,11 @@ class PdfReadingActivity : AppCompatActivity() {
     private fun invalidatePageBitmaps() {
         bitmapCache.evictAll()
         tileCache.evictAll()
+        // 切边变化后按已知页尺寸重算列表项高度
+        for (i in pageItemHeights.indices) {
+            val sz = rendererPageSize[i] ?: continue
+            recordPageItemHeight(i, sz.first, sz.second)
+        }
         pageAdapter?.notifyDataSetChanged()
         if (pageMode == PdfPageMode.SINGLE && pageCount > 0) {
             showSinglePage(pageIndex)
@@ -1189,9 +1460,15 @@ class PdfReadingActivity : AppCompatActivity() {
         return bmp
     }
 
-    /** 打开页尺寸（带缓存）；失败返回 1×1 */
+    /**
+     * 打开页尺寸（带缓存）。**可阻塞**：仅应在 pdf-tile-render / 已持锁路径调用。
+     * 主线程 bind 请用 [pageSizeForBind]。
+     */
     private fun ensurePageSize(pageIndex: Int): Pair<Float, Float> {
-        rendererPageSize[pageIndex]?.let { return it }
+        rendererPageSize[pageIndex]?.let {
+            recordPageItemHeight(pageIndex, it.first, it.second)
+            return it
+        }
         val r = renderer ?: return 1f to 1f
         if (pageIndex !in 0 until r.pageCount) return 1f to 1f
         return try {
@@ -1204,12 +1481,206 @@ class PdfReadingActivity : AppCompatActivity() {
                 page.close()
                 currentPage = null
                 rendererPageSize[pageIndex] = sz
+                if (sz.first > 1f) {
+                    estimatedPageAspect = (sz.second / sz.first).coerceIn(0.3f, 8f)
+                }
+                recordPageItemHeight(pageIndex, sz.first, sz.second)
                 sz
             }
         } catch (_: Exception) {
             1f to 1f
         }
     }
+
+    // ─── 稳定页高表（消除变高 item 拖动手柄跳动） ───────────
+
+    private fun initPageHeightTable(count: Int) {
+        pageDividerPx = (resources.displayMetrics.density).toInt().coerceAtLeast(1)
+        pageItemHeights = IntArray(count.coerceAtLeast(0))
+    }
+
+    private fun contentWidthForHeight(): Int {
+        if (!::binding.isInitialized) {
+            return resources.displayMetrics.widthPixels.coerceAtLeast(720)
+        }
+        return binding.rvPdfPages.width.takeIf { it > 0 }
+            ?: resources.displayMetrics.widthPixels.coerceAtLeast(720)
+    }
+
+    /** 根据页尺寸 + 切边写入该项像素高度（含分隔线） */
+    private fun recordPageItemHeight(pageIndex: Int, pageW: Float, pageH: Float) {
+        if (pageIndex !in pageItemHeights.indices) return
+        val tw = contentWidthForHeight()
+        val margins = cropForPage(pageIndex)
+        val displayH = logicalDisplayHeight(pageW, pageH, margins, tw)
+        val withDiv = displayH + if (pageIndex < pageCount - 1) pageDividerPx else 0
+        if (withDiv > 0) pageItemHeights[pageIndex] = withDiv
+    }
+
+    private fun averageKnownItemHeight(): Int {
+        var sum = 0
+        var n = 0
+        for (h in pageItemHeights) {
+            if (h > 0) {
+                sum += h
+                n++
+            }
+        }
+        if (n > 0) return (sum / n).coerceAtLeast(1)
+        val tw = contentWidthForHeight()
+        return (tw * estimatedPageAspect).toInt().coerceAtLeast(200) + pageDividerPx
+    }
+
+    private fun itemHeightAt(index: Int): Int {
+        if (index !in pageItemHeights.indices) return averageKnownItemHeight()
+        val h = pageItemHeights[index]
+        return if (h > 0) h else averageKnownItemHeight()
+    }
+
+    private fun totalContentHeightPx(): Long {
+        if (pageCount <= 0) return 0L
+        var sum = 0L
+        for (i in 0 until pageCount) sum += itemHeightAt(i)
+        return sum
+    }
+
+    /** 用页高表算进度 0..1（比 RV 估算稳定） */
+    private fun progressFromHeightTable(): Float {
+        if (pageCount <= 0) return 0f
+        val rv = binding.rvPdfPages
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return 0f
+        val first = lm.findFirstVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION) return 0f
+        val child = lm.findViewByPosition(first)
+        var y = 0L
+        for (i in 0 until first) y += itemHeightAt(i)
+        if (child != null) {
+            y += (-child.top).coerceAtLeast(0)
+        }
+        val total = totalContentHeightPx()
+        val extent = rv.height.toLong().coerceAtLeast(1L)
+        val scrollable = (total - extent).coerceAtLeast(1L)
+        return (y.toFloat() / scrollable.toFloat()).coerceIn(0f, 1f)
+    }
+
+    /**
+     * 按页高表跳到进度 [p]（0..1）。
+     * scrollToPositionWithOffset(page, -offsetInPage)：把目标内容顶对齐视口。
+     */
+    private fun seekByHeightTable(p: Float) {
+        if (pageCount <= 0) return
+        val rv = binding.rvPdfPages
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return
+        val total = totalContentHeightPx()
+        val extent = rv.height.toLong().coerceAtLeast(1L)
+        val scrollable = (total - extent).coerceAtLeast(0L)
+        val targetY = if (scrollable <= 0L) {
+            0L
+        } else {
+            (scrollable.toDouble() * p.coerceIn(0f, 1f).toDouble()).toLong()
+                .coerceIn(0L, scrollable)
+        }
+        var acc = 0L
+        var page = 0
+        while (page < pageCount - 1) {
+            val h = itemHeightAt(page).toLong()
+            if (acc + h > targetY) break
+            acc += h
+            page++
+        }
+        val offsetInPage = (targetY - acc).toInt().coerceAtLeast(0)
+        rv.stopScroll()
+        // offset 为 item 顶相对 RV 顶的位置；负值 = 页内下滚
+        lm.scrollToPositionWithOffset(page, -offsetInPage)
+        pageIndex = page
+        // 保持较宽可见窗，避免 seek 时把邻页渲染任务误取消导致白页
+        visFirst = (page - 1).coerceAtLeast(0)
+        visLast = (page + 2).coerceAtMost((pageCount - 1).coerceAtLeast(0))
+    }
+
+    /**
+     * 主线程 bind 用：缓存命中则真尺寸；否则立即返回估算尺寸并后台补真值。
+     * **绝不在主线程抢 renderLock**，避免快速滑动时与渲染线程互锁卡顿。
+     */
+    private fun pageSizeForBind(pageIndex: Int): Pair<Float, Float> {
+        rendererPageSize[pageIndex]?.let {
+            recordPageItemHeight(pageIndex, it.first, it.second)
+            return it
+        }
+        schedulePageSizeFetch(pageIndex)
+        // 优先用本 PDF 已解析页的真实宽高比，避免 A4 默认比导致手机截图页过矮被压扁
+        val known = rendererPageSize.values.firstOrNull()
+        val aspect = if (known != null && known.first > 1f) {
+            (known.second / known.first).coerceIn(0.3f, 8f)
+        } else {
+            estimatedPageAspect
+        }
+        val w = 1000f
+        return w to (w * aspect)
+    }
+
+    private fun schedulePageSizeFetch(pageIndex: Int) {
+        if (pageIndex !in 0 until pageCount) return
+        if (rendererPageSize.containsKey(pageIndex)) return
+        if (!pendingPageSizes.add(pageIndex)) return
+        offerRenderTask(PdfRenderTask.PageSize(pageIndex))
+    }
+
+    /**
+     * 真页尺寸到达后：校正已 bind 的 Surface 高度，并补渲。
+     * 解决「先用估算高 bind → 图到了但高度仍错 → 整页压扁」。
+     */
+    private fun onPageSizeResolved(pageIndex: Int) {
+        val sz = rendererPageSize[pageIndex] ?: return
+        recordPageItemHeight(pageIndex, sz.first, sz.second)
+        val surface = findSurfaceForPage(pageIndex) ?: return
+        val tw = surface.width.takeIf { it > 0 }
+            ?: contentWidthForHeight()
+        val margins = cropForPage(pageIndex)
+        val tall = isTallPage(sz.first, sz.second, margins, tw)
+        val tileH = tileHeightForDevice()
+        val geometryChanged = surface.correctDisplayGeometry(
+            pageW = sz.first,
+            pageH = sz.second,
+            cropL = margins[0],
+            cropT = margins[1],
+            cropR = margins[2],
+            cropB = margins[3],
+            targetWidth = tw,
+            tileHeightPx = tileH,
+            useTiles = tall,
+        )
+        if (tall) {
+            surface.onNeedTile = { pageIdx, surf, tileIdx, topPx, bottomPx, width, bindGen ->
+                enqueueTileRender(pageIdx, surf, tileIdx, topPx, bottomPx, width, bindGen)
+            }
+            hydrateTilesFromCache(surface, pageIndex)
+            val displayH = logicalDisplayHeight(sz.first, sz.second, margins, tw)
+            val vh = binding.rvPdfPages.height.takeIf { it > 0 }
+                ?: (resources.displayMetrics.heightPixels * 0.85f).toInt()
+            surface.ensureTilesForVisible(0, vh.coerceAtMost(displayH), tw, TILE_PREFETCH)
+            return
+        }
+        // 矮页：有 cache 则按位图再校一次高并贴图；无 cache 重新入队
+        val cached = bitmapCache.get(pageIndex)
+        if (cached != null && !cached.isRecycled) {
+            surface.setFullBitmap(cached)
+        } else if (geometryChanged || surface.needsContent()) {
+            enqueueFullPageRender(pageIndex, surface, tw, surface.bindGeneration)
+        }
+    }
+
+    /** 打开后 / 翻页后：后台预取附近页尺寸 */
+    private fun prefetchPageSizesAround(center: Int, radius: Int = 8) {
+        if (pageCount <= 0) return
+        val c = center.coerceIn(0, pageCount - 1)
+        val pages = ((c - radius)..(c + radius)).filter { it in 0 until pageCount }
+        for (p in pages) schedulePageSizeFetch(p)
+    }
+
+    /** 是否处于惯性滑动：此时不排队新渲染，空白即可 */
+    private fun isScrollFlinging(): Boolean =
+        rvScrollState == RecyclerView.SCROLL_STATE_SETTLING
 
     private fun tallThresholdPx(): Int {
         val sh = resources.displayMetrics.heightPixels.coerceAtLeast(800)
@@ -1335,41 +1806,153 @@ class PdfReadingActivity : AppCompatActivity() {
         pageAdapter = PdfPageAdapter(0) { index, surface, width ->
             bindPageSurface(index, surface, width)
         }
-        binding.rvPdfPages.layoutManager = LinearLayoutManager(this)
+        binding.rvPdfPages.layoutManager = LinearLayoutManager(this).apply {
+            isItemPrefetchEnabled = true
+            // 预取 2 页：滑到前已 bind/enqueue，惯性中也能陆续出图
+            initialPrefetchItemCount = 2
+        }
+        binding.rvPdfPages.itemAnimator = null
+        binding.rvPdfPages.setHasFixedSize(true)
+        binding.rvPdfPages.setItemViewCacheSize(12)
+        binding.rvPdfPages.recycledViewPool.setMaxRecycledViews(0, 14)
+        binding.rvPdfPages.overScrollMode = View.OVER_SCROLL_NEVER
         binding.rvPdfPages.adapter = pageAdapter
         binding.rvPdfPages.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                 if (pageMode != PdfPageMode.CONTINUOUS) return
-                // 仅用户手指拖动时收菜单（布局/程序滚动不关，避免首次打开被立刻关掉）
+                val state = recyclerView.scrollState
+                updateVisibleRangeFromRv()
+                // 刚打开菜单 400ms 内不因微滚关掉（点按后 RV 偶发 onScrolled）
                 if (chromeVisible &&
-                    recyclerView.scrollState == RecyclerView.SCROLL_STATE_DRAGGING &&
-                    (dx != 0 || dy != 0)
+                    state == RecyclerView.SCROLL_STATE_DRAGGING &&
+                    (dx != 0 || dy != 0) &&
+                    android.os.SystemClock.uptimeMillis() - chromeShownAtMs > 400L
                 ) {
                     hideChrome()
                 }
-                val lm = recyclerView.layoutManager as? LinearLayoutManager ?: return
-                val first = lm.findFirstVisibleItemPosition()
-                if (first >= 0 && first != pageIndex) {
-                    pageIndex = first
-                    if (allowProgressSave) saveProgress(pageIndex)
-                    trimBitmapCacheAround(pageIndex)
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastProgressUiMs >= progressUiMinIntervalMs) {
+                    lastProgressUiMs = now
+                    updateProgressLabelLight()
                 }
-                // 页码 + 按滚动位置算的进度%（每帧更新）
-                updateProgressLabel()
-                if (chromeVisible) updatePdfBookmarkButton()
-                if (hasTextSelection()) refreshSelectionOverlay()
-                if (hlPage >= 0) refreshHighlightOverlay()
-                updatePageBadgeZoomCompensation()
-                refreshVisiblePageTiles()
+                // 右侧快速滚动手柄：滚动时淡入
+                syncFastScrollThumb(show = true)
+                // 拖动 + 惯性都要节流补渲/贴 cache（不能等停下）
+                val interval = if (state == RecyclerView.SCROLL_STATE_SETTLING) {
+                    48L
+                } else {
+                    tileRefreshMinIntervalMs
+                }
+                if (now - lastTileRefreshMs >= interval) {
+                    lastTileRefreshMs = now
+                    refreshVisiblePageTiles(forceRender = true)
+                }
             }
 
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 if (pageMode != PdfPageMode.CONTINUOUS) return
+                rvScrollState = newState
                 if (newState == RecyclerView.SCROLL_STATE_IDLE) {
-                    refreshVisiblePageTiles()
+                    updateVisibleRangeFromRv()
+                    val visible = currentVisiblePage()
+                    pageIndex = visible
+                    if (allowProgressSave) saveProgress(visible)
+                    trimBitmapCacheAround(visible)
+                    prefetchPageSizesAround(visible)
+                    updateProgressLabel()
+                    syncFastScrollThumb(show = true)
+                    if (chromeVisible) updatePdfBookmarkButton()
+                    if (hasTextSelection()) refreshSelectionOverlay()
+                    if (hlPage >= 0) refreshHighlightOverlay()
+                    // 停下：贴图 + 升清
+                    refreshVisiblePageTiles(forceRender = true)
+                } else if (newState == RecyclerView.SCROLL_STATE_SETTLING ||
+                    newState == RecyclerView.SCROLL_STATE_DRAGGING
+                ) {
+                    syncFastScrollThumb(show = true)
+                    // 进入滚动立刻补一轮可见区（含惯性）
+                    refreshVisiblePageTiles(forceRender = true)
                 }
             }
         })
+    }
+
+    // ─── 右侧快速滚动手柄（Office 风格） ───────────────────
+
+    private fun setupFastScroll() {
+        binding.pdfFastScroll.onSeek = { progress, ended ->
+            seekPdfByFastScroll(progress, ended)
+        }
+        updateFastScrollEnabled()
+    }
+
+    private fun updateFastScrollEnabled() {
+        if (!::binding.isInitialized) return
+        val ok = pageMode == PdfPageMode.CONTINUOUS && pageCount > 1
+        binding.pdfFastScroll.seekEnabled = ok
+        if (!ok) binding.pdfFastScroll.hideImmediate()
+    }
+
+    /** 同步手柄位置与长度（可视比例）；[show] 时立刻显示并重置 1s 隐藏 */
+    private fun syncFastScrollThumb(show: Boolean) {
+        if (!::binding.isInitialized) return
+        if (pageMode != PdfPageMode.CONTINUOUS || pageCount <= 1) {
+            binding.pdfFastScroll.seekEnabled = false
+            return
+        }
+        binding.pdfFastScroll.seekEnabled = true
+        // 拖动手柄时进度由触摸驱动，勿用滚动估算覆盖
+        if (!binding.pdfFastScroll.isDragging) {
+            val rv = binding.rvPdfPages
+            val total = totalContentHeightPx().toFloat().coerceAtLeast(1f)
+            val extent = rv.height.toFloat().coerceAtLeast(1f)
+            val progress = progressFromHeightTable()
+            // 拇指长度 ≈ 视口/总内容（长文档拇指短）
+            val fraction = (extent / total).coerceIn(0.04f, 1f)
+            binding.pdfFastScroll.setScrollMetrics(progress, fraction)
+        }
+        if (show) binding.pdfFastScroll.onScrollActivity()
+    }
+
+    /**
+     * 拖动手柄跳到 0~100%。
+     * 用预计算页高累计定位（主流 PDF 阅读器做法），避免变高 item 导致跳动。
+     */
+    private fun seekPdfByFastScroll(progress: Float, ended: Boolean) {
+        if (pageCount <= 0) return
+        val p = progress.coerceIn(0f, 1f)
+        when (pageMode) {
+            PdfPageMode.CONTINUOUS -> {
+                seekByHeightTable(p)
+                // 拖动中不强制 refresh 全可见区（减卡顿）；只更新页码提示
+                updateProgressLabelLight()
+                if (ended) {
+                    updateVisibleRangeFromRv()
+                    pageIndex = currentVisiblePage()
+                    if (allowProgressSave) saveProgress(pageIndex)
+                    refreshVisiblePageTiles(forceRender = true)
+                    updateProgressLabel()
+                    // 松手后用真实可见位置校准一次（高度表已尽量准确，跳动应极小）
+                    syncFastScrollThumb(show = true)
+                } else {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastTileRefreshMs >= 80L) {
+                        lastTileRefreshMs = now
+                        updateVisibleRangeFromRv()
+                        refreshVisiblePageTiles(forceRender = true)
+                    }
+                }
+            }
+            PdfPageMode.SINGLE -> {
+                val page = if (pageCount <= 1) {
+                    0
+                } else {
+                    ((pageCount - 1) * p).toInt().coerceIn(0, pageCount - 1)
+                }
+                if (page != pageIndex) showSinglePage(page)
+                if (ended && allowProgressSave) saveProgress(page)
+            }
+        }
     }
 
     /** 只保留当前页附近缓存，离开视口的页尽快回收 */
@@ -1393,12 +1976,14 @@ class PdfReadingActivity : AppCompatActivity() {
         if (index !in 0 until r.pageCount) return
         val tw = targetWidth.coerceAtLeast(1)
             .coerceAtMost(resources.displayMetrics.widthPixels.coerceAtLeast(720))
-        val (pw, ph) = ensurePageSize(index)
+        val (pw, ph) = pageSizeForBind(index)
         val margins = cropForPage(index)
         val tall = isTallPage(pw, ph, margins, tw)
         val tileH = tileHeightForDevice()
-        // rebind 前摘掉旧 pin（须在 bind/clear 之前）
+        // 固定列表项高度表，供手柄定位
+        recordPageItemHeight(index, pw, ph)
         for (b in surface.drainTiles()) unpinTileBitmap(b)
+        surface.drainFullBitmap()
         surface.bind(
             pageIndex = index,
             pageW = pw,
@@ -1422,36 +2007,143 @@ class PdfReadingActivity : AppCompatActivity() {
             val displayH = logicalDisplayHeight(pw, ph, margins, tw)
             val vh = binding.rvPdfPages.height.takeIf { it > 0 }
                 ?: (resources.displayMetrics.heightPixels * 0.85f).toInt()
-            surface.ensureTilesForVisible(0, vh.coerceAtMost(displayH), tw, TILE_PREFETCH)
-            surface.post { refreshVisiblePageTiles() }
+            // 滚动中也预取可见块；prefetch 在 fling 时略少
+            val pref = if (preferPreviewQuality()) 1 else TILE_PREFETCH
+            surface.ensureTilesForVisible(0, vh.coerceAtMost(displayH), tw, pref)
             return
         }
 
-        // 矮页：整页 bitmap
         val cached = bitmapCache.get(index)
+        val gen = surface.bindGeneration
         if (cached != null && !cached.isRecycled) {
-            surface.setFullBitmap(cached)
-            return
+            // 绝不在 onBind 同步 setFullBitmap（会卡 RV 布局 ~300ms）→ 帧回调贴
+            enqueueUiAttach(
+                UiAttach(surface, index, gen, cached, isTile = false),
+            )
+            if (preferPreviewQuality() || isBitmapFullQuality(cached, tw)) {
+                return
+            }
+            // 已是预览：继续排队升清
         }
-        synchronized(renderLock) {
-            try {
-                currentPage?.close()
-                currentPage = null
-                val page = r.openPage(index)
-                currentPage = page
-                val bmp = renderPageBitmap(page, tw, pageIndexForMirror = index)
-                page.close()
-                currentPage = null
-                bitmapCache.put(index, bmp)
-                trimBitmapCacheAround(currentVisiblePage())
-                if (surface.pageIndex == index) {
-                    surface.setFullBitmap(bmp)
-                }
-            } catch (t: Throwable) {
-                android.util.Log.e("PdfReading", "full page render p=$index", t)
-                if (surface.pageIndex == index) surface.setFullBitmap(null)
+        enqueueFullPageRender(index, surface, tw, gen)
+    }
+
+    /** 矮页整图入队（近优先、可取消）；滚动/惯性中都会渲并贴图 */
+    private fun enqueueFullPageRender(
+        pageIndex: Int,
+        surface: PdfPageSurface,
+        targetWidth: Int,
+        bindGen: Long,
+    ) {
+        if (pageIndex !in 0 until pageCount) return
+        val cached = bitmapCache.get(pageIndex)
+        if (cached != null && !cached.isRecycled) {
+            val needUpgrade = !preferPreviewQuality() && !isBitmapFullQuality(cached, targetWidth)
+            if (!needUpgrade) {
+                enqueueUiAttach(
+                    UiAttach(surface, pageIndex, bindGen, cached, isTile = false),
+                )
+                return
             }
         }
+        pendingFullPages[pageIndex]?.let { old ->
+            if (!old.cancelled) old.cancelled = true
+        }
+        val task = PdfRenderTask.Full(pageIndex, surface, targetWidth, bindGen)
+        pendingFullPages[pageIndex] = task
+        offerRenderTask(task)
+    }
+
+    private fun runFullPageTask(task: PdfRenderTask.Full) {
+        if (task.cancelled) return
+        val pageIndex = task.page
+        // 开工前已离窗则跳过；但一旦开渲，结果必进 cache，避免「渲完丢弃 → 白页」
+        if (!isPageInRenderWindow(pageIndex) && !task.cancelled) {
+            // 仍允许近邻页（宽窗）渲染；严格窗外才跳过
+            if (kotlin.math.abs(pageIndex - this.pageIndex) > CACHE_KEEP_RADIUS + 2) return
+        }
+        val wantFull = !preferPreviewQuality()
+        val hit = bitmapCache.get(pageIndex)
+        if (hit != null && !hit.isRecycled) {
+            if (wantFull && !isBitmapFullQuality(hit, task.targetWidth)) {
+                // 缓存是预览，继续渲高清
+            } else {
+                postFullBitmap(task, hit)
+                return
+            }
+        }
+        if (task.cancelled) return
+        val r = renderer ?: return
+        if (pageIndex !in 0 until r.pageCount) return
+        // 滚动中低分辨率：边滑边出图；停下用全宽
+        val renderW = if (wantFull) {
+            task.targetWidth
+        } else {
+            (task.targetWidth * PREVIEW_WIDTH_FACTOR).toInt().coerceIn(320, task.targetWidth)
+        }
+        val bmp = try {
+            synchronized(renderLock) {
+                if (task.cancelled) return
+                currentPage?.close()
+                currentPage = null
+                val page = r.openPage(pageIndex)
+                currentPage = page
+                try {
+                    renderPageBitmap(page, renderW, pageIndexForMirror = pageIndex)
+                } finally {
+                    page.close()
+                    currentPage = null
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.e("PdfReading", "full page render p=$pageIndex", t)
+            return
+        }
+        if (bmp.isRecycled) return
+        // 无论是否仍可见，先入 cache，滑回来可立刻贴
+        val old = bitmapCache.get(pageIndex)
+        if (old == null || old.isRecycled || bmp.width >= (old.width * 0.9f)) {
+            bitmapCache.put(pageIndex, bmp)
+        }
+        if (task.cancelled) return
+        postFullBitmap(task, bmp)
+    }
+
+    private fun isBitmapFullQuality(bmp: Bitmap, targetWidth: Int): Boolean =
+        bmp.width >= targetWidth * 0.82f
+
+    private fun postFullBitmap(task: PdfRenderTask.Full, bmp: Bitmap) {
+        if (bmp.isRecycled) return
+        // 回主线程后走帧限流队列；bindGen 过期时由 flush 丢弃，cache 仍保留
+        runOnUiThread {
+            if (isFinishing || isDestroyed || bmp.isRecycled) return@runOnUiThread
+            // surface 已换绑：仍尝试按 page 找当前 holder 贴图
+            val surf = if (task.surface.pageIndex == task.page &&
+                task.surface.bindGeneration == task.bindGen
+            ) {
+                task.surface
+            } else {
+                findSurfaceForPage(task.page)
+            } ?: return@runOnUiThread
+            enqueueUiAttach(
+                UiAttach(
+                    surface = surf,
+                    page = task.page,
+                    bindGen = surf.bindGeneration,
+                    bmp = bmp,
+                    isTile = false,
+                ),
+            )
+        }
+    }
+
+    /** 当前列表中绑定到某页的 Surface（可能为 null） */
+    private fun findSurfaceForPage(page: Int): PdfPageSurface? {
+        if (pageMode != PdfPageMode.CONTINUOUS) return null
+        val lm = binding.rvPdfPages.layoutManager as? LinearLayoutManager ?: return null
+        val child = lm.findViewByPosition(page) ?: return null
+        val surface = child.findViewById<PdfPageSurface>(R.id.ivPage) ?: return null
+        return if (surface.pageIndex == page) surface else null
     }
 
     /** 把 tileCache 里属于该页的块装回 Surface（不转移所有权） */
@@ -1466,31 +2158,83 @@ class PdfReadingActivity : AppCompatActivity() {
         }
     }
 
-    /** 遍历可见 item，为长图请求可见块 + 上下预取 */
-    private fun refreshVisiblePageTiles() {
+    /** 遍历可见 item：贴缓存 + 排队缺失（拖动/惯性/停下都调用） */
+    private fun refreshVisiblePageTiles(forceRender: Boolean = true) {
         if (pageMode != PdfPageMode.CONTINUOUS) return
         val rv = binding.rvPdfPages
         val lm = rv.layoutManager as? LinearLayoutManager ?: return
         val first = lm.findFirstVisibleItemPosition()
         val last = lm.findLastVisibleItemPosition()
         if (first == RecyclerView.NO_POSITION) return
+        visFirst = first
+        visLast = last.coerceAtLeast(first)
         val viewportH = rv.height.coerceAtLeast(1)
-        for (pos in first..last) {
-            val child = lm.findViewByPosition(pos) ?: continue
-            val surface = child.findViewById<PdfPageSurface>(R.id.ivPage) ?: continue
-            if (surface.pageIndex != pos) continue
-            if (surface.isFullMode) continue
-            if (!surface.isTileMode && surface.tileCount <= 0) continue
-            val pageH = surface.height.coerceAtLeast(surface.logicalHeight).coerceAtLeast(1)
-            val visTop = (-child.top).coerceIn(0, pageH)
-            val visBottom = (visTop + viewportH).coerceIn(visTop + 1, pageH)
-            val tw = surface.width.takeIf { it > 0 }
-                ?: rv.width.takeIf { it > 0 }
-                ?: resources.displayMetrics.widthPixels
-            hydrateTilesFromCache(surface, pos)
-            surface.ensureTilesForVisible(visTop, visBottom, tw, TILE_PREFETCH)
-            for (b in surface.dropTilesOutside(visTop, visBottom, TILE_PREFETCH)) {
-                unpinTileBitmap(b)
+        val scrolling = preferPreviewQuality()
+        val prefetch = if (scrolling) 1 else TILE_PREFETCH
+        // 可见 + 下方 1 页（惯性下滑时提前渲）
+        val end = (last + if (scrolling) 1 else 0).coerceAtMost((pageCount - 1).coerceAtLeast(0))
+        for (pos in first..end) {
+            val child = lm.findViewByPosition(pos)
+            val surface = if (child != null) {
+                child.findViewById<PdfPageSurface>(R.id.ivPage)
+            } else {
+                null
+            }
+            // 已 bind 的可见页
+            if (surface != null && surface.pageIndex == pos) {
+                val tw = surface.width.takeIf { it > 0 }
+                    ?: rv.width.takeIf { it > 0 }
+                    ?: resources.displayMetrics.widthPixels
+                // 白页恢复：有 cache 立刻贴；无 cache 强制再入队（防渲染被取消后卡住）
+                if (surface.needsContent()) {
+                    val cached = bitmapCache.get(pos)
+                    if (cached != null && !cached.isRecycled &&
+                        !surface.isTileMode && surface.tileCount <= 0
+                    ) {
+                        enqueueUiAttach(
+                            UiAttach(surface, pos, surface.bindGeneration, cached, false),
+                        )
+                        if (forceRender && !scrolling && !isBitmapFullQuality(cached, tw)) {
+                            enqueueFullPageRender(pos, surface, tw, surface.bindGeneration)
+                        }
+                    } else if (surface.isTileMode || surface.tileCount > 0) {
+                        hydrateTilesFromCache(surface, pos)
+                        val pageH = surface.height.coerceAtLeast(surface.logicalHeight).coerceAtLeast(1)
+                        val visTop = (-child!!.top).coerceIn(0, pageH)
+                        val visBottom = (visTop + viewportH).coerceIn(visTop + 1, pageH)
+                        if (forceRender) {
+                            surface.ensureTilesForVisible(visTop, visBottom, tw, prefetch)
+                        }
+                    } else if (forceRender) {
+                        enqueueFullPageRender(pos, surface, tw, surface.bindGeneration)
+                    }
+                    continue
+                }
+                if (surface.isFullMode) {
+                    if (forceRender && !scrolling) {
+                        val cached = bitmapCache.get(pos)
+                        if (cached != null && !cached.isRecycled &&
+                            !isBitmapFullQuality(cached, tw)
+                        ) {
+                            enqueueFullPageRender(pos, surface, tw, surface.bindGeneration)
+                        }
+                    }
+                    continue
+                }
+                if (!surface.isTileMode && surface.tileCount <= 0) continue
+                val pageH = surface.height.coerceAtLeast(surface.logicalHeight).coerceAtLeast(1)
+                val visTop = (-child!!.top).coerceIn(0, pageH)
+                val visBottom = (visTop + viewportH).coerceIn(visTop + 1, pageH)
+                hydrateTilesFromCache(surface, pos)
+                if (forceRender) {
+                    surface.ensureTilesForVisible(visTop, visBottom, tw, prefetch)
+                }
+                for (b in surface.dropTilesOutside(visTop, visBottom, prefetch)) {
+                    unpinTileBitmap(b)
+                }
+            } else if (forceRender && pos > last) {
+                // 下方预取页尚未 bind：只确保尺寸入队，等 bind 再渲
+                schedulePageSizeFetch(pos)
             }
         }
     }
@@ -1512,80 +2256,117 @@ class PdfReadingActivity : AppCompatActivity() {
             }
             return
         }
+        if (!isPageInRenderWindow(pageIndex)) return
+        pendingTiles[cacheKey]?.let { it.cancelled = true }
+        val task = PdfRenderTask.Tile(
+            page = pageIndex,
+            surface = surface,
+            tileIndex = tileIndex,
+            tileTopPx = tileTopPx,
+            tileBottomPx = tileBottomPx,
+            targetWidth = targetWidth,
+            bindGen = bindGen,
+        )
+        pendingTiles[cacheKey] = task
+        offerRenderTask(task)
+    }
 
-        tileExecutor.execute {
-            val hit = tileCache.get(cacheKey)
-            if (hit != null && !hit.isRecycled) {
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    if (surface.pageIndex == pageIndex && surface.bindGeneration == bindGen) {
-                        deliverTile(surface, tileIndex, hit, bindGen)
-                        surface.setNightMode(night)
-                    }
-                }
-                return@execute
-            }
-
-            val r = renderer
-            if (r == null || pageIndex !in 0 until r.pageCount) return@execute
-            val (pw, ph) = try {
-                ensurePageSize(pageIndex)
-            } catch (t: Throwable) {
-                android.util.Log.e("PdfReading", "tile ensurePageSize p=$pageIndex", t)
-                return@execute
-            }
-            val margins = cropForPage(pageIndex)
-            val displayH = logicalDisplayHeight(pw, ph, margins, targetWidth).toFloat().coerceAtLeast(1f)
-            val srcH = ph * (1f - margins[1] - margins[3]).coerceAtLeast(0.2f)
-            val srcY0 = (tileTopPx / displayH) * srcH
-            val srcY1 = (tileBottomPx / displayH) * srcH
-            val bmp = try {
-                synchronized(renderLock) {
-                    currentPage?.close()
+    private fun runTileTask(task: PdfRenderTask.Tile) {
+        if (task.cancelled) return
+        val cacheKey = tileCacheKey(task.page, task.tileIndex)
+        val hit = tileCache.get(cacheKey)
+        if (hit != null && !hit.isRecycled) {
+            postTile(task, hit)
+            return
+        }
+        if (task.cancelled) return
+        if (!isPageInRenderWindow(task.page) &&
+            kotlin.math.abs(task.page - pageIndex) > CACHE_KEEP_RADIUS + 2
+        ) {
+            return
+        }
+        val r = renderer ?: return
+        if (task.page !in 0 until r.pageCount) return
+        val (pw, ph) = try {
+            ensurePageSize(task.page)
+        } catch (t: Throwable) {
+            android.util.Log.e("PdfReading", "tile ensurePageSize p=${task.page}", t)
+            return
+        }
+        if (task.cancelled) return
+        val margins = cropForPage(task.page)
+        val displayH = logicalDisplayHeight(pw, ph, margins, task.targetWidth).toFloat().coerceAtLeast(1f)
+        val srcH = ph * (1f - margins[1] - margins[3]).coerceAtLeast(0.2f)
+        val srcY0 = (task.tileTopPx / displayH) * srcH
+        val srcY1 = (task.tileBottomPx / displayH) * srcH
+        val bmp = try {
+            synchronized(renderLock) {
+                if (task.cancelled) return
+                currentPage?.close()
+                currentPage = null
+                val page = r.openPage(task.page)
+                currentPage = page
+                try {
+                    renderPageStripBitmap(
+                        page,
+                        task.targetWidth,
+                        srcY0,
+                        srcY1,
+                        pageIndexForMirror = task.page,
+                    )
+                } finally {
+                    page.close()
                     currentPage = null
-                    val page = r.openPage(pageIndex)
-                    currentPage = page
-                    try {
-                        renderPageStripBitmap(
-                            page,
-                            targetWidth,
-                            srcY0,
-                            srcY1,
-                            pageIndexForMirror = pageIndex,
-                        )
-                    } finally {
-                        page.close()
-                        currentPage = null
-                    }
                 }
-            } catch (t: Throwable) {
-                android.util.Log.e(
-                    "PdfReading",
-                    "tile render p=$pageIndex t=$tileIndex y=$srcY0..$srcY1",
-                    t,
-                )
-                return@execute
             }
-            tileCache.put(cacheKey, bmp)
-            if (bmp.isRecycled) {
-                android.util.Log.e("PdfReading", "tile trimmed by cache p=$pageIndex t=$tileIndex")
-                return@execute
+        } catch (t: Throwable) {
+            android.util.Log.e(
+                "PdfReading",
+                "tile render p=${task.page} t=${task.tileIndex}",
+                t,
+            )
+            return
+        }
+        if (bmp.isRecycled) return
+        // 先入 cache，再决定是否贴到当前 surface
+        tileCache.put(cacheKey, bmp)
+        if (task.cancelled) return
+        pinTileBitmap(bmp)
+        postTile(task, bmp)
+    }
+
+    private fun postTile(task: PdfRenderTask.Tile, bmp: Bitmap) {
+        if (bmp.isRecycled) {
+            unpinTileBitmap(bmp)
+            return
+        }
+        runOnUiThread {
+            if (isFinishing || isDestroyed || bmp.isRecycled) {
+                unpinTileBitmap(bmp)
+                return@runOnUiThread
             }
-            // put 后立刻 pin，防止随后其它 put 淘汰时被 recycle
-            pinTileBitmap(bmp)
-            runOnUiThread {
-                if (isFinishing || isDestroyed) {
-                    unpinTileBitmap(bmp)
-                    return@runOnUiThread
-                }
-                if (surface.pageIndex != pageIndex || surface.bindGeneration != bindGen) {
-                    unpinTileBitmap(bmp)
-                    return@runOnUiThread
-                }
-                if (bmp.isRecycled) return@runOnUiThread
-                deliverTile(surface, tileIndex, bmp, bindGen)
-                surface.setNightMode(night)
+            val surf = if (task.surface.pageIndex == task.page &&
+                task.surface.bindGeneration == task.bindGen
+            ) {
+                task.surface
+            } else {
+                findSurfaceForPage(task.page)
             }
+            if (surf == null) {
+                // 页不在屏上：cache 已有，unpin 显示引用（cache 仍持有）
+                unpinTileBitmap(bmp)
+                return@runOnUiThread
+            }
+            enqueueUiAttach(
+                UiAttach(
+                    surface = surf,
+                    page = task.page,
+                    bindGen = surf.bindGeneration,
+                    bmp = bmp,
+                    isTile = true,
+                    tileIndex = task.tileIndex,
+                ),
+            )
         }
     }
 
@@ -4187,6 +4968,9 @@ class PdfReadingActivity : AppCompatActivity() {
         binding.tvLoading.setBackgroundColor(contentBg)
         window.statusBarColor = bar
         window.navigationBarColor = bar
+        if (::binding.isInitialized) {
+            binding.pdfFastScroll.setNight(night)
+        }
         updatePdfZoomChrome()
     }
 
@@ -4196,6 +4980,7 @@ class PdfReadingActivity : AppCompatActivity() {
     private fun updatePdfZoomChrome() {
         if (!::binding.isInitialized) return
         val z = binding.pdfContainer.contentZoom
+        val darkExterior = z < 0.99f || night
         val contentBg = when {
             z < 0.99f -> 0xFF000000.toInt()
             night -> 0xFF000000.toInt()
@@ -4208,6 +4993,8 @@ class PdfReadingActivity : AppCompatActivity() {
                 if (z < 0.99f) 0xFF000000.toInt() else contentBg,
             )
         }
+        // 缩小露黑边 / 夜间：滚动手柄提亮，否则在黑底上看不见
+        binding.pdfFastScroll.setOnDarkExterior(darkExterior)
     }
 
     private fun applyNightFilter(iv: ImageView) {
@@ -4332,6 +5119,31 @@ class PdfReadingActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 滚动中轻量进度：只用页码估算 %，避免每帧 computeVerticalScrollRange 卡主线程。
+     */
+    private fun updateProgressLabelLight() {
+        if (pageCount <= 0) {
+            binding.tvProgress.text = "—"
+            return
+        }
+        val visible = pageIndex.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        val p = visible + 1
+        val pct = if (pageCount <= 1) {
+            100
+        } else {
+            ((visible.toFloat() / (pageCount - 1).toFloat()) * 100f).toInt().coerceIn(0, 100)
+        }
+        binding.tvProgress.text = getString(R.string.pdf_page_of_progress, p, pageCount, pct)
+        // 轻量同步手柄位置（不强制 show，避免拖动手柄时闪）
+        if (pageMode == PdfPageMode.CONTINUOUS &&
+            ::binding.isInitialized &&
+            !binding.pdfFastScroll.isDragging
+        ) {
+            binding.pdfFastScroll.progress = pct / 100f
+        }
+    }
+
     private fun updateProgressLabel() {
         if (pageCount <= 0) {
             binding.tvProgress.text = "—"
@@ -4345,26 +5157,25 @@ class PdfReadingActivity : AppCompatActivity() {
             pageIndex = visible
             updatePageBadge()
         }
-        // 翻页/滚动时按需预取附近文字
-        if (allowProgressSave) {
+        if (pageMode == PdfPageMode.CONTINUOUS &&
+            ::binding.isInitialized &&
+            !binding.pdfFastScroll.isDragging
+        ) {
+            binding.pdfFastScroll.progress = pct / 100f
+        }
+        // 停下或慢滚时再预取文字
+        if (allowProgressSave && !isScrollFlinging()) {
             prefetchNearbyText(visible)
         }
     }
 
     /**
-     * 进度%：连续模式 = 竖直滚动偏移 / 可滚动总高度；
-     * 单页模式 = 当前页索引 / (总页-1)。
+     * 进度%：连续模式用页高表累计（稳定）；单页模式 = 页索引比例。
      */
     private fun computeScrollProgressPercent(): Int {
         if (pageCount <= 0) return 0
         if (pageMode == PdfPageMode.CONTINUOUS) {
-            val rv = binding.rvPdfPages
-            val offset = rv.computeVerticalScrollOffset().toFloat().coerceAtLeast(0f)
-            val range = rv.computeVerticalScrollRange().toFloat().coerceAtLeast(1f)
-            val extent = rv.computeVerticalScrollExtent().toFloat().coerceAtLeast(0f)
-            val scrollable = (range - extent).coerceAtLeast(1f)
-            // 滚动位置占可滚高度的比例
-            return ((offset / scrollable) * 100f).toInt().coerceIn(0, 100)
+            return (progressFromHeightTable() * 100f).toInt().coerceIn(0, 100)
         }
         if (pageCount <= 1) return 100
         return ((pageIndex.toFloat() / (pageCount - 1).toFloat()) * 100f)

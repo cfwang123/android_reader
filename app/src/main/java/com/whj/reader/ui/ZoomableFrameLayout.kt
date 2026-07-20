@@ -85,7 +85,14 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private var downY = 0f
     private var lastX = 0f
     private var lastY = 0f
+    /** 本手势是否已超过点按阈值（连续模式用） */
+    private var fingerMoved = false
+    /** 本手势已处理过中部/侧边点按，防止 GestureDetector 再触发一次（开关两次=菜单不亮） */
+    private var tapConsumed = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    /** 点按判定略宽于系统 slop，避免轻微抖动被当成滑动 */
+    private val tapSlop =
+        (12f * resources.displayMetrics.density).toInt().coerceAtLeast(touchSlop)
     private val minFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxFlingVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     /** 水平滑翻页：最小位移（约 48dp） */
@@ -136,9 +143,12 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             // 中部立即响应（不等 double-tap 超时）；侧边在 dispatch UP 已处理
             override fun onSingleTapUp(e: MotionEvent): Boolean {
                 if (pinching || panning || selecting || flingingPan) return false
+                // 连续未缩放路径已在 dispatch UP 处理点按，此处再触发会 toggle 两次
+                if (tapConsumed) return true
+                if (continuousScrollWhenZoomed && !isZoomed()) return false
                 // 有明显位移则是滑动，不走点按
                 val moved = max(abs(e.x - downX), abs(e.y - downY))
-                if (moved > touchSlop) return false
+                if (moved > tapSlop) return false
                 val w = width.toFloat().coerceAtLeast(1f)
                 if (e.x < w / 3f || e.x > w * 2f / 3f) return false
                 onSingleTap?.invoke(e.x, e.y)
@@ -456,16 +466,91 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 abortPanFling()
-                onStopScroll?.invoke()
+                // 连续未缩放：不要 stopScroll，否则快速连滑会掐断惯性并顿一下
+                if (!(continuousScrollWhenZoomed && !isZoomed())) {
+                    onStopScroll?.invoke()
+                }
                 obtainTracker().clear()
             }
         }
         obtainTracker().addMovement(ev)
 
-        gestureDetector.onTouchEvent(ev)
+        // 捏合必须先喂 scaleDetector，否则第二指落下时丢失 DOWN 序列
         scaleDetector.onTouchEvent(ev)
-
         val multi = ev.pointerCount >= 2 || pinching || scaleDetector.isInProgress
+
+        // 连续模式未缩放：单指路径尽量短，把滚动交给 RecyclerView（对齐 Office 丝滑）
+        if (continuousScrollWhenZoomed && !isZoomed() && !multi && !selecting) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = ev.x
+                    downY = ev.y
+                    lastX = ev.x
+                    lastY = ev.y
+                    panning = false
+                    fingerMoved = false
+                    tapConsumed = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dist = max(abs(ev.x - downX), abs(ev.y - downY))
+                    if (dist > tapSlop) fingerMoved = true
+                    lastX = ev.x
+                    lastY = ev.y
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (ev.actionMasked == MotionEvent.ACTION_UP && !fingerMoved && !selecting) {
+                        val dx = ev.x - downX
+                        val dy = ev.y - downY
+                        val total = max(abs(dx), abs(dy))
+                        // 再保险：UP 时位移仍在阈值内
+                        if (total <= tapSlop) {
+                            var vx = 0f
+                            var vy = 0f
+                            velocityTracker?.let { vt ->
+                                vt.computeCurrentVelocity(1000, maxFlingVelocity.toFloat())
+                                vx = vt.xVelocity
+                                vy = vt.yVelocity
+                            }
+                            // 水平滑优先于点按
+                            if (onHorizontalSwipe != null &&
+                                trySwipePageTurn(vx, vy, dx, dy, edgeFling = false)
+                            ) {
+                                tapConsumed = true
+                                recycleTracker()
+                                // 仍把 UP 交给子 View，避免 RV 状态机卡住
+                                gestureDetector.onTouchEvent(ev)
+                                super.dispatchTouchEvent(ev)
+                                return true
+                            }
+                            val w = width.toFloat().coerceAtLeast(1f)
+                            when {
+                                onSideTapImmediate != null && ev.x < w / 3f -> {
+                                    onSideTapImmediate?.invoke(0, ev.x, ev.y)
+                                    tapConsumed = true
+                                }
+                                onSideTapImmediate != null && ev.x > w * 2f / 3f -> {
+                                    onSideTapImmediate?.invoke(2, ev.x, ev.y)
+                                    tapConsumed = true
+                                }
+                                ev.x >= w / 3f && ev.x <= w * 2f / 3f -> {
+                                    // 中部：只在这里触发一次菜单
+                                    onSingleTap?.invoke(ev.x, ev.y)
+                                    tapConsumed = true
+                                }
+                            }
+                        }
+                    }
+                    recycleTracker()
+                }
+            }
+            // long-press 仍要 GestureDetector；onSingleTapUp 见 tapConsumed 防双开
+            gestureDetector.onTouchEvent(ev)
+            super.dispatchTouchEvent(ev)
+            return true
+        }
+
+        gestureDetector.onTouchEvent(ev)
+
         if (multi) {
             parent?.requestDisallowInterceptTouchEvent(true)
             panning = false
@@ -499,6 +584,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 lastY = ev.y
                 panning = false
                 selecting = false
+                fingerMoved = false
+                tapConsumed = false
             }
             MotionEvent.ACTION_MOVE -> {
                 if (selecting) {
@@ -645,9 +732,16 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val absVx = abs(velocityX)
         val absVy = abs(velocityY)
 
-        // 必须以水平为主
+        // 全程位移以竖直为主时绝不翻页：竖滑看 PDF 时松手瞬间常带水平速度，
+        // 若只看 velocity 会把「已滑到上一页」再 pageTurn 弹回（如 113→112 又跳回 113）
+        if (absDy > absDx) return false
+        if (absDy >= swipeMinDistance && absDy >= absDx * 0.85f) return false
+
+        // 必须以水平为主（位移或速度），且两者都不能明显竖向
         val distanceOk = absDx >= swipeMinDistance && absDx > absDy * 1.2f
-        val velocityOk = absVx >= swipeMinVelocity && absVx > absVy * 1.2f
+        val velocityOk = absVx >= swipeMinVelocity &&
+            absVx > absVy * 1.2f &&
+            absDx >= absDy // 总位移也不能更偏竖
         if (!distanceOk && !velocityOk) return false
 
         // 方向：优先位移，位移不够再用速度
