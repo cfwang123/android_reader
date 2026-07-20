@@ -102,7 +102,7 @@
 
 - 书架 ⋮ → OCR 识图
 - 模型：`app/src/main/assets/ocr/`（det / cls / rec + 字典）
-- 推理优先 NNAPI → GPU → CPU；图上拖选、全文区惯性滚动
+- 推理优先 GPU → CPU；图上拖选、全文区惯性滚动
 
 ## 环境要求
 

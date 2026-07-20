@@ -31,6 +31,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     var contentZoom: Float = 1f
         private set
 
+    /** 默认 1；PDF 可读时设为 0.5 以支持缩小 */
     var minZoom: Float = 1f
     var maxZoom: Float = 3.5f
 
@@ -169,6 +170,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         },
     )
 
+    /** 上一次外侧底色，避免每帧 setBackgroundColor */
+    private var lastExteriorBg: Int = 1 // 哨兵，强制首次写入
+
     init {
         clipChildren = true
         clipToPadding = true
@@ -179,8 +183,27 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         isFocusable = false
     }
 
+    /**
+     * 缩小过程中外侧立刻变黑（不等 onScaleEnd）。
+     * 回到 ≥100% 时不改色，交由 Activity 按日/夜恢复。
+     */
+    private fun syncExteriorBackground() {
+        if (contentZoom < 0.99f) {
+            val bg = 0xFF000000.toInt()
+            if (lastExteriorBg != bg) {
+                lastExteriorBg = bg
+                setBackgroundColor(bg)
+            }
+        } else {
+            lastExteriorBg = 1
+        }
+    }
+
     fun setContentZoom(zoom: Float, notify: Boolean = false) {
-        setTransform(zoom, if (zoom <= 1.01f) 0f else panX, if (zoom <= 1.01f) 0f else panY, notify)
+        val z = zoom.coerceIn(minZoom, maxZoom)
+        // 回到约 100% 时清平移；缩小/放大都保留焦点平移
+        val nearIdentity = abs(z - 1f) < 0.01f
+        setTransform(z, if (nearIdentity) 0f else panX, if (nearIdentity) 0f else panY, notify)
     }
 
     fun getPanX(): Float = panX
@@ -192,7 +215,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         contentZoom = zoom.coerceIn(minZoom, maxZoom)
         this.panX = panX
         this.panY = panY
-        if (contentZoom <= 1.01f) {
+        // 仅在「约等于 1x」时归零；允许 minZoom~1 的缩小态
+        if (abs(contentZoom - 1f) < 0.01f) {
             contentZoom = 1f
             this.panX = 0f
             this.panY = 0f
@@ -202,7 +226,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         if (notify) onZoomChanged?.invoke(contentZoom)
     }
 
+    /** 是否放大（>1）：用于平移接管触摸。缩小（&lt;1）仍把竖滑交给列表。 */
     fun isZoomed(): Boolean = contentZoom > 1.01f
+
+    /** 是否相对 100% 有缩放（含缩小） */
+    fun isScaled(): Boolean = abs(contentZoom - 1f) > 0.01f
 
     fun mapToContent(x: Float, y: Float): PointF {
         return PointF(
@@ -228,8 +256,14 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val cx = (focusX - panX) / old
         val cy = (focusY - panY) / old
         contentZoom = newZoom
-        panX = focusX - cx * contentZoom
-        panY = focusY - cy * contentZoom
+        if (abs(contentZoom - 1f) < 0.01f) {
+            contentZoom = 1f
+            panX = 0f
+            panY = 0f
+        } else {
+            panX = focusX - cx * contentZoom
+            panY = focusY - cy * contentZoom
+        }
         clampPan()
         applyTransform()
     }
@@ -237,7 +271,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private fun zoomTo(zoom: Float, focusX: Float, focusY: Float) {
         val old = contentZoom.coerceAtLeast(0.01f)
         val newZoom = zoom.coerceIn(minZoom, maxZoom)
-        if (newZoom <= 1.01f) {
+        if (abs(newZoom - 1f) < 0.01f) {
             contentZoom = 1f
             panX = 0f
             panY = 0f
@@ -262,7 +296,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val ch = th * contentZoom
         val minX: Float
         val maxX: Float
-        if (cw <= vw) {
+        if (cw <= vw + 0.5f) {
+            // 缩小后内容更窄：水平居中，两侧留给容器黑底
             minX = (vw - cw) / 2f
             maxX = minX
         } else {
@@ -271,10 +306,12 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         }
         val minY: Float
         val maxY: Float
+        // 连续模式缩小：布局已加高且 scale 后 ch≈vh，panY 锁 0 铺满。
+        // 连续模式放大：竖向交给列表。
         if (continuousScrollWhenZoomed) {
             minY = 0f
             maxY = 0f
-        } else if (ch <= vh) {
+        } else if (ch <= vh + 0.5f) {
             minY = (vh - ch) / 2f
             maxY = minY
         } else {
@@ -285,24 +322,69 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     }
 
     private fun clampPan() {
-        val b = panBounds()
-        panX = panX.coerceIn(b[0], b[1])
-        panY = panY.coerceIn(b[2], b[3])
-        if (contentZoom <= 1.01f) {
+        if (abs(contentZoom - 1f) < 0.01f) {
             contentZoom = 1f
             panX = 0f
             panY = 0f
+            return
         }
+        val b = panBounds()
+        panX = panX.coerceIn(b[0], b[1])
+        panY = panY.coerceIn(b[2], b[3])
     }
 
+    /**
+     * 应用缩放：
+     * - 放大（z>1）：match_parent + scale，可平移
+     * - 缩小（z<1）且连续滚动：把内容区高度设为 vh/z 再 scale=z，
+     *   视觉铺满高度且多露出 PDF 内容；宽度仍为屏宽，scale 后两侧露黑边
+     * - 缩小且单页：match_parent + scale，居中，外侧黑底
+     */
     private fun applyTransform() {
         val t = target() ?: return
+        val vw = width
+        val vh = height
+        if (vw <= 0 || vh <= 0) {
+            onTransformChanged?.invoke()
+            return
+        }
+        val z = contentZoom.coerceAtLeast(0.01f)
+        val lp = t.layoutParams ?: LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+
+        if (z < 0.99f && continuousScrollWhenZoomed) {
+            // 布局加高：缩放后高度铺满，列表可见范围变为原来的 1/z
+            val layoutH = (vh / z).toInt().coerceAtLeast(vh)
+            if (lp.width != LayoutParams.MATCH_PARENT || lp.height != layoutH) {
+                lp.width = LayoutParams.MATCH_PARENT
+                lp.height = layoutH
+                t.layoutParams = lp
+            }
+        } else {
+            if (lp.width != LayoutParams.MATCH_PARENT || lp.height != LayoutParams.MATCH_PARENT) {
+                lp.width = LayoutParams.MATCH_PARENT
+                lp.height = LayoutParams.MATCH_PARENT
+                t.layoutParams = lp
+            }
+        }
+
         t.pivotX = 0f
         t.pivotY = 0f
-        t.scaleX = contentZoom
-        t.scaleY = contentZoom
+        t.scaleX = z
+        t.scaleY = z
+
+        // 缩小时强制水平居中（两侧黑边）；连续缩小 panY=0
+        if (z < 0.99f) {
+            val layoutW = if (t.width > 0) t.width else vw
+            val visualW = layoutW * z
+            panX = (vw - visualW) / 2f
+            if (continuousScrollWhenZoomed) {
+                panY = 0f
+            }
+        }
+
         t.translationX = panX
         t.translationY = panY
+        syncExteriorBackground()
         onTransformChanged?.invoke()
     }
 

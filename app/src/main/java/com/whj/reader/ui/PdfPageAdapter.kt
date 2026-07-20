@@ -2,18 +2,16 @@ package com.whj.reader.ui
 
 import android.view.LayoutInflater
 import android.view.ViewGroup
-import android.widget.ImageView
-import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.whj.reader.databinding.ItemPdfPageBinding
 
 /**
- * PDF 连续滚动列表：每页一张图，页底细黑线分隔（最后一页无分隔线）；
+ * PDF 连续滚动列表：每页一个 [PdfPageSurface]，页底细黑线分隔（最后一页无分隔线）；
  * 左上角半透明页码角标。
  */
 class PdfPageAdapter(
     private var pageCount: Int,
-    private val onBindPage: (pageIndex: Int, imageView: ImageView, targetWidth: Int) -> Unit,
+    private val onBindPage: (pageIndex: Int, surface: PdfPageSurface, targetWidth: Int) -> Unit,
 ) : RecyclerView.Adapter<PdfPageAdapter.VH>() {
 
     fun setPageCount(count: Int) {
@@ -32,7 +30,6 @@ class PdfPageAdapter(
         holder.binding.pageDivider.visibility =
             if (position < pageCount - 1) android.view.View.VISIBLE else android.view.View.GONE
         holder.binding.tvPageBadge.text = "${position + 1}"
-        // 角标 pivot 左上，缩放补偿由 Activity 在 transform 时统一设
         holder.binding.tvPageBadge.pivotX = 0f
         holder.binding.tvPageBadge.pivotY = 0f
         val w = holder.itemView.width.takeIf { it > 0 }
@@ -41,8 +38,8 @@ class PdfPageAdapter(
     }
 
     override fun onViewRecycled(holder: VH) {
-        // 解绑显示引用，便于 GC；勿 recycle bitmap（可能仍在 LruCache 或其它 View）
-        holder.binding.ivPage.setImageDrawable(null)
+        // 由 Activity 在 bind 时 drain；此处仅清状态
+        holder.binding.ivPage.clearContent()
         super.onViewRecycled(holder)
     }
 

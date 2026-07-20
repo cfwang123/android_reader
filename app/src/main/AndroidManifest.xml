@@ -154,7 +154,7 @@
             android:parentActivityName=".MainActivity"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- exported=true：允许 adb am start 做 NNAPI/NPU 命令行压测（无 LAUNCHER） -->
+        <!-- exported=true：允许 adb am start 做 OCR 命令行压测（无 LAUNCHER） -->
         <activity
             android:name=".OcrActivity"
             android:exported="true"

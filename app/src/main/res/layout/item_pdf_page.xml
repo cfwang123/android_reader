@@ -8,14 +8,12 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
 
-        <ImageView
+        <com.whj.reader.ui.PdfPageSurface
             android:id="@+id/ivPage"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:adjustViewBounds="true"
             android:background="#FFFFFF"
-            android:contentDescription="@string/pdf_page"
-            android:scaleType="fitCenter" />
+            android:contentDescription="@string/pdf_page" />
 
         <!-- 左上角页码：半透明黑底白字 -->
         <TextView

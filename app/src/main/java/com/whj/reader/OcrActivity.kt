@@ -217,7 +217,6 @@ class OcrActivity : AppCompatActivity(), OcrOverlayView.Listener {
 
     private fun parseBackendExtra(raw: String?): TfliteOcrEngine.Backend {
         return when (raw?.trim()?.uppercase()) {
-            "NNAPI", "NPU" -> TfliteOcrEngine.Backend.NNAPI
             "GPU" -> TfliteOcrEngine.Backend.GPU
             "CPU" -> TfliteOcrEngine.Backend.CPU
             else -> TfliteOcrEngine.Backend.AUTO
@@ -480,7 +479,7 @@ class OcrActivity : AppCompatActivity(), OcrOverlayView.Listener {
     companion object {
         private const val TAG = "OcrActivity"
         private const val MAX_SIDE = 2048
-        /** adb: --es backend NNAPI|GPU|CPU|AUTO */
+        /** adb: --es backend GPU|CPU|AUTO */
         const val EXTRA_BACKEND = "backend"
         /** adb: --ez auto_bench true  自动跑 assets/ocr/bench.jpg */
         const val EXTRA_AUTO_BENCH = "auto_bench"

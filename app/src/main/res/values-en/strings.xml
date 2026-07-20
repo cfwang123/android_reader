@@ -168,11 +168,10 @@
     <string name="tts_synth_ready">Engine ready</string>
     <string name="ocr_title">OCR</string>
     <string name="ocr_test_title">OCR debug (TFLite)</string>
-    <string name="ocr_test_hint">PP-OCRv4 mobile (same as Umi-OCR Rapid). Backend priority: NNAPI (NPU) → GPU → CPU.</string>
+    <string name="ocr_test_hint">PP-OCRv4 mobile (same as Umi-OCR Rapid). Backend priority: GPU → CPU.</string>
     <string name="ocr_probe_title">Environment / models</string>
     <string name="ocr_backend_title">Backend</string>
-    <string name="ocr_backend_auto">Auto (NNAPI→GPU→CPU)</string>
-    <string name="ocr_backend_nnapi">NNAPI (NPU/DSP)</string>
+    <string name="ocr_backend_auto">Auto (GPU→CPU)</string>
     <string name="ocr_backend_gpu">GPU</string>
     <string name="ocr_backend_cpu">CPU</string>
     <string name="ocr_image_preview">Image preview</string>

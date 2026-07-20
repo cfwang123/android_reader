@@ -102,7 +102,7 @@ Activity `onPause` does **not** stop TTS; progress may still be saved.
 
 - Shelf ⋮ → OCR
 - Models: `app/src/main/assets/ocr/`
-- Backend: NNAPI → GPU → CPU; overlay selection; fling for full text
+- Backend: GPU → CPU; overlay selection; fling for full text
 
 ## Requirements
 

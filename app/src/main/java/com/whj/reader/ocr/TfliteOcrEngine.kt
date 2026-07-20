@@ -8,7 +8,6 @@ import android.util.Log
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.Closeable
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -23,14 +22,14 @@ import kotlin.system.measureTimeMillis
 
 /**
  * Umi-OCR Rapid 同源 PP-OCRv4 mobile（det / cls / rec）TFLite 推理。
- * 优先 NNAPI（高通 NPU/DSP）→ GPU → CPU。
+ * 优先 GPU → CPU。
  */
 class TfliteOcrEngine(
     context: Context,
     preferred: Backend = Backend.AUTO,
 ) : Closeable {
 
-    enum class Backend { AUTO, NNAPI, GPU, CPU }
+    enum class Backend { AUTO, GPU, CPU }
 
     data class LineResult(
         val text: String,
@@ -76,7 +75,7 @@ class TfliteOcrEngine(
         det = models.det
         cls = models.cls
         rec = models.rec
-        backendName = models.backend // NNAPI / GPU / CPU
+        backendName = models.backend // GPU / CPU
         charset = loadCharset()
 
         val dIn = det.getInputTensor(0).shape()
@@ -107,21 +106,11 @@ class TfliteOcrEngine(
     )
 
     private fun openModels(preferred: Backend): Models {
-        // AUTO：NNAPI(setUseNNAPI) → NNAPI(NnApiDelegate) → 混合 → GPU → CPU
+        // AUTO：GPU → CPU
         val attempts: List<() -> Opened> = when (preferred) {
             Backend.AUTO -> listOf(
-                { tryOpenNnapi(mode = NnapiMode.USE_NNAPI_FLAG) },
-                { tryOpenNnapi(mode = NnapiMode.NNAPI_DELEGATE) },
-                { tryOpenHybridNnapi() },
                 { tryOpenBackend(Backend.GPU) },
-                { tryOpenBackend(Backend.CPU) },
-            )
-            Backend.NNAPI -> listOf(
-                { tryOpenNnapi(mode = NnapiMode.USE_NNAPI_FLAG) },
-                { tryOpenNnapi(mode = NnapiMode.NNAPI_DELEGATE) },
-                { tryOpenHybridNnapi() },
-                // 混合也试 NnApiDelegate
-                { tryOpenHybridNnapiDelegate() },
+                { tryOpenGpuForce() },
                 { tryOpenBackend(Backend.CPU) },
             )
             Backend.GPU -> listOf(
@@ -148,109 +137,6 @@ class TfliteOcrEngine(
             }
         }
         throw last ?: IllegalStateException("no OCR backend")
-    }
-
-    private enum class NnapiMode { USE_NNAPI_FLAG, NNAPI_DELEGATE }
-
-    private fun nnapiOptions(
-        tag: String,
-        mode: NnapiMode,
-        created: MutableList<AutoCloseable>,
-    ): Interpreter.Options {
-        val o = Interpreter.Options().apply { setNumThreads(4) }
-        when (mode) {
-            NnapiMode.USE_NNAPI_FLAG -> {
-                @Suppress("DEPRECATION")
-                o.setUseNNAPI(true)
-                initLine("  $tag: setUseNNAPI(true)")
-            }
-            NnapiMode.NNAPI_DELEGATE -> {
-                val nnOpt = NnApiDelegate.Options().apply {
-                    setAllowFp16(true)
-                    setExecutionPreference(
-                        NnApiDelegate.Options.EXECUTION_PREFERENCE_SUSTAINED_SPEED,
-                    )
-                    // 允许部分算子回落 CPU，提高 apply 成功率
-                    setUseNnapiCpu(true)
-                }
-                val d = NnApiDelegate(nnOpt)
-                created.add(d)
-                o.addDelegate(d)
-                initLine("  $tag: NnApiDelegate(allowFp16, useNnapiCpu)")
-            }
-        }
-        return o
-    }
-
-    /** 全量 det/cls/rec 走 NNAPI（两种绑定方式分开尝试） */
-    private fun tryOpenNnapi(mode: NnapiMode): Opened {
-        val label = when (mode) {
-            NnapiMode.USE_NNAPI_FLAG -> "NNAPI"
-            NnapiMode.NNAPI_DELEGATE -> "NNAPI-DLG"
-        }
-        initLine("try full $label")
-        val created = ArrayList<AutoCloseable>()
-        return try {
-            val d = Interpreter(loadAsset("ocr/det.tflite"), nnapiOptions("det", mode, created))
-            val c = Interpreter(loadAsset("ocr/cls.tflite"), nnapiOptions("cls", mode, created))
-            val r = Interpreter(loadAsset("ocr/rec.tflite"), nnapiOptions("rec", mode, created))
-            // 立刻跑一次，尽早暴露 apply/allocate 失败
-            warmup(d, c, r)
-            Opened(d, c, r, label, created)
-        } catch (t: Throwable) {
-            created.forEach { runCatching { it.close() } }
-            throw t
-        }
-    }
-
-    /**
-     * det/cls 用 setUseNNAPI，rec 走 CPU。
-     */
-    private fun tryOpenHybridNnapi(): Opened {
-        initLine("try hybrid: det/cls=setUseNNAPI, rec=CPU")
-        val created = ArrayList<AutoCloseable>()
-        val cpu = Interpreter.Options().apply { setNumThreads(4) }
-        return try {
-            val d = Interpreter(
-                loadAsset("ocr/det.tflite"),
-                nnapiOptions("det", NnapiMode.USE_NNAPI_FLAG, created),
-            )
-            val c = Interpreter(
-                loadAsset("ocr/cls.tflite"),
-                nnapiOptions("cls", NnapiMode.USE_NNAPI_FLAG, created),
-            )
-            val r = Interpreter(loadAsset("ocr/rec.tflite"), cpu)
-            initLine("  hybrid rec: CPU")
-            warmup(d, c, r)
-            Opened(d, c, r, "NNAPI+CPU", created)
-        } catch (t: Throwable) {
-            created.forEach { runCatching { it.close() } }
-            throw t
-        }
-    }
-
-    /** det/cls 用 NnApiDelegate，rec 走 CPU */
-    private fun tryOpenHybridNnapiDelegate(): Opened {
-        initLine("try hybrid: det/cls=NnApiDelegate, rec=CPU")
-        val created = ArrayList<AutoCloseable>()
-        val cpu = Interpreter.Options().apply { setNumThreads(4) }
-        return try {
-            val d = Interpreter(
-                loadAsset("ocr/det.tflite"),
-                nnapiOptions("det", NnapiMode.NNAPI_DELEGATE, created),
-            )
-            val c = Interpreter(
-                loadAsset("ocr/cls.tflite"),
-                nnapiOptions("cls", NnapiMode.NNAPI_DELEGATE, created),
-            )
-            val r = Interpreter(loadAsset("ocr/rec.tflite"), cpu)
-            initLine("  hybrid rec: CPU")
-            warmup(d, c, r)
-            Opened(d, c, r, "NNAPI-DLG+CPU", created)
-        } catch (t: Throwable) {
-            created.forEach { runCatching { it.close() } }
-            throw t
-        }
     }
 
     /** CompatibilityList 报不支持时仍强制试 GpuDelegate（部分机型探测偏保守） */
@@ -289,19 +175,12 @@ class TfliteOcrEngine(
     private fun tryOpenBackend(b: Backend): Opened {
         val created = ArrayList<AutoCloseable>()
         val label = when (b) {
-            Backend.NNAPI -> "NNAPI"
             Backend.GPU -> "GPU"
             Backend.CPU, Backend.AUTO -> "CPU"
         }
         fun optionsFor(modelTag: String): Interpreter.Options {
             val o = Interpreter.Options().apply { setNumThreads(4) }
             when (b) {
-                Backend.NNAPI -> {
-                    // 走 tryOpenNnapi，这里不应再进
-                    @Suppress("DEPRECATION")
-                    o.setUseNNAPI(true)
-                    initLine("  $modelTag: setUseNNAPI(true)")
-                }
                 Backend.GPU -> {
                     val compat = CompatibilityList()
                     if (!compat.isDelegateSupportedOnThisDevice) {
@@ -333,14 +212,34 @@ class TfliteOcrEngine(
             for (s in shape) n *= s.coerceAtLeast(1)
             return ByteBuffer.allocateDirect(n * 4).order(ByteOrder.nativeOrder())
         }
+        /** 按输出 tensor shape 分配嵌套 Float 数组（仅 float32 暖机） */
+        fun allocOut(shape: IntArray): Any {
+            return when (shape.size) {
+                1 -> FloatArray(shape[0].coerceAtLeast(1))
+                2 -> Array(shape[0].coerceAtLeast(1)) {
+                    FloatArray(shape[1].coerceAtLeast(1))
+                }
+                3 -> Array(shape[0].coerceAtLeast(1)) {
+                    Array(shape[1].coerceAtLeast(1)) {
+                        FloatArray(shape[2].coerceAtLeast(1))
+                    }
+                }
+                4 -> Array(shape[0].coerceAtLeast(1)) {
+                    Array(shape[1].coerceAtLeast(1)) {
+                        Array(shape[2].coerceAtLeast(1)) {
+                            FloatArray(shape[3].coerceAtLeast(1))
+                        }
+                    }
+                }
+                else -> error("unsupported out rank ${shape.size}")
+            }
+        }
         val din = d.getInputTensor(0).shape()
         val cin = c.getInputTensor(0).shape()
         val rin = r.getInputTensor(0).shape()
-        d.run(zeros(din), Array(1) { Array(din[1]) { Array(din[2]) { FloatArray(1) } } })
-        c.run(zeros(cin), Array(1) { FloatArray(2) })
-        val t = r.getOutputTensor(0).shape()[1]
-        val nc = r.getOutputTensor(0).shape()[2]
-        r.run(zeros(rin), Array(1) { Array(t) { FloatArray(nc) } })
+        d.run(zeros(din), allocOut(d.getOutputTensor(0).shape()))
+        c.run(zeros(cin), allocOut(c.getOutputTensor(0).shape()))
+        r.run(zeros(rin), allocOut(r.getOutputTensor(0).shape()))
     }
 
     fun recognize(bitmap: Bitmap): OcrResult {
@@ -361,9 +260,8 @@ class TfliteOcrEngine(
         detMs = measureTimeMillis {
             val packed = prepareDet(argb, detInH, detInW)
             scale = packed.scale
-            val out = Array(1) { Array(detInH) { Array(detInW) { FloatArray(1) } } }
-            det.run(packed.buffer, out)
-            boxes = boxesFromMap(out[0], scale, thr = 0.3f, minArea = 16f)
+            val map = runDetMap(packed.buffer)
+            boxes = boxesFromMap(map, scale, thr = 0.3f, minArea = 16f)
         }
         line("det boxes=${boxes.size} ${detMs}ms scale=$scale")
 
@@ -507,6 +405,44 @@ class TfliteOcrEngine(
 
     // ---------- det postprocess (connected components + AABB) ----------
 
+    /**
+     * det 输出两种布局都兼容：
+     * - 旧模型 NHWC: [1,H,W,1]
+     * - onnx2tf 新模型 NCHW-like: [1,1,H,W]
+     * 统一转成 [H][W][1] 供 [boxesFromMap]。
+     */
+    private fun runDetMap(input: ByteBuffer): Array<Array<FloatArray>> {
+        val shape = det.getOutputTensor(0).shape()
+        return when {
+            // [1, H, W, 1]
+            shape.size == 4 && shape[3] == 1 -> {
+                val h = shape[1]
+                val w = shape[2]
+                val out = Array(1) { Array(h) { Array(w) { FloatArray(1) } } }
+                det.run(input, out)
+                out[0]
+            }
+            // [1, 1, H, W]
+            shape.size == 4 && shape[1] == 1 -> {
+                val h = shape[2]
+                val w = shape[3]
+                val raw = Array(1) { Array(1) { Array(h) { FloatArray(w) } } }
+                det.run(input, raw)
+                Array(h) { y ->
+                    Array(w) { x ->
+                        floatArrayOf(raw[0][0][y][x])
+                    }
+                }
+            }
+            else -> {
+                // 回退：按输入 letterbox 尺寸 [1, detInH, detInW, 1]
+                val out = Array(1) { Array(detInH) { Array(detInW) { FloatArray(1) } } }
+                det.run(input, out)
+                out[0]
+            }
+        }
+    }
+
     private fun boxesFromMap(
         map: Array<Array<FloatArray>>, // [H][W][1]
         scale: Float,
@@ -647,8 +583,7 @@ class TfliteOcrEngine(
             } catch (t: Throwable) {
                 sb.append("GPU: ${t.message}\n")
             }
-            sb.append("NNAPI: 可尝试（高通 NPU/Hexagon）\n")
-            sb.append("优先顺序: NNAPI → GPU → CPU\n")
+            sb.append("优先顺序: GPU → CPU\n")
             // 模型是否在 assets
             try {
                 val names = context.assets.list("ocr")?.toList().orEmpty()
