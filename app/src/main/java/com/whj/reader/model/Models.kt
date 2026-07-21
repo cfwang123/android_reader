@@ -92,6 +92,11 @@ data class Paragraph(
 data class Chapter(
     val title: String,
     val paragraphIndex: Int,
+    /**
+     * EPUB spine 下标（0-based）；-1 表示未知。
+     * 用于按需跳转时优先解析到该章，不必先扫完整本。
+     */
+    val spineIndex: Int = -1,
 )
 
 data class RecentFile(

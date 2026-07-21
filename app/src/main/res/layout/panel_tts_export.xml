@@ -175,7 +175,7 @@
             android:layout_height="44dp"
             android:layout_weight="1"
             android:text="@string/tts_export_start"
-            app:backgroundTint="@color/primary"
+            app:backgroundTint="?attr/colorPrimary"
             app:cornerRadius="10dp" />
 
         <com.google.android.material.button.MaterialButton

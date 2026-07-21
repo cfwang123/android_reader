@@ -14,6 +14,8 @@ import com.whj.reader.databinding.ActivitySettingsBinding
 import com.whj.reader.model.AppLanguage
 import com.whj.reader.model.EdgeSwipeAction
 import com.whj.reader.model.KeepScreenMode
+import com.whj.reader.ui.AppTheme
+import com.whj.reader.ui.AppThemeSkin
 import com.whj.reader.util.AppUpdate
 import com.whj.reader.util.Toasts
 import java.util.concurrent.atomic.AtomicBoolean
@@ -25,6 +27,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private var pendingInstallAfterPermission: java.io.File? = null
     private var downloadCancel: AtomicBoolean? = null
+    private var initialThemeKey: String = "green"
 
     private val importLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -58,10 +61,6 @@ class SettingsActivity : AppCompatActivity() {
             else -> ((m + 4) / 5).coerceIn(1, 24)
         }
 
-    private fun formatIdle(minutes: Int): String =
-        if (minutes <= 0) getString(R.string.settings_idle_exit_never)
-        else getString(R.string.settings_idle_exit_value, minutes)
-
     private fun formatIdleScreenOff(minutes: Int): String =
         if (minutes <= 0) getString(R.string.settings_idle_screen_off_never)
         else getString(R.string.settings_idle_screen_off_value, minutes)
@@ -93,6 +92,34 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun refreshLanguageLabel() {
         binding.tvLanguage.text = languageLabel(AppSettings.appLanguage(this))
+    }
+
+    private fun themeLabel(skin: AppThemeSkin): String = getString(skin.labelRes)
+
+    private fun refreshThemeLabel() {
+        val skin = AppThemeSkin.fromKey(AppSettings.uiThemeKey(this))
+        binding.tvUiTheme.text = themeLabel(skin)
+    }
+
+    private fun pickUiTheme() {
+        val skins = AppThemeSkin.entries.toTypedArray()
+        val options = skins.map { themeLabel(it) }.toTypedArray()
+        val current = AppSettings.uiThemeKey(this)
+        val checked = skins.indexOfFirst { it.key == current }.coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.settings_ui_theme)
+            .setSingleChoiceItems(options, checked) { dialog, which ->
+                val skin = skins[which]
+                dialog.dismiss()
+                if (skin.key == current) return@setSingleChoiceItems
+                AppSettings.setUiThemeKey(this, skin.key)
+                refreshThemeLabel()
+                Toasts.show(this, R.string.ui_theme_switched)
+                // 立即重建本页；返回书架时 MainActivity 也会检测并 recreate
+                recreate()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun pickEdgeAction(
@@ -142,11 +169,16 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         binding.btnBack.setOnClickListener { finish() }
+
+        initialThemeKey = AppSettings.uiThemeKey(this)
+        refreshThemeLabel()
+        binding.rowUiTheme.setOnClickListener { pickUiTheme() }
 
         refreshLanguageLabel()
         binding.rowLanguage.setOnClickListener { pickLanguage() }
@@ -192,20 +224,6 @@ class SettingsActivity : AppCompatActivity() {
                 val m = progressToMinutes(progress)
                 binding.tvIdleScreenOff.text = formatIdleScreenOff(m)
                 if (fromUser) AppSettings.setIdleScreenOffMinutes(this@SettingsActivity, m)
-            }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        val idleMin = AppSettings.idleExitMinutes(this)
-        binding.seekIdleExit.progress = minutesToProgress(idleMin)
-        binding.tvIdleExit.text = formatIdle(idleMin)
-        binding.seekIdleExit.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val m = progressToMinutes(progress)
-                binding.tvIdleExit.text = formatIdle(m)
-                if (fromUser) AppSettings.setIdleExitMinutes(this@SettingsActivity, m)
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -263,6 +281,42 @@ class SettingsActivity : AppCompatActivity() {
         binding.tvAppVersion.text =
             getString(R.string.settings_app_version, AppUpdate.currentVersionName())
         binding.btnCheckUpdate.setOnClickListener { checkForUpdate() }
+        binding.btnLicense.setOnClickListener { showLicenseDialog() }
+    }
+
+    private fun showLicenseDialog() {
+        val text = runCatching {
+            assets.open("LICENSE").bufferedReader(Charsets.UTF_8).use { it.readText() }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.settings_license_load_fail)
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val maxH = (resources.displayMetrics.heightPixels * 0.65f).toInt()
+        val scroll = android.widget.ScrollView(this).apply {
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+        val tv = android.widget.TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            setTextIsSelectable(true)
+            setTextColor(getColor(R.color.text_primary))
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        scroll.addView(
+            tv,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        scroll.layoutParams = android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            maxH,
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.settings_license_title)
+            .setView(scroll)
+            .setPositiveButton(R.string.close, null)
+            .show()
     }
 
     private fun checkForUpdate() {

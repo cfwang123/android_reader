@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- ========== 默认：白底 + 翠绿（原品牌色） ========== -->
     <style name="Theme.WhjReader" parent="Theme.MaterialComponents.Light.NoActionBar">
-        <item name="colorPrimary">@color/primary</item>
-        <item name="colorPrimaryVariant">@color/primary_dark</item>
+        <item name="colorPrimary">#5B8C5A</item>
+        <item name="colorPrimaryVariant">#3F6B3E</item>
         <item name="colorOnPrimary">@color/white</item>
-        <item name="colorSecondary">@color/accent</item>
+        <item name="colorSecondary">#E8A838</item>
         <item name="colorOnSecondary">@color/black</item>
         <item name="android:statusBarColor">@color/white</item>
         <item name="android:windowLightStatusBar">true</item>
@@ -12,6 +13,163 @@
         <item name="android:windowBackground">@color/surface</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="colorAccentSoft">#E3F0E2</item>
+        <item name="colorRippleSoft">#205B8C5A</item>
+        <item name="colorToolbarAccent">#5B8C5A</item>
+        <item name="colorControlActivated">#5B8C5A</item>
+    </style>
+
+    <style name="Theme.WhjReader.Blue" parent="Theme.WhjReader">
+        <item name="colorPrimary">#6BAFD9</item>
+        <item name="colorPrimaryVariant">#4A90B8</item>
+        <item name="colorSecondary">#6BAFD9</item>
+        <item name="colorAccentSoft">#E8F4FC</item>
+        <item name="colorRippleSoft">#206BAFD9</item>
+        <item name="colorToolbarAccent">#4A90B8</item>
+        <item name="colorControlActivated">#6BAFD9</item>
+    </style>
+
+    <style name="Theme.WhjReader.Amber" parent="Theme.WhjReader">
+        <item name="colorPrimary">#C4A07A</item>
+        <item name="colorPrimaryVariant">#A88868</item>
+        <item name="colorSecondary">#C4A07A</item>
+        <item name="colorAccentSoft">#F5EDE4</item>
+        <item name="colorRippleSoft">#20C4A07A</item>
+        <item name="colorToolbarAccent">#A88868</item>
+        <item name="colorControlActivated">#C4A07A</item>
+    </style>
+
+    <style name="Theme.WhjReader.Teal" parent="Theme.WhjReader">
+        <item name="colorPrimary">#6AB8AE</item>
+        <item name="colorPrimaryVariant">#4E9A90</item>
+        <item name="colorSecondary">#6AB8AE</item>
+        <item name="colorAccentSoft">#E6F6F4</item>
+        <item name="colorRippleSoft">#206AB8AE</item>
+        <item name="colorToolbarAccent">#4E9A90</item>
+        <item name="colorControlActivated">#6AB8AE</item>
+    </style>
+
+    <style name="Theme.WhjReader.Violet" parent="Theme.WhjReader">
+        <item name="colorPrimary">#A090D0</item>
+        <item name="colorPrimaryVariant">#8070B0</item>
+        <item name="colorSecondary">#A090D0</item>
+        <item name="colorAccentSoft">#F2F0F8</item>
+        <item name="colorRippleSoft">#20A090D0</item>
+        <item name="colorToolbarAccent">#8070B0</item>
+        <item name="colorControlActivated">#A090D0</item>
+    </style>
+
+    <style name="Theme.WhjReader.Dark" parent="Theme.WhjReader">
+        <item name="colorPrimary">#7AA8D4</item>
+        <item name="colorPrimaryVariant">#5A8AB8</item>
+        <item name="colorSecondary">#7AA8D4</item>
+        <item name="colorAccentSoft">#E8EEF5</item>
+        <item name="colorRippleSoft">#207AA8D4</item>
+        <item name="colorToolbarAccent">#5A8AB8</item>
+        <item name="colorControlActivated">#7AA8D4</item>
+        <item name="android:statusBarColor">#F0F2F5</item>
+        <item name="android:navigationBarColor">#F0F2F5</item>
+        <item name="android:windowBackground">#F5F6F8</item>
+    </style>
+
+    <style name="Theme.WhjReader.Rose" parent="Theme.WhjReader">
+        <item name="colorPrimary">#D48A9A</item>
+        <item name="colorPrimaryVariant">#B86A7C</item>
+        <item name="colorSecondary">#D48A9A</item>
+        <item name="colorAccentSoft">#F9EEF1</item>
+        <item name="colorRippleSoft">#20D48A9A</item>
+        <item name="colorToolbarAccent">#B86A7C</item>
+        <item name="colorControlActivated">#D48A9A</item>
+    </style>
+
+    <style name="Theme.WhjReader.Indigo" parent="Theme.WhjReader">
+        <item name="colorPrimary">#7A8FD0</item>
+        <item name="colorPrimaryVariant">#5C70B4</item>
+        <item name="colorSecondary">#7A8FD0</item>
+        <item name="colorAccentSoft">#EEF0F8</item>
+        <item name="colorRippleSoft">#207A8FD0</item>
+        <item name="colorToolbarAccent">#5C70B4</item>
+        <item name="colorControlActivated">#7A8FD0</item>
+    </style>
+
+    <style name="Theme.WhjReader.Lime" parent="Theme.WhjReader">
+        <item name="colorPrimary">#8FBF6A</item>
+        <item name="colorPrimaryVariant">#6FA04C</item>
+        <item name="colorSecondary">#8FBF6A</item>
+        <item name="colorAccentSoft">#F0F7EA</item>
+        <item name="colorRippleSoft">#208FBF6A</item>
+        <item name="colorToolbarAccent">#6FA04C</item>
+        <item name="colorControlActivated">#8FBF6A</item>
+    </style>
+
+    <style name="Theme.WhjReader.Coral" parent="Theme.WhjReader">
+        <item name="colorPrimary">#E08A6A</item>
+        <item name="colorPrimaryVariant">#C06E50</item>
+        <item name="colorSecondary">#E08A6A</item>
+        <item name="colorAccentSoft">#FBF0EC</item>
+        <item name="colorRippleSoft">#20E08A6A</item>
+        <item name="colorToolbarAccent">#C06E50</item>
+        <item name="colorControlActivated">#E08A6A</item>
+    </style>
+
+    <style name="Theme.WhjReader.Pink" parent="Theme.WhjReader">
+        <item name="colorPrimary">#E0A0B8</item>
+        <item name="colorPrimaryVariant">#C07A98</item>
+        <item name="colorSecondary">#E0A0B8</item>
+        <item name="colorAccentSoft">#FBF0F4</item>
+        <item name="colorRippleSoft">#20E0A0B8</item>
+        <item name="colorToolbarAccent">#C07A98</item>
+        <item name="colorControlActivated">#E0A0B8</item>
+    </style>
+
+    <style name="Theme.WhjReader.Cyan" parent="Theme.WhjReader">
+        <item name="colorPrimary">#5CB8D4</item>
+        <item name="colorPrimaryVariant">#3E98B4</item>
+        <item name="colorSecondary">#5CB8D4</item>
+        <item name="colorAccentSoft">#E8F6FA</item>
+        <item name="colorRippleSoft">#205CB8D4</item>
+        <item name="colorToolbarAccent">#3E98B4</item>
+        <item name="colorControlActivated">#5CB8D4</item>
+    </style>
+
+    <style name="Theme.WhjReader.Forest" parent="Theme.WhjReader">
+        <item name="colorPrimary">#5A9A78</item>
+        <item name="colorPrimaryVariant">#407A5C</item>
+        <item name="colorSecondary">#5A9A78</item>
+        <item name="colorAccentSoft">#EAF4EE</item>
+        <item name="colorRippleSoft">#205A9A78</item>
+        <item name="colorToolbarAccent">#407A5C</item>
+        <item name="colorControlActivated">#5A9A78</item>
+    </style>
+
+    <style name="Theme.WhjReader.Wine" parent="Theme.WhjReader">
+        <item name="colorPrimary">#B07080</item>
+        <item name="colorPrimaryVariant">#905060</item>
+        <item name="colorSecondary">#B07080</item>
+        <item name="colorAccentSoft">#F5ECF0</item>
+        <item name="colorRippleSoft">#20B07080</item>
+        <item name="colorToolbarAccent">#905060</item>
+        <item name="colorControlActivated">#B07080</item>
+    </style>
+
+    <style name="Theme.WhjReader.Gold" parent="Theme.WhjReader">
+        <item name="colorPrimary">#D0B060</item>
+        <item name="colorPrimaryVariant">#B09040</item>
+        <item name="colorSecondary">#D0B060</item>
+        <item name="colorAccentSoft">#F9F4E8</item>
+        <item name="colorRippleSoft">#20D0B060</item>
+        <item name="colorToolbarAccent">#B09040</item>
+        <item name="colorControlActivated">#D0B060</item>
+    </style>
+
+    <style name="Theme.WhjReader.Slate" parent="Theme.WhjReader">
+        <item name="colorPrimary">#7A90A0</item>
+        <item name="colorPrimaryVariant">#5C7284</item>
+        <item name="colorSecondary">#7A90A0</item>
+        <item name="colorAccentSoft">#EEF2F4</item>
+        <item name="colorRippleSoft">#207A90A0</item>
+        <item name="colorToolbarAccent">#5C7284</item>
+        <item name="colorControlActivated">#7A90A0</item>
     </style>
 
     <style name="Theme.WhjReader.Reading" parent="Theme.WhjReader">
@@ -26,7 +184,7 @@
         <item name="android:paddingHorizontal">10dp</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:textSize">13sp</item>
-        <item name="rippleColor">@color/ripple</item>
+        <item name="rippleColor">?attr/colorRippleSoft</item>
     </style>
 
     <style name="Widget.WhjReader.ThemeChip" parent="Widget.MaterialComponents.Chip.Choice">
@@ -46,7 +204,6 @@
         <item name="android:paddingBottom">10dp</item>
     </style>
 
-    <!-- 横滑菜单项：宽度约屏宽 1/4，由代码或 minWidth 保证 -->
     <style name="ReadMenuItemScroll">
         <item name="android:layout_width">90dp</item>
         <item name="android:layout_height">wrap_content</item>
@@ -65,5 +222,3 @@
         <item name="android:textSize">12sp</item>
     </style>
 </resources>
-
-

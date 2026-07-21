@@ -181,11 +181,9 @@ class ShelfAdapter(
                 !item.folder.isLinked &&
                 !item.folder.isHistory
             if (highlighted) {
-                binding.root.setBackgroundColor(
-                    ContextCompat.getColor(binding.root.context, R.color.primary_soft),
-                )
+                binding.root.setBackgroundColor(AppTheme.accentSoft(binding.root.context))
             } else {
-                binding.root.setBackgroundResource(R.drawable.bg_round_card)
+                binding.root.setBackgroundResource(R.drawable.bg_list_item)
             }
         }
 
@@ -196,7 +194,7 @@ class ShelfAdapter(
                 childCount = entry.childCount,
                 isHistory = false,
             )
-            binding.root.setBackgroundResource(R.drawable.bg_round_card)
+            binding.root.setBackgroundResource(R.drawable.bg_list_item)
         }
 
         private fun folderMetaText(folder: com.whj.reader.model.ShelfFolder, childCount: Int): String =
@@ -268,10 +266,12 @@ class ShelfAdapter(
                 BookFileType.isPdf(book.uri)
             val isEbook = BookFileType.isEpub(book.pathHint) ||
                 BookFileType.isEpub(book.displayName) ||
+                BookFileType.isEpub(book.uri) ||
                 BookFileType.isMobi(book.pathHint) ||
-                BookFileType.isMobi(book.displayName)
+                BookFileType.isMobi(book.displayName) ||
+                BookFileType.isMobi(book.uri)
             bindFileIcon(book.uri, isPdf, isEbook)
-            binding.tvTitle.text = fullFileName(book.displayName, book.pathHint, isPdf)
+            binding.tvTitle.text = fullFileName(book.displayName, book.pathHint, book.uri, isPdf)
             binding.tvPath.visibility = View.GONE
             val (meta, pct) = resolveProgress(
                 uri = book.uri,
@@ -286,20 +286,20 @@ class ShelfAdapter(
             binding.root.alpha = 1f
 
             val selected = selectionMode && selectedIds.contains(book.id)
+            // 右侧多选框（CX 风格）
             if (selectionMode) {
                 binding.ivCheck.visibility = View.VISIBLE
                 binding.ivCheck.setImageResource(
                     if (selected) R.drawable.ic_check_box else R.drawable.ic_check_box_outline,
                 )
-                binding.root.setBackgroundColor(
-                    ContextCompat.getColor(
-                        binding.root.context,
-                        if (selected) R.color.primary_soft else R.color.white,
-                    ),
-                )
+                if (selected) {
+                    binding.root.setBackgroundColor(AppTheme.accentSoft(binding.root.context))
+                } else {
+                    binding.root.setBackgroundResource(R.drawable.bg_list_item)
+                }
             } else {
                 binding.ivCheck.visibility = View.GONE
-                binding.root.setBackgroundResource(R.drawable.bg_round_card)
+                binding.root.setBackgroundResource(R.drawable.bg_list_item)
             }
 
             val dragOn = showDragHandle && selectionMode
@@ -321,7 +321,7 @@ class ShelfAdapter(
             val isEbook = BookFileType.isEpub(entry.name) || BookFileType.isMobi(entry.name)
             bindFileIcon(entry.uri, entry.isPdf, isEbook)
             binding.tvTitle.text = entry.name.ifBlank {
-                fullFileName(entry.displayName, entry.name, entry.isPdf)
+                fullFileName(entry.displayName, entry.name, entry.uri, entry.isPdf)
             }
             // 文件夹列表不显示第 2 行详细路径（relativePath 仍供搜索匹配）
             binding.tvPath.visibility = View.GONE
@@ -339,10 +339,15 @@ class ShelfAdapter(
             binding.ivCheck.visibility = View.GONE
             binding.ivDragHandle.visibility = View.GONE
             binding.ivDragHandle.setOnTouchListener(null)
-            binding.root.setBackgroundResource(R.drawable.bg_round_card)
+            binding.root.setBackgroundResource(R.drawable.bg_list_item)
         }
 
-        private fun fullFileName(displayName: String, pathHint: String, isPdf: Boolean): String {
+        private fun fullFileName(
+            displayName: String,
+            pathHint: String,
+            uri: String = "",
+            isPdf: Boolean,
+        ): String {
             fun extractFileName(raw: String): String? {
                 if (raw.isBlank()) return null
                 val decoded = runCatching {
@@ -363,7 +368,37 @@ class ShelfAdapter(
             fun defaultExt(): String {
                 BookFileType.extensionOf(pathHint)?.let { return it }
                 BookFileType.extensionOf(displayName)?.let { return it }
-                return if (isPdf) ".pdf" else ".txt"
+                BookFileType.extensionOf(uri)?.let { return it }
+                return when {
+                    isPdf || BookFileType.isPdf(uri) -> ".pdf"
+                    BookFileType.isEpub(pathHint) ||
+                        BookFileType.isEpub(displayName) ||
+                        BookFileType.isEpub(uri) -> ".epub"
+                    BookFileType.isMobi(pathHint) ||
+                        BookFileType.isMobi(displayName) ||
+                        BookFileType.isMobi(uri) -> {
+                        BookFileType.extensionOf(pathHint)
+                            ?: BookFileType.extensionOf(displayName)
+                            ?: BookFileType.extensionOf(uri)
+                            ?: ".mobi"
+                    }
+                    else -> ".txt"
+                }
+            }
+
+            // URI 路径常带真实扩展名（content 文档 id 解码后）
+            val fromUri = extractFileName(uri)
+            if (fromUri != null && BookFileType.extensionOf(fromUri) != null) {
+                // 优先展示名无后缀时用 URI 文件名
+                val base = extractFileName(displayName) ?: extractFileName(pathHint)
+                if (base != null && !base.contains('.')) {
+                    return base + (BookFileType.extensionOf(fromUri) ?: defaultExt())
+                }
+                if (base.isNullOrBlank() || base.equals(fromUri, ignoreCase = true) ||
+                    BookFileType.stripBookExt(base).equals(BookFileType.stripBookExt(fromUri), true)
+                ) {
+                    return fromUri
+                }
             }
 
             val fromHint = extractFileName(pathHint)

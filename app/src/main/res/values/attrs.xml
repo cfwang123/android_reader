@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 主题皮肤可切换色（对齐 music-player） -->
+    <attr name="colorAccentSoft" format="color" />
+    <attr name="colorRippleSoft" format="color" />
+    <attr name="colorToolbarAccent" format="color" />
+</resources>

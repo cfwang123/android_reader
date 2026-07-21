@@ -9,6 +9,7 @@ import com.whj.reader.model.PdfPageMode
 import com.whj.reader.model.ReadStyle
 import com.whj.reader.model.ReadTheme
 import com.whj.reader.model.ShelfSort
+import com.whj.reader.util.ReaderFonts
 
 object AppSettings {
     /** TXT 阅读设置 */
@@ -46,7 +47,10 @@ object AppSettings {
             lineSpacingMult = p.getFloat("lineSpacing", 1.4f),
             paraSpacingDp = p.getInt("paraSpacing", 8),
             letterSpacing = p.getFloat("letterSpacing", 0f),
-            fontFamily = p.getString("fontFamily", "default") ?: "default",
+            // 旧版内置方正 id 归一为系统默认
+            fontFamily = ReaderFonts.normalizeId(
+                p.getString("fontFamily", ReaderFonts.ID_DEFAULT) ?: ReaderFonts.ID_DEFAULT,
+            ),
             customBgColor = migratedBg,
             bgTextureId = p.getString("bgTextureId", "") ?: "",
             textColor = migratedText,
@@ -61,7 +65,7 @@ object AppSettings {
             .putFloat("lineSpacing", style.lineSpacingMult)
             .putInt("paraSpacing", style.paraSpacingDp)
             .putFloat("letterSpacing", style.letterSpacing)
-            .putString("fontFamily", style.fontFamily)
+            .putString("fontFamily", ReaderFonts.normalizeId(style.fontFamily))
             .putInt("customBgColor", style.customBgColor)
             .putString("bgTextureId", style.bgTextureId)
             .putInt("textColor", style.textColor)
@@ -220,17 +224,6 @@ object AppSettings {
     fun lastBookAt(ctx: Context): Long =
         prefs(ctx).getLong("lastBookAt", 0L)
 
-    /**
-     * 阅读页空闲退出时间（分钟）。
-     * 0 表示不自动退出；默认 30。
-     */
-    fun idleExitMinutes(ctx: Context): Int =
-        prefs(ctx).getInt("idleExitMinutes", 30).coerceIn(0, 24 * 60)
-
-    fun setIdleExitMinutes(ctx: Context, minutes: Int) {
-        prefs(ctx).edit().putInt("idleExitMinutes", minutes.coerceIn(0, 24 * 60)).apply()
-    }
-
     fun orientationMode(ctx: Context): OrientationMode =
         runCatching {
             OrientationMode.valueOf(
@@ -272,6 +265,28 @@ object AppSettings {
 
     fun setVolumeKeyPageTurn(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean("volumeKeyPageTurn", enabled).apply()
+    }
+
+    /**
+     * 界面颜色主题 key（书架/设置等），默认 green（原品牌翠绿）。
+     * 与阅读页 [ReadStyle.theme] 正文底色无关。
+     */
+    fun uiThemeKey(ctx: Context): String =
+        prefs(ctx).getString("uiThemeKey", "green") ?: "green"
+
+    fun setUiThemeKey(ctx: Context, key: String) {
+        prefs(ctx).edit().putString("uiThemeKey", key).apply()
+    }
+
+    /**
+     * MOBI 漫画模式：忽略正文，单张图片全屏缩放 + 侧边/滑动翻页。
+     * 默认关闭（正文模式）。
+     */
+    fun mobiMangaMode(ctx: Context): Boolean =
+        prefs(ctx).getBoolean("mobiMangaMode", false)
+
+    fun setMobiMangaMode(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean("mobiMangaMode", enabled).apply()
     }
 
     /** 界面语言，默认中文 */

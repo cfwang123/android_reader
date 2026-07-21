@@ -1,0 +1,51 @@
+MIT License
+
+Copyright (c) 2026 whj
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+Third-party notice (not part of the MIT grant above)
+
+The MIT License above applies to this project’s original source code and
+documentation written by the copyright holder. Bundled or linked third-party
+components keep their own licenses and are NOT re-licensed as MIT.
+
+Non-exhaustive examples used by this app:
+
+  - AndroidX / Jetpack, Google Material Components, Kotlin / Coroutines
+  - Apache PDFBox Android (com.tom-roush:pdfbox-android) — Apache License 2.0
+  - TensorFlow Lite (OCR inference) — Apache License 2.0
+  - TAndroidLame / LAME (optional MP3 export) — see upstream / LGPL-related terms
+  - OCR model weights under assets/ — check the model source license before
+    redistributing
+  - User-installed fonts (if any) stay on the device; this project does not
+    ship commercial typefaces
+
+Before publishing APKs or redistributing assets, review each dependency and
+asset license yourself.
+
+------------------------------------------------------------------------------
+第三方说明（不属于上方 MIT 授权范围）
+
+上方 MIT 仅覆盖本项目版权人编写的源代码与文档。依赖库、OCR 模型、
+原生 so 等仍适用各自许可证，不因本仓库声明 MIT 而自动开源或可随意再分发。
+本项目不内嵌商业字体；用户自行安装的字体仍受字体厂商许可约束。
+
+对外发布安装包或拷贝资源前，请自行核对各项第三方许可（尤其模型权重与编解码库）。

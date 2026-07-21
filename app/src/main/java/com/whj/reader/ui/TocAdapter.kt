@@ -8,6 +8,7 @@ import com.whj.reader.R
 import com.whj.reader.databinding.ItemTocBinding
 import com.whj.reader.model.Bookmark
 import com.whj.reader.model.Chapter
+import com.whj.reader.ui.AppTheme
 
 sealed class TocItem {
     data class ChapterItem(val chapter: Chapter) : TocItem()
@@ -35,6 +36,21 @@ class TocAdapter(
         this.currentParagraph = currentParagraph
         this.totalParagraphs = totalParagraphs
         notifyDataSetChanged()
+    }
+
+    /** 当前阅读位置对应的目录项下标（章节列表）；无则 -1 */
+    fun indexOfActiveChapter(): Int {
+        var active = -1
+        for (i in items.indices) {
+            val c = (items[i] as? TocItem.ChapterItem)?.chapter ?: continue
+            if (c.paragraphIndex < 0) continue
+            if (c.paragraphIndex <= currentParagraph) {
+                active = i
+            } else {
+                break
+            }
+        }
+        return active
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -77,14 +93,22 @@ class TocAdapter(
                         R.string.para_index,
                         c.paragraphIndex + 1,
                     )
-                    val active = c.paragraphIndex <= currentParagraph &&
+                    // 当前章：段索引 <= 阅读位置，且下一章在阅读位置之后（或已是最后一章）
+                    val active = c.paragraphIndex >= 0 &&
+                        c.paragraphIndex <= currentParagraph &&
                         (
                             bindingAdapterPosition == items.lastIndex ||
                                 (items.getOrNull(bindingAdapterPosition + 1) as? TocItem.ChapterItem)
-                                    ?.chapter?.paragraphIndex?.let { it > currentParagraph } == true
+                                    ?.chapter?.paragraphIndex?.let { next ->
+                                        next < 0 || next > currentParagraph
+                                    } == true
                             )
                     binding.tvTocTitle.setTextColor(
-                        if (active) 0xFFF0A020.toInt() else 0xFF2C3E50.toInt(),
+                        if (active) {
+                            AppTheme.toolbarAccent(itemView.context)
+                        } else {
+                            0xFF2C3E50.toInt()
+                        },
                     )
                     binding.btnTocDelete.visibility = View.GONE
                 }

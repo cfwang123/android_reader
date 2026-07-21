@@ -34,6 +34,11 @@ data class LoadedBook(
      * EPUB/MOBI 填充；TXT 为空。
      */
     val linkTargets: Map<String, Int> = emptyMap(),
+    /**
+     * MOBI 等提取的全部内嵌图片路径（按原书顺序，漫画模式用）。
+     * 打开时即完整，不依赖正文流式解析。
+     */
+    val imagePaths: List<String> = emptyList(),
 )
 
 /**
@@ -44,13 +49,41 @@ data class BookOpenResult(
     val streamer: BookStreamer? = null,
 )
 
-/** EPUB/MOBI 后台续载 */
+/**
+ * EPUB/MOBI 按需续载（不一次性后台扫完全书）。
+ *
+ * 用法：
+ * 1. [start] 注册回调（不开始解析）
+ * 2. 在 IO 线程反复调用 [loadNextBatchBlocking]；每批解析后触发 [onUpdate] / 完成时 [onComplete]
+ * 3. 阅读页在「滑近已加载末尾 / 跳转目标尚未载入」时再请求下一批
+ */
 interface BookStreamer {
     fun start(
         onUpdate: (LoadedBook) -> Unit,
         onComplete: (LoadedBook) -> Unit,
         onProgress: LoadProgressListener? = null,
     )
+
+    /**
+     * 同步解析下一批（须在后台线程调用）。
+     * @return true 表示可能还有更多；false 表示已完成或已取消
+     */
+    fun loadNextBatchBlocking(): Boolean
+
+    /**
+     * 连续解析直到段落数超过 [targetParaInclusive]（或全书结束）。
+     * 用于恢复进度 / 目录跳转：中间少回调 UI，避免主线程反复 setContent。
+     * @return true 表示可能还有更多
+     */
+    fun loadUntilParagraphBlocking(targetParaInclusive: Int): Boolean {
+        var guard = 0
+        var more = true
+        while (more && guard < 256) {
+            more = loadNextBatchBlocking()
+            guard++
+        }
+        return more
+    }
 
     fun cancel()
 }
@@ -60,10 +93,18 @@ object TextLoader {
     private const val MAX_PARA_CHARS = 1200
 
     /**
-     * 章节标题仅认「第X章/节…」「Chapter N」等明确格式。
-     * 不认「一、」「二、」「1.」——正文条目/列表常见，勿加粗。
+     * 优先：编号章 `01.` / `001.` / `0001.` / `00001.` 等（至少 2 位数字）。
+     * 不认单数字 `1.`——正文列表常见。
      */
-    private val CHAPTER_PATTERNS = listOf(
+    private val NUMBERED_CHAPTER_PATTERN = Pattern.compile(
+        "^\\s*\\d{2,5}[.．、]\\s*\\S.{0,48}$",
+    )
+
+    /**
+     * 回退：仅认「第X章/节…」「Chapter N」等明确格式。
+     * 当编号格式识别成功（≥2 条）时不再使用本类模式。
+     */
+    private val FALLBACK_CHAPTER_PATTERNS = listOf(
         Pattern.compile("^\\s*第[0-9零一二三四五六七八九十百千两]+[章节回卷部篇集].{0,40}$"),
         Pattern.compile("^\\s*Chapter\\s+\\d+.{0,40}$", Pattern.CASE_INSENSITIVE),
     )
@@ -139,16 +180,18 @@ object TextLoader {
         }
 
         // 章节标题单独成段，避免「标题+正文」粘在一起导致整段加粗
+        // 预判是否采用编号章（全篇至少 2 处），以便 split / isChapter 策略一致
+        val preferNumbered = countNumberedChapterCandidates(flat) >= 2
         val splitParas = ArrayList<String>(flat.size + 8)
         for (p in flat) {
-            splitParas.addAll(splitChapterLead(p))
+            splitParas.addAll(splitChapterLead(p, preferNumbered))
         }
 
         val paragraphs = splitParas.mapIndexed { index, p ->
             Paragraph(
                 index = index,
                 text = p,
-                isChapter = isChapterTitle(p),
+                isChapter = isChapterTitle(p, preferNumbered),
             )
         }
         // 仅用识别出的章节标题作目录；识别失败则为空（界面显示「无目录」），
@@ -205,10 +248,22 @@ object TextLoader {
     }
 
     /**
+     * 粗扫：行内是否含编号章候选（用于决定是否优先编号、禁用「第x章」）。
+     */
+    private fun countNumberedChapterCandidates(paras: List<String>): Int {
+        var n = 0
+        for (p in paras) {
+            val first = p.lineSequence().firstOrNull()?.trim().orEmpty()
+            if (isNumberedChapterLine(first)) n++
+        }
+        return n
+    }
+
+    /**
      * 若首行是章节标题且后面还有正文，拆成两段。
      * 例：「001. 第一章：xxx\n在我协助…」→ 标题段 + 正文段
      */
-    private fun splitChapterLead(text: String): List<String> {
+    private fun splitChapterLead(text: String, preferNumbered: Boolean): List<String> {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return emptyList()
         val nl = trimmed.indexOf('\n')
@@ -219,14 +274,14 @@ object TextLoader {
         val rest = trimmed.substring(nl + 1).trim()
         if (rest.isEmpty()) return listOf(first)
         // 仅当首行像标题、且正文明显更长时拆开
-        if (isChapterTitleLine(first) && rest.length > 8) {
+        if (isChapterTitleLine(first, preferNumbered) && rest.length > 8) {
             return listOf(first, rest)
         }
         return listOf(trimmed)
     }
 
     /** 整段是否章节标题：短标题行，不能夹带大段正文 */
-    private fun isChapterTitle(text: String): Boolean {
+    private fun isChapterTitle(text: String, preferNumbered: Boolean): Boolean {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return false
         // 多行且后文较长 → 不是纯标题（应由 splitChapterLead 拆开）
@@ -236,13 +291,27 @@ object TextLoader {
             if (rest.length > 8) return false
         }
         val first = trimmed.lineSequence().first().trim()
-        return isChapterTitleLine(first)
+        return isChapterTitleLine(first, preferNumbered)
     }
 
-    private fun isChapterTitleLine(line: String): Boolean {
+    /**
+     * @param preferNumbered true：只用 `001.` 等编号；false：只用「第x章」/Chapter 回退规则
+     */
+    private fun isChapterTitleLine(line: String, preferNumbered: Boolean): Boolean {
         val first = line.trim()
         if (first.isEmpty() || first.length > 50) return false
-        return CHAPTER_PATTERNS.any { it.matcher(first).matches() }
+        return if (preferNumbered) {
+            isNumberedChapterLine(first)
+        } else {
+            FALLBACK_CHAPTER_PATTERNS.any { it.matcher(first).matches() }
+        }
+    }
+
+    /** `01.` / `001.` / `0001.` / `00001.` … 至少两位数字 + 点号 + 标题 */
+    private fun isNumberedChapterLine(line: String): Boolean {
+        val first = line.trim()
+        if (first.isEmpty() || first.length > 50) return false
+        return NUMBERED_CHAPTER_PATTERN.matcher(first).matches()
     }
 
     private fun readAll(input: InputStream): ByteArray {

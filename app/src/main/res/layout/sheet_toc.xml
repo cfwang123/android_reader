@@ -10,9 +10,9 @@
         android:id="@+id/tabLayout"
         android:layout_width="match_parent"
         android:layout_height="48dp"
-        app:tabIndicatorColor="@color/toolbar_orange"
+        app:tabIndicatorColor="?attr/colorToolbarAccent"
         app:tabMode="fixed"
-        app:tabSelectedTextColor="@color/toolbar_orange"
+        app:tabSelectedTextColor="?attr/colorToolbarAccent"
         app:tabTextColor="@color/text_secondary" />
 
     <androidx.viewpager2.widget.ViewPager2

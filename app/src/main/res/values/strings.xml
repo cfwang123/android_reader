@@ -40,6 +40,22 @@
     <string name="shelf_sort_current">排序：%1$s</string>
     <string name="selection_mode">多选</string>
     <string name="multiselect_shelf_only">绑定文件夹中不支持多选</string>
+    <string name="file_details">详情</string>
+    <string name="file_details_title">文件详情</string>
+    <string name="file_details_name">名称：%1$s</string>
+    <string name="file_details_path">路径：%1$s</string>
+    <string name="file_details_uri">URI：%1$s</string>
+    <string name="file_details_size">大小：%1$s</string>
+    <string name="file_details_format">格式：%1$s</string>
+    <string name="file_details_encoding">编码：%1$s</string>
+    <string name="file_details_progress">进度：%1$s</string>
+    <string name="file_details_last_opened">上次阅读：%1$s</string>
+    <string name="file_details_unknown">未知</string>
+    <string name="file_format_txt">TXT 文本</string>
+    <string name="file_format_epub">EPUB 电子书</string>
+    <string name="file_format_mobi">MOBI/AZW 电子书</string>
+    <string name="file_format_pdf">PDF</string>
+    <string name="file_format_other">其它</string>
     <string name="history_delete_record">删除记录</string>
     <string name="history_delete_title">删除阅读记录？</string>
     <string name="history_delete_msg">将清除该条阅读进度与历史，不会删除书架上的书或源文件</string>
@@ -110,6 +126,15 @@
     <string name="pdf_mode_continuous">连续滚动</string>
     <string name="pdf_mode_single">单页模式</string>
     <string name="pdf_mode_hint">连续滚动时页间显示细黑线分隔；单页模式左右点按翻页。双指缩放后仍可滚动。</string>
+    <string name="mobi_view_mode">浏览模式</string>
+    <string name="mobi_mode_text">正文模式</string>
+    <string name="mobi_mode_manga">漫画模式</string>
+    <string name="mobi_mode_current">当前：%1$s</string>
+    <string name="mobi_mode_hint">漫画模式忽略正文，一次显示一张图，可双指缩放，左右点按或滑动翻页。进度为第几张/总图片数。选中项为主色填充。</string>
+    <string name="mobi_manga_progress">第 %1$d/%2$d 张</string>
+    <string name="mobi_manga_no_images">本书没有可显示的图片</string>
+    <string name="mobi_manga_first">已是第一张</string>
+    <string name="mobi_manga_last">已是最后一张</string>
     <string name="pdf_crop">切边</string>
     <string name="pdf_crop_value">裁边 %1$d%%</string>
     <string name="pdf_crop_summary">左%1$d%% 上%2$d%% 右%3$d%% 下%4$d%%</string>
@@ -265,6 +290,8 @@
     <string name="add_bookmark">添加书签</string>
     <string name="jump_to_paragraph">跳到第 %1$d 段</string>
     <string name="paragraph_progress">第 %1$d / %2$d 段</string>
+    <!-- EPUB/MOBI：第 n/m 章 + 章内进度 -->
+    <string name="chapter_progress">第 %1$d/%2$d 章  %3$d%%</string>
     <string name="prev_chapter">上一章</string>
     <string name="next_chapter">下一章</string>
     <string name="no_prev_chapter">已是第一章</string>
@@ -456,10 +483,6 @@
     <string name="settings_idle_screen_off_value">%1$d 分钟</string>
     <string name="settings_idle_screen_off_never">禁用</string>
     <string name="settings_auto_scroll">朗读时：当前句未完整显示则滚到屏顶</string>
-    <string name="settings_idle_exit">空闲退出时间</string>
-    <string name="settings_idle_exit_hint">无操作超过该时间后自动退出阅读（0=不退出）</string>
-    <string name="settings_idle_exit_value">%1$d 分钟</string>
-    <string name="settings_idle_exit_never">不退出</string>
     <string name="settings_default_rate">默认语速</string>
     <string name="settings_section_gesture">手势</string>
     <string name="settings_volume_key_page">音量键翻页</string>
@@ -473,12 +496,12 @@
     <string name="edge_toast_rate">语速 %1$.1f×</string>
     <string name="edge_toast_font">字号 %1$d</string>
     <string name="tts_read_from_here">从本段开始朗读</string>
-    <string name="idle_exit_toast">空闲超时，已退出阅读</string>
     <string name="confirm">确认</string>
     <string name="cancel">取消</string>
     <string name="delete">删除</string>
     <string name="close">关闭</string>
     <string name="loading_book">正在打开…</string>
+    <string name="loading_locate_progress">正在定位阅读位置…</string>
     <string name="load_stage_copy">复制文件…</string>
     <string name="load_stage_parse">解析中…</string>
     <string name="load_stage_done">完成</string>
@@ -512,6 +535,9 @@
     <string name="settings_section_about">关于</string>
     <string name="settings_app_version">当前版本 %1$s</string>
     <string name="settings_check_update">检查更新</string>
+    <string name="settings_license">许可证</string>
+    <string name="settings_license_title">开源许可证</string>
+    <string name="settings_license_load_fail">无法加载许可证文本</string>
     <string name="update_checking">正在检查更新…</string>
     <string name="update_up_to_date">已是最新版本（%1$s）</string>
     <string name="update_available_title">发现新版本 %1$s</string>
@@ -537,6 +563,24 @@
     <string name="lang_zh">中文</string>
     <string name="lang_en">English</string>
     <string name="lang_switched">已切换语言</string>
+    <string name="settings_ui_theme">颜色主题</string>
+    <string name="ui_theme_green">翠绿（默认）</string>
+    <string name="ui_theme_blue">晴空蓝</string>
+    <string name="ui_theme_amber">墨金</string>
+    <string name="ui_theme_teal">翡翠青</string>
+    <string name="ui_theme_violet">暮紫</string>
+    <string name="ui_theme_dark">暗夜</string>
+    <string name="ui_theme_rose">玫瑰</string>
+    <string name="ui_theme_indigo">靛青</string>
+    <string name="ui_theme_lime">青柠</string>
+    <string name="ui_theme_coral">珊瑚</string>
+    <string name="ui_theme_pink">樱粉</string>
+    <string name="ui_theme_cyan">青空</string>
+    <string name="ui_theme_forest">松绿</string>
+    <string name="ui_theme_wine">酒红</string>
+    <string name="ui_theme_gold">流金</string>
+    <string name="ui_theme_slate">岩灰</string>
+    <string name="ui_theme_switched">已切换主题</string>
 
     <!-- 补充可本地化文案 -->
     <string name="unnamed">未命名</string>

@@ -15,6 +15,7 @@ import android.widget.PopupMenu
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import com.whj.reader.ui.AppTheme
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
@@ -29,6 +30,8 @@ import com.whj.reader.data.BookshelfStore
 import com.whj.reader.data.FolderImporter
 import com.whj.reader.data.LinkedTreeCacheStore
 import com.whj.reader.data.ReadingHistoryStore
+import com.whj.reader.data.ReadingProgressStore
+import com.whj.reader.data.ShelfFileMetaStore
 import com.whj.reader.databinding.ActivityMainBinding
 import com.whj.reader.model.LinkedDirEntry
 import com.whj.reader.model.LinkedFileEntry
@@ -41,6 +44,9 @@ import com.whj.reader.ui.ShelfAdapter
 import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -173,7 +179,11 @@ class MainActivity : AppCompatActivity() {
     private var pendingViewUri: Uri? = null
     private var pendingViewName: String? = null
 
+    private var appliedThemeKey: String = ""
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
+        appliedThemeKey = AppSettings.uiThemeKey(this)
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -187,7 +197,7 @@ class MainActivity : AppCompatActivity() {
             onLinkedFileClick = { openLinkedFile(it) },
             onFolderLongClick = { showFolderMenu(it) },
             onBookLongPress = { book, anchor -> showBookPopupMenu(book, anchor) },
-            onLinkedFileLongPress = { _, _ -> },
+            onLinkedFileLongPress = { entry, anchor -> showLinkedFilePopupMenu(entry, anchor) },
             onStartDrag = { vh -> bookDragHelper.startDrag(vh) },
         )
         binding.rvShelf.layoutManager = LinearLayoutManager(this)
@@ -198,7 +208,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnMore.setOnClickListener { v -> showMoreMenu(v) }
         binding.btnSort.setOnClickListener { toggleShelfSort() }
         updateSortButton()
-        binding.swipeRefresh.setColorSchemeResources(R.color.primary)
+        binding.swipeRefresh.setColorSchemeColors(AppTheme.primary(this))
         binding.swipeRefresh.setOnRefreshListener { pullToRefresh() }
         binding.btnNavBack.setOnClickListener {
             if (selectionMode) exitSelectionMode() else navigateUp()
@@ -257,6 +267,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 设置里改主题后返回：重建以套用新皮肤
+        val themeKey = AppSettings.uiThemeKey(this)
+        if (appliedThemeKey.isNotEmpty() && themeKey != appliedThemeKey) {
+            recreate()
+            return
+        }
+        appliedThemeKey = themeKey
         val pending = pendingViewUri
         if (pending != null && StorageAccess.hasAllFilesAccess()) {
             val name = pendingViewName
@@ -1469,15 +1486,26 @@ class MainActivity : AppCompatActivity() {
             ReadingHistoryStore.isHistoryBookId(book.id) ||
             ReadingHistoryStore.isHistoryFolderId(book.folderId)
         val popup = PopupMenu(this, anchor)
+        popup.menu.add(0, 0, 0, R.string.file_details)
         if (historyItem) {
-            popup.menu.add(0, 10, 0, R.string.selection_mode)
-            popup.menu.add(0, 2, 1, R.string.history_delete_record)
+            popup.menu.add(0, 10, 1, R.string.selection_mode)
+            popup.menu.add(0, 2, 2, R.string.history_delete_record)
         } else {
-            popup.menu.add(0, 1, 0, R.string.move_book)
-            popup.menu.add(0, 2, 1, R.string.delete_book)
+            popup.menu.add(0, 1, 1, R.string.move_book)
+            popup.menu.add(0, 2, 2, R.string.delete_book)
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                0 -> {
+                    showFileDetailsDialog(
+                        name = book.displayName.ifBlank { book.pathHint },
+                        pathHint = book.pathHint,
+                        uri = book.uri,
+                        sizeHint = -1L,
+                        lastOpened = book.lastOpened,
+                    )
+                    true
+                }
                 10 -> {
                     // 进入多选并勾选当前项
                     if (!selectionMode) {
@@ -1500,6 +1528,153 @@ class MainActivity : AppCompatActivity() {
             }
         }
         popup.show()
+    }
+
+    /** 绑定文件夹内文件长按：详情 */
+    private fun showLinkedFilePopupMenu(entry: LinkedFileEntry, anchor: android.view.View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add(0, 0, 0, R.string.file_details)
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                0 -> {
+                    showFileDetailsDialog(
+                        name = entry.displayName.ifBlank { entry.name },
+                        pathHint = entry.relativePath.ifBlank { entry.name },
+                        uri = entry.uri,
+                        sizeHint = entry.sizeBytes,
+                        lastOpened = ReadingProgressStore.get(this, entry.uri)?.lastOpened ?: 0L,
+                    )
+                    true
+                }
+                else -> false
+            }
+        }
+        popup.show()
+    }
+
+    private fun showFileDetailsDialog(
+        name: String,
+        pathHint: String,
+        uri: String,
+        sizeHint: Long,
+        lastOpened: Long,
+    ) {
+        // 先展示已知信息，再后台补全大小
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.file_details_title)
+            .setMessage(buildFileDetailsMessage(name, pathHint, uri, sizeHint, lastOpened))
+            .setPositiveButton(R.string.close, null)
+            .show()
+        if (sizeHint >= 0L) {
+            ShelfFileMetaStore.setSizeBytesIfChanged(this, uri, sizeHint)
+            return
+        }
+        lifecycleScope.launch {
+            val size = withContext(Dispatchers.IO) { queryUriSizeBytes(uri) }
+            if (size >= 0L) {
+                ShelfFileMetaStore.setSizeBytesIfChanged(this@MainActivity, uri, size)
+            }
+            if (!isFinishing && dialog.isShowing) {
+                dialog.setMessage(
+                    buildFileDetailsMessage(name, pathHint, uri, size, lastOpened),
+                )
+            }
+        }
+    }
+
+    private fun buildFileDetailsMessage(
+        name: String,
+        pathHint: String,
+        uri: String,
+        sizeBytes: Long,
+        lastOpened: Long,
+    ): String {
+        val sizeCached = if (sizeBytes >= 0L) {
+            sizeBytes
+        } else {
+            ShelfFileMetaStore.getSizeBytes(this, uri)
+        }
+        val sizeLabel = if (sizeCached >= 0L) {
+            formatFileSize(sizeCached)
+        } else {
+            getString(R.string.file_details_unknown)
+        }
+        val formatLabel = formatLabelFor(name, pathHint, uri)
+        val pathShow = pathHint.ifBlank { getString(R.string.file_details_unknown) }
+        val enc = BookEncodingStore.get(this, uri)
+        val encLabel = enc?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.encoding_auto)
+        val progress = ReadingProgressStore.get(this, uri)
+        val progressLabel = when {
+            progress == null -> getString(R.string.file_details_unknown)
+            progress.kind == ReadingProgressStore.Kind.PDF && progress.total > 0 ->
+                getString(
+                    R.string.shelf_progress_pdf_pct,
+                    (progress.position + 1).coerceAtMost(progress.total),
+                    progress.total,
+                    progress.percent(),
+                )
+            progress.total > 0 -> getString(R.string.shelf_progress_txt, progress.percent())
+            else -> getString(R.string.file_details_unknown)
+        }
+        val timeLabel = if (lastOpened > 0L) {
+            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(lastOpened))
+        } else {
+            progress?.lastOpened?.takeIf { it > 0L }?.let {
+                SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(it))
+            } ?: getString(R.string.file_details_unknown)
+        }
+        val lines = ArrayList<String>(8)
+        lines += getString(R.string.file_details_name, name.ifBlank { "—" })
+        lines += getString(R.string.file_details_path, pathShow)
+        lines += getString(R.string.file_details_format, formatLabel)
+        lines += getString(R.string.file_details_size, sizeLabel)
+        if (BookFileType.isTxt(name) || BookFileType.isTxt(pathHint) || BookFileType.isTxt(uri)) {
+            lines += getString(R.string.file_details_encoding, encLabel)
+        }
+        lines += getString(R.string.file_details_progress, progressLabel)
+        lines += getString(R.string.file_details_last_opened, timeLabel)
+        // URI 较长，放最后便于复制排查
+        lines += getString(R.string.file_details_uri, uri.ifBlank { "—" })
+        return lines.joinToString("\n")
+    }
+
+    private fun formatLabelFor(name: String, pathHint: String, uri: String): String {
+        val key = listOf(name, pathHint, uri).firstOrNull { it.isNotBlank() }.orEmpty()
+        return when {
+            BookFileType.isPdf(key) || BookFileType.isPdf(uri) -> getString(R.string.file_format_pdf)
+            BookFileType.isEpub(key) || BookFileType.isEpub(uri) -> getString(R.string.file_format_epub)
+            BookFileType.isMobi(key) || BookFileType.isMobi(uri) -> getString(R.string.file_format_mobi)
+            BookFileType.isTxt(key) || BookFileType.isTxt(uri) -> getString(R.string.file_format_txt)
+            else -> getString(R.string.file_format_other)
+        }
+    }
+
+    private fun formatFileSize(bytes: Long): String {
+        if (bytes < 0L) return getString(R.string.file_details_unknown)
+        if (bytes < 1024) return "$bytes B"
+        val kb = bytes / 1024.0
+        if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb)
+        val mb = kb / 1024.0
+        if (mb < 1024) return String.format(Locale.US, "%.2f MB", mb)
+        val gb = mb / 1024.0
+        return String.format(Locale.US, "%.2f GB", gb)
+    }
+
+    private fun queryUriSizeBytes(uriStr: String): Long {
+        if (uriStr.isBlank()) return -1L
+        val cached = ShelfFileMetaStore.getSizeBytes(this, uriStr)
+        if (cached >= 0L) return cached
+        return runCatching {
+            val uri = Uri.parse(uriStr)
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)
+                ?.use { c ->
+                    if (!c.moveToFirst()) return@use -1L
+                    val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                    if (idx < 0) return@use -1L
+                    c.getLong(idx)
+                } ?: -1L
+        }.getOrDefault(-1L)
     }
 
     private fun showMoveBookDialog(book: ShelfBook) {

@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.app.AppCompatActivity
+import com.whj.reader.ui.AppTheme
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -68,6 +69,7 @@ class BookSearchActivity : AppCompatActivity() {
     private val kind: String by lazy { intent.getStringExtra(EXTRA_KIND) ?: KIND_TXT }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivityBookSearchBinding.inflate(layoutInflater)
         setContentView(binding.root)

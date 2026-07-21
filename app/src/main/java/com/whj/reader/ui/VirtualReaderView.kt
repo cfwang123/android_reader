@@ -154,6 +154,8 @@ class VirtualReaderView @JvmOverloads constructor(
     private var avgCharWidth = 24f
     private var lineHeight = 24f
     private var fontAscent = 0f
+    private var chapterLineHeight = 28f
+    private var chapterAscent = 0f
 
     private var selStartPara = -1
     private var selStartOff = 0
@@ -343,6 +345,8 @@ class VirtualReaderView @JvmOverloads constructor(
         val imagePath: String? = null,
         val imageDrawW: Float = 0f,
         val imageDrawH: Float = 0f,
+        /** 章节标题段顶部留白（已含入 height，行坐标相对 0 含 padTop） */
+        val padTop: Float = 0f,
     )
 
     // ─── API ────────────────────────────────────────────────
@@ -1580,7 +1584,8 @@ class VirtualReaderView @JvmOverloads constructor(
         textPaint.letterSpacing = style.letterSpacing
         textPaint.color = textColor
 
-        chapterPaint.textSize = sizePx
+        // 章节标题：加大字号
+        chapterPaint.textSize = sizePx * 1.28f
         chapterPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(
             context,
             style.fontFamily,
@@ -1593,10 +1598,17 @@ class VirtualReaderView @JvmOverloads constructor(
         fontAscent = -fm.ascent
         lineHeight = (fm.descent - fm.ascent) * style.lineSpacingMult
         avgCharWidth = textPaint.measureText("国").coerceAtLeast(8f)
+        val cfm = chapterPaint.fontMetrics
+        chapterLineHeight = (cfm.descent - cfm.ascent) * style.lineSpacingMult
+        chapterAscent = -cfm.ascent
     }
 
     private fun paraSpacingPx(): Float =
         if (imageHeavyMode) 0f else style.paraSpacingDp * density
+
+    /** 章节标题段额外上下留白 */
+    private fun chapterExtraPadPx(): Float =
+        if (imageHeavyMode) 0f else lineHeight * 0.85f
 
     /** 图片最大绘制宽度：漫画模式铺满 View 全宽，普通模式为正文宽 */
     private fun imageMaxWidthPx(): Float {
@@ -1633,6 +1645,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 estimateBlockImageHeight(paragraphs[i]) + spacing
             } else {
                 val para = paragraphs[i]
+                val lh = if (para.isChapter) chapterLineHeight else lineHeight
                 val lineCount = if (para.preformatted) {
                     // pre：按换行估算，避免把多行压成一两行
                     para.text.count { it == '\n' } + 1
@@ -1640,7 +1653,8 @@ class VirtualReaderView @JvmOverloads constructor(
                     ((para.text.length / cpl).toInt() + 1).coerceAtLeast(1)
                 }
                 val boost = if (para.hasInlineImages) 1.35f else 1f
-                lineCount * lineHeight * boost + spacing
+                val pad = if (para.isChapter) chapterExtraPadPx() * 2f else 0f
+                lineCount * lh * boost + pad + spacing
             }
         }
         recomputeTopsFromHeights()
@@ -1793,8 +1807,11 @@ class VirtualReaderView @JvmOverloads constructor(
         val paint = paintForParagraph(para, chapterPaint, textPaint)
         paint.color = textColor
         val maxW = contentWidth.toFloat()
+        val isCh = para.isChapter
+        val padTop = if (isCh) chapterExtraPadPx() else 0f
+        val padBottom = if (isCh) chapterExtraPadPx() else 0f
         if (text.isEmpty()) {
-            return ParaLayout(EMPTY_LINES, lineHeight)
+            return ParaLayout(EMPTY_LINES, lineHeight + padTop + padBottom, padTop = padTop)
         }
 
         val len = text.length
@@ -1820,9 +1837,9 @@ class VirtualReaderView @JvmOverloads constructor(
 
         lineList.clear()
         var i = 0
-        var lineTop = 0f
-        val ascent = fontAscent
-        val baseLh = lineHeight
+        var lineTop = padTop
+        val ascent = if (isCh) chapterAscent else fontAscent
+        val baseLh = if (isCh) chapterLineHeight else lineHeight
         val widths = charWidthsBuf
         val pre = para.preformatted
 
@@ -1913,10 +1930,11 @@ class VirtualReaderView @JvmOverloads constructor(
         }
 
         if (lineList.isEmpty()) {
-            lineList.add(LineRec(0, 0, 0f, 0f, ascent, baseLh))
-            lineTop = baseLh
+            lineList.add(LineRec(0, 0, 0f, padTop, padTop + ascent, baseLh))
+            lineTop = padTop + baseLh
         }
-        return ParaLayout(lineList.toTypedArray(), lineTop)
+        val contentH = lineTop + padBottom
+        return ParaLayout(lineList.toTypedArray(), contentH, padTop = padTop)
     }
 
     /**

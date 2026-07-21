@@ -35,6 +35,7 @@ import android.widget.SeekBar
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import com.whj.reader.ui.AppTheme
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
@@ -464,6 +465,7 @@ class PdfReadingActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivityPdfReadingBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -1854,6 +1856,9 @@ class PdfReadingActivity : AppCompatActivity() {
                     lastTileRefreshMs = now
                     refreshVisiblePageTiles(forceRender = true)
                 }
+                // TTS 句高亮 / 选区：随列表滚动同步重算屏幕坐标（不能等 IDLE）
+                if (hlPage >= 0) refreshHighlightOverlay()
+                if (hasTextSelection()) refreshSelectionOverlay()
             }
 
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
@@ -1879,6 +1884,8 @@ class PdfReadingActivity : AppCompatActivity() {
                     syncFastScrollThumb(show = true)
                     // 进入滚动立刻补一轮可见区（含惯性）
                     refreshVisiblePageTiles(forceRender = true)
+                    if (hlPage >= 0) refreshHighlightOverlay()
+                    if (hasTextSelection()) refreshSelectionOverlay()
                 }
             }
         })
@@ -4434,7 +4441,9 @@ class PdfReadingActivity : AppCompatActivity() {
         // 未缩放时 RV 仍自行滚动；单页模式无滚动手势
         binding.rvPdfPages.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                // 与 setupContinuousList 的滚动回调互补：确保选区/TTS 高亮跟随
                 if (selPage >= 0) refreshSelectionOverlay()
+                if (hlPage >= 0) refreshHighlightOverlay()
             }
         })
 

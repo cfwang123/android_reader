@@ -5,12 +5,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.LruCache
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.LayoutInflater
@@ -24,6 +27,7 @@ import com.google.android.material.button.MaterialButton
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import com.whj.reader.ui.AppTheme
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
@@ -76,6 +80,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -100,6 +106,10 @@ class ReadingActivity : AppCompatActivity() {
 
     private var book: LoadedBook? = null
     private var bookStreamer: com.whj.reader.data.BookStreamer? = null
+    /** 按需续载任务（不一次扫完全书） */
+    private var streamerJob: Job? = null
+    @Volatile
+    private var streamerLoading = false
     /** 流式加载时待恢复的段落（内容够长后再滚） */
     private var pendingRestorePara: Int = -1
     private var style: ReadStyle = ReadStyle()
@@ -135,24 +145,18 @@ class ReadingActivity : AppCompatActivity() {
             clockHandler.postDelayed(this, 30_000L)
         }
     }
-    private val idleHandler = Handler(Looper.getMainLooper())
-    private val idleExitRunnable = object : Runnable {
-        override fun run() {
-            if (isFinishing || isDestroyed) return
-            // TTS 定时优先：定时未结束前不因空闲退出
-            if (sleepTimer.isActive()) {
-                val wait = (sleepTimer.remainingMs() + 2_000L).coerceAtLeast(1_000L)
-                idleHandler.postDelayed(this, wait)
-                return
-            }
-            Toasts.show(this@ReadingActivity, R.string.idle_exit_toast)
-            if (::tts.isInitialized) {
-                tts.stop()
-            }
-            finish()
-        }
-    }
     private lateinit var keepScreen: KeepScreenController
+
+    /** MOBI 漫画模式：忽略正文，一次一张图 */
+    private var mangaMode = false
+    private var mangaPaths: List<String> = emptyList()
+    private var mangaIndex = 0
+    private var mangaLoadJob: Job? = null
+    private val mangaBitmapCache = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).toInt().coerceIn(8 * 1024 * 1024, 48 * 1024 * 1024),
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount.coerceAtLeast(1)
+    }
 
     private val searchLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -238,6 +242,7 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivityReadingBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -247,19 +252,17 @@ class ReadingActivity : AppCompatActivity() {
         exportPanel = PanelTtsExportBinding.inflate(layoutInflater, binding.ttsExportHost, true)
         reader = binding.readerView
         premeasureReadMenu()
+        setupMangaHost()
 
         style = AppSettings.loadStyle(this)
 
         reader.onParagraphPicked = { para ->
-            bumpIdleTimer()
             onExportParagraphPicked(para)
         }
         reader.onImageLongPress = { paraIndex ->
-            bumpIdleTimer()
             openImageGallery(paraIndex)
         }
         reader.onZoneTap = { zone ->
-            bumpIdleTimer()
             when {
                 exportPanelOpen -> {
                     // 合成面板打开时：左右仍可翻页，中心不关面板
@@ -285,7 +288,6 @@ class ReadingActivity : AppCompatActivity() {
         }
         // 左右滑翻页：左滑下一页，右滑上一页
         reader.onHorizontalSwipe = { forward ->
-            bumpIdleTimer()
             if (binding.settingsPanelContainer.isVisible) {
                 binding.settingsPanelContainer.isVisible = false
             } else {
@@ -295,7 +297,6 @@ class ReadingActivity : AppCompatActivity() {
         }
         // 进度保存已在 View 内节流；这里只写入，并刷新底部进度
         reader.onScrollChangedListener = { first ->
-            bumpIdleTimer()
             // 滚动时先刷新书签态，再考虑收起菜单（避免图标停在旧状态）
             if (chromeVisible) {
                 updateBookmarkButton()
@@ -313,13 +314,13 @@ class ReadingActivity : AppCompatActivity() {
             }
             updateProgressLabel()
             updateChapterTitleBar(first)
+            // 滑近已加载末尾时再续解析下一批
+            maybeRequestMoreContent(first)
         }
         reader.onLinkClick = { href ->
-            bumpIdleTimer()
             handleLinkClick(href)
         }
         reader.onReadFromParagraph = { paraIndex, charOffset ->
-            bumpIdleTimer()
             // 关闭菜单，打开 TTS 条并从选区起点读到文末
             chromeVisible = false
             ttsBarOpen = true
@@ -330,7 +331,6 @@ class ReadingActivity : AppCompatActivity() {
             tts.playFromParagraphOffset(paraIndex, charOffset)
         }
         reader.onEdgeAdjust = { isLeft, direction ->
-            bumpIdleTimer()
             handleEdgeAdjust(isLeft, direction)
         }
         applyEdgeSwipeFlags()
@@ -418,7 +418,6 @@ class ReadingActivity : AppCompatActivity() {
         // 偏好页可能改过边缘手势，回来时刷新
         applyEdgeSwipeFlags()
         startClockAndBattery()
-        bumpIdleTimer()
         if (::keepScreen.isInitialized) keepScreen.onResume()
         // 前台才允许「自动」使用方向传感器
         applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = true)
@@ -427,12 +426,13 @@ class ReadingActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         stopClockAndBattery()
-        idleHandler.removeCallbacks(idleExitRunnable)
         if (::keepScreen.isInitialized) keepScreen.onPause()
         // 后台关闭方向传感器（自动模式锁到当前方向）
         applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = false)
         // 锁屏/切后台不暂停 TTS，由前台服务继续播放
-        if (::reader.isInitialized) {
+        if (mangaMode) {
+            saveProgress(mangaIndex)
+        } else if (::reader.isInitialized) {
             saveProgress(reader.firstVisibleParagraph())
         }
     }
@@ -453,30 +453,9 @@ class ReadingActivity : AppCompatActivity() {
             (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
                 ev.actionMasked == android.view.MotionEvent.ACTION_UP)
         ) {
-            bumpIdleTimer()
             if (::keepScreen.isInitialized) keepScreen.onUserActivity()
         }
         return super.dispatchTouchEvent(ev)
-    }
-
-    /**
-     * 重置空闲退出计时（默认 30 分钟无操作则退出阅读）。
-     * 若 TTS 定时关闭仍在计时，则空闲退出不得早于定时结束（定时优先）。
-     */
-    private fun bumpIdleTimer() {
-        idleHandler.removeCallbacks(idleExitRunnable)
-        val mins = AppSettings.idleExitMinutes(this)
-        if (mins <= 0 && !sleepTimer.isActive()) return
-        val idleMs = if (mins > 0) mins * 60_000L else 0L
-        val delay = if (sleepTimer.isActive()) {
-            val sleepMs = sleepTimer.remainingMs() + 2_000L
-            if (idleMs > 0L) maxOf(idleMs, sleepMs) else sleepMs
-        } else {
-            idleMs
-        }
-        if (delay > 0L) {
-            idleHandler.postDelayed(idleExitRunnable, delay)
-        }
     }
 
     private val ttsListener = object : TtsManager.Listener {
@@ -542,10 +521,11 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        streamerJob?.cancel()
+        mangaLoadJob?.cancel()
         bookStreamer?.cancel()
         bookStreamer = null
         stopClockAndBattery()
-        idleHandler.removeCallbacks(idleExitRunnable)
         if (::keepScreen.isInitialized) keepScreen.onDestroy()
         sleepTimer.cancel()
         dismissExportProgressDlg()
@@ -555,6 +535,10 @@ class ReadingActivity : AppCompatActivity() {
             tts.listener = null
             tts.shutdown()
         }
+        if (::binding.isInitialized) {
+            binding.mangaImageView.setImageBitmap(null)
+        }
+        mangaBitmapCache.evictAll()
         super.onDestroy()
     }
 
@@ -591,12 +575,171 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun updateProgressLabel() {
-        if (!::reader.isInitialized) {
-            binding.tvProgress.text = "0.00%"
+        if (mangaMode && mangaPaths.isNotEmpty()) {
+            binding.tvProgress.text = getString(
+                R.string.mobi_manga_progress,
+                mangaIndex + 1,
+                mangaPaths.size,
+            )
             return
         }
-        binding.tvProgress.text = String.format(Locale.US, "%.2f%%", reader.progressPercent())
+        if (!::reader.isInitialized) {
+            binding.tvProgress.text = "0%"
+            return
+        }
+        val b = book
+        // TXT 始终全文百分比；仅 EPUB/MOBI 用「第 n/m 章」
+        if (b != null && isChapterProgressBook(b)) {
+            val chapters = b.chapters
+            if (chapters.isNotEmpty()) {
+                val para = reader.firstVisibleParagraph()
+                    .coerceIn(0, b.paragraphs.lastIndex.coerceAtLeast(0))
+                val (n, m, pct) = chapterProgressOf(para, chapters, b.paragraphs.size)
+                binding.tvProgress.text = getString(R.string.chapter_progress, n, m, pct)
+                return
+            }
+        }
+        binding.tvProgress.text = String.format(Locale.US, "%.0f%%", reader.progressPercent())
     }
+
+    /** EPUB/MOBI：进度用「第 n/m 章 xx%」；TXT 明确排除，始终全文 % */
+    private fun isChapterProgressBook(b: LoadedBook): Boolean {
+        if (BookFileType.isTxt(b.uri) || BookFileType.isTxt(displayTitle) ||
+            BookFileType.isTxt(fileKey)
+        ) {
+            return false
+        }
+        return BookFileType.isEpub(b.uri) || BookFileType.isMobi(b.uri) ||
+            BookFileType.isEpub(displayTitle) || BookFileType.isMobi(displayTitle) ||
+            BookFileType.isEpub(fileKey) || BookFileType.isMobi(fileKey)
+    }
+
+    /**
+     * @return (章序号 1-based, 总章数, 章内 0–100%)
+     */
+    private fun chapterProgressOf(
+        para: Int,
+        chapters: List<com.whj.reader.model.Chapter>,
+        totalParas: Int,
+    ): Triple<Int, Int, Int> {
+        if (chapters.isEmpty()) {
+            return Triple(1, 1, 0)
+        }
+        val idx = chapters.indexOfLast { it.paragraphIndex >= 0 && it.paragraphIndex <= para }
+            .coerceAtLeast(0)
+            .let { i ->
+                if (chapters.getOrNull(i)?.paragraphIndex?.let { it >= 0 } == true) i
+                else chapters.indexOfFirst { it.paragraphIndex >= 0 }.coerceAtLeast(0)
+            }
+        val start = chapters[idx].paragraphIndex.coerceAtLeast(0)
+        val endRaw = chapters.drop(idx + 1).firstOrNull { it.paragraphIndex > start }?.paragraphIndex
+        val end = endRaw?.coerceIn(start + 1, totalParas.coerceAtLeast(start + 1))
+            ?: totalParas.coerceAtLeast(start + 1)
+        val span = (end - start).coerceAtLeast(1)
+        val within = ((para - start).toFloat() / span * 100f).toInt().coerceIn(0, 100)
+        return Triple(idx + 1, chapters.size, within)
+    }
+
+    /** 滑近已加载内容末尾，或恢复/跳转目标尚未载入时，再解析下一批 */
+    private fun maybeRequestMoreContent(firstVisiblePara: Int = -1) {
+        if (bookStreamer == null) return
+        val b = book ?: return
+        if (b.isComplete) return
+        val last = b.paragraphs.lastIndex.coerceAtLeast(0)
+        val needForRestore = pendingRestorePara > last
+        val nearEnd = if (firstVisiblePara >= 0) {
+            firstVisiblePara >= (last - 30).coerceAtLeast(0)
+        } else {
+            false
+        }
+        if (!needForRestore && !nearEnd) return
+        requestStreamBatch()
+    }
+
+    private fun requestStreamBatch() {
+        val streamer = bookStreamer ?: return
+        if (streamerLoading) return
+        streamerLoading = true
+        streamerJob?.cancel()
+        streamerJob = lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val target = pendingRestorePara
+                if (target > streamLastIdx) {
+                    // 恢复/跳转：一口气加载到目标段（中间少刷 UI；EPUB 优先读 spine 磁盘缓存）
+                    var guard = 0
+                    while (isActive && bookStreamer != null && !streamComplete && guard < 8) {
+                        guard++
+                        val hasMore = streamer.loadUntilParagraphBlocking(target)
+                        if (!hasMore || streamLastIdx >= target || streamComplete) break
+                    }
+                } else {
+                    // 普通触底：只多载一批
+                    streamer.loadNextBatchBlocking()
+                }
+            } finally {
+                streamerLoading = false
+            }
+        }
+    }
+
+    private fun attachBookStreamer(streamer: com.whj.reader.data.BookStreamer) {
+        bookStreamer = streamer
+        streamLastIdx = book?.paragraphs?.lastIndex ?: -1
+        streamComplete = false
+        streamer.start(
+            onUpdate = { loaded ->
+                // 与 loadNextBatchBlocking 同线程，供续载循环判断
+                streamLastIdx = loaded.paragraphs.lastIndex
+                streamComplete = loaded.isComplete
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    applyLoadedBook(loaded, isInitial = false)
+                    maybeRevealReaderAfterRestore()
+                }
+            },
+            onComplete = { loaded ->
+                streamLastIdx = loaded.paragraphs.lastIndex
+                streamComplete = true
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    bookStreamer = null
+                    streamerLoading = false
+                    applyLoadedBook(loaded, isInitial = false)
+                    updateStreamTitle(loaded)
+                    // 全书结束仍未到目标则落在末尾
+                    if (pendingRestorePara > 0) {
+                        val last = loaded.paragraphs.lastIndex
+                        if (last >= 0) {
+                            reader.scrollToParagraph(pendingRestorePara.coerceAtMost(last))
+                        }
+                        pendingRestorePara = -1
+                    }
+                    maybeRevealReaderAfterRestore()
+                }
+            },
+            onProgress = { msg, cur, tot ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    updateStreamTitle(
+                        book?.copy(
+                            streamCurrent = cur,
+                            streamTotal = tot.coerceAtLeast(1),
+                            isComplete = false,
+                        ) ?: return@runOnUiThread,
+                        msg,
+                    )
+                }
+            },
+        )
+        // 首屏后再预取一批；若有恢复进度则连续多批
+        requestStreamBatch()
+    }
+
+    /** 与 streamer 批处理同线程更新的段落末索引 / 完成标记 */
+    @Volatile
+    private var streamLastIdx: Int = -1
+    @Volatile
+    private var streamComplete: Boolean = false
 
     private fun setupTopBar() {
         binding.btnBack.setOnClickListener { finish() }
@@ -772,8 +915,10 @@ class ReadingActivity : AppCompatActivity() {
         if (::tts.isInitialized) {
             tts.stop()
         }
+        streamerJob?.cancel()
         bookStreamer?.cancel()
         bookStreamer = null
+        streamerLoading = false
         showLoadOverlay(getString(R.string.loading_book))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -802,32 +947,18 @@ class ReadingActivity : AppCompatActivity() {
                     }
                 }
             }
-            hideLoadOverlay()
             result.onSuccess { open ->
                 pendingRestorePara = keepPara
                 applyLoadedBook(open.book, isInitial = true)
+                // 重载时优先回到刚才的位置
+                if (keepPara > 0) pendingRestorePara = maxOf(pendingRestorePara, keepPara)
                 val streamer = open.streamer
                 if (streamer != null) {
-                    bookStreamer = streamer
-                    streamer.start(
-                        onUpdate = { b ->
-                            runOnUiThread {
-                                if (isFinishing || isDestroyed) return@runOnUiThread
-                                applyLoadedBook(b, isInitial = false)
-                            }
-                        },
-                        onComplete = { b ->
-                            runOnUiThread {
-                                if (isFinishing || isDestroyed) return@runOnUiThread
-                                bookStreamer = null
-                                applyLoadedBook(b, isInitial = false)
-                                updateStreamTitle(b)
-                                updateBookmarkButton()
-                            }
-                        },
-                    )
+                    attachBookStreamer(streamer)
                 } else {
                     updateBookmarkButton()
+                    // 无续载：若无需等待目标段，收尾显示
+                    maybeRevealReaderAfterRestore()
                 }
             }.onFailure { e ->
                 hideLoadOverlay()
@@ -928,6 +1059,10 @@ class ReadingActivity : AppCompatActivity() {
         if (binding.settingsPanelContainer.isVisible) {
             binding.settingsPanelContainer.isVisible = false
         }
+        if (mangaMode) {
+            mangaGo(if (forward) +1 else -1)
+            return
+        }
         if (!reader.canPage(forward)) {
             Toasts.show(this, if (forward) R.string.page_bottom else R.string.page_top)
             return
@@ -962,6 +1097,7 @@ class ReadingActivity : AppCompatActivity() {
         readMenu.menuStyle.setOnClickListener {
             hideChrome()
             rebuildCustomFontChips()
+            updateMobiModeButtons()
             openStyleSettingsPanel()
         }
         readMenu.menuPref.setOnClickListener {
@@ -1591,13 +1727,10 @@ class ReadingActivity : AppCompatActivity() {
             if (mins == 0) {
                 sleepTimer.cancel()
                 updateSleepUi()
-                bumpIdleTimer()
                 Toasts.show(this, R.string.tts_sleep_cancelled)
             } else {
                 sleepTimer.start(mins * 60_000L)
                 updateSleepUi()
-                // 定时优先于空闲退出：重算空闲计时
-                bumpIdleTimer()
                 Toasts.show(this, getString(R.string.tts_sleep_set, mins))
             }
             true
@@ -1621,8 +1754,6 @@ class ReadingActivity : AppCompatActivity() {
         if (::reader.isInitialized) reader.clearHighlight()
         updateSleepUi()
         if (::tts.isInitialized) updateTtsUi(tts.currentState())
-        // 定时结束后按正常空闲规则重新计时
-        bumpIdleTimer()
         Toasts.show(this, R.string.tts_sleep_finished)
     }
 
@@ -1714,6 +1845,264 @@ class ReadingActivity : AppCompatActivity() {
             bindSeekers()
             persistAndApplyStyle(keepAnchor = true)
         }
+
+        settingsPanel.btnMobiModeText.setOnClickListener { setMobiMangaMode(false) }
+        settingsPanel.btnMobiModeManga.setOnClickListener { setMobiMangaMode(true) }
+        updateMobiModeButtons()
+    }
+
+    private fun isMobiBook(): Boolean {
+        val b = book
+        return BookFileType.isMobi(fileKey) ||
+            BookFileType.isMobi(displayTitle) ||
+            (b != null && BookFileType.isMobi(b.uri)) ||
+            BookFileType.isMobi(intent.getStringExtra(EXTRA_TITLE)) ||
+            BookFileType.isMobi(intent.getStringExtra(EXTRA_URI))
+    }
+
+    /**
+     * 无有效正文的 MOBI（仅空段/块图/占位）：有图时自动漫画模式。
+     */
+    private fun isImageOnlyMobi(loaded: LoadedBook): Boolean {
+        if (loaded.imagePaths.isEmpty()) return false
+        if (!BookFileType.isMobi(loaded.uri) && !isMobiBook()) return false
+        return loaded.paragraphs.none { p ->
+            !p.isBlockImage && p.text.any { !it.isWhitespace() }
+        }
+    }
+
+    private fun progressFileExt(): String {
+        val fromUri = BookFileType.extensionOf(fileKey)
+        if (fromUri != null) return fromUri
+        val title = displayTitle
+        val fromTitle = BookFileType.extensionOf(title)
+        if (fromTitle != null) return fromTitle
+        return when {
+            isMobiBook() -> ".mobi"
+            BookFileType.isEpub(fileKey) || BookFileType.isEpub(title) -> ".epub"
+            BookFileType.isPdf(fileKey) || BookFileType.isPdf(title) -> ".pdf"
+            else -> ".txt"
+        }
+    }
+
+    private fun updateMobiModeButtons() {
+        if (!::settingsPanel.isInitialized) return
+        val show = isMobiBook()
+        settingsPanel.rowMobiViewMode.isVisible = show
+        if (!show) return
+        val manga = mangaMode
+        val primary = AppTheme.primary(this)
+        val density = resources.displayMetrics.density
+        val stroke = (1.5f * density).toInt().coerceAtLeast(2)
+        fun styleToggle(btn: MaterialButton, selected: Boolean, labelRes: Int) {
+            btn.alpha = 1f
+            val label = getString(labelRes)
+            btn.text = if (selected) "✓ $label" else label
+            btn.isSelected = selected
+            if (selected) {
+                btn.backgroundTintList =
+                    android.content.res.ColorStateList.valueOf(primary)
+                btn.setTextColor(0xFFFFFFFF.toInt())
+                btn.strokeWidth = 0
+                btn.strokeColor = android.content.res.ColorStateList.valueOf(primary)
+            } else {
+                btn.backgroundTintList =
+                    android.content.res.ColorStateList.valueOf(0xFFFFFFFF.toInt())
+                btn.setTextColor(0xFF666666.toInt())
+                btn.strokeWidth = stroke
+                btn.strokeColor =
+                    android.content.res.ColorStateList.valueOf(0xFFCCCCCC.toInt())
+            }
+        }
+        styleToggle(settingsPanel.btnMobiModeText, !manga, R.string.mobi_mode_text)
+        styleToggle(settingsPanel.btnMobiModeManga, manga, R.string.mobi_mode_manga)
+        val modeLabel = getString(if (manga) R.string.mobi_mode_manga else R.string.mobi_mode_text)
+        settingsPanel.tvMobiModeCurrent.text = getString(R.string.mobi_mode_current, modeLabel)
+    }
+
+    private fun setMobiMangaMode(enabled: Boolean) {
+        if (!isMobiBook()) return
+        if (enabled == mangaMode) {
+            // 已是该模式：仅刷新按钮高亮，不关面板
+            updateMobiModeButtons()
+            return
+        }
+        if (enabled) {
+            val paths = mangaPaths.ifEmpty { book?.imagePaths.orEmpty() }
+                .filter { File(it).isFile }
+            if (paths.isEmpty()) {
+                Toasts.show(this, R.string.mobi_manga_no_images)
+                updateMobiModeButtons()
+                return
+            }
+            mangaPaths = paths
+            AppSettings.setMobiMangaMode(this, true)
+            enterMangaMode(restoreIndex = true)
+        } else {
+            AppSettings.setMobiMangaMode(this, false)
+            exitMangaMode()
+        }
+        // 保持风格面板打开，便于看到选中态变化
+        updateMobiModeButtons()
+    }
+
+    private fun setupMangaHost() {
+        binding.mangaImageView.onSideTap = { zone ->
+            when (zone) {
+                0 -> {
+                    if (chromeVisible) hideChrome()
+                    mangaGo(-1)
+                }
+                2 -> {
+                    if (chromeVisible) hideChrome()
+                    mangaGo(+1)
+                }
+            }
+        }
+        binding.mangaImageView.onSwipePage = { forward ->
+            if (chromeVisible) hideChrome()
+            mangaGo(if (forward) +1 else -1)
+        }
+        binding.mangaImageView.onCenterTap = { toggleChrome() }
+    }
+
+    private fun enterMangaMode(restoreIndex: Boolean) {
+        if (mangaPaths.isEmpty()) {
+            mangaPaths = book?.imagePaths.orEmpty().filter { File(it).isFile }
+        }
+        if (mangaPaths.isEmpty()) {
+            mangaMode = false
+            Toasts.show(this, R.string.mobi_manga_no_images)
+            return
+        }
+        // 切到漫画前若在朗读则停止
+        if (::tts.isInitialized) tts.stop()
+        mangaMode = true
+        binding.mangaHost.isVisible = true
+        reader.visibility = View.GONE
+        if (restoreIndex) {
+            val saved = ReadingProgressStore.get(this, fileKey)
+            // 仅当 total 看起来是图片数时才按图片进度恢复
+            mangaIndex = when {
+                saved != null && saved.total == mangaPaths.size ->
+                    saved.position.coerceIn(0, mangaPaths.lastIndex)
+                saved != null && saved.total > 0 && saved.total <= mangaPaths.size * 2 &&
+                    saved.position < mangaPaths.size ->
+                    saved.position.coerceIn(0, mangaPaths.lastIndex)
+                else -> 0
+            }
+        } else {
+            mangaIndex = mangaIndex.coerceIn(0, mangaPaths.lastIndex)
+        }
+        showMangaIndex(mangaIndex)
+        allowProgressSave = true
+        saveProgress(mangaIndex)
+        updateProgressLabel()
+        binding.tvChapterTitle.text = ""
+        updateMobiModeButtons()
+        hideLoadOverlay()
+    }
+
+    private fun exitMangaMode() {
+        mangaMode = false
+        mangaLoadJob?.cancel()
+        binding.mangaHost.isVisible = false
+        binding.mangaImageView.setImageBitmap(null)
+        reader.visibility = View.VISIBLE
+        updateProgressLabel()
+        updateChapterTitleBar(reader.firstVisibleParagraph())
+        updateMobiModeButtons()
+        if (allowProgressSave) {
+            saveProgress(reader.firstVisibleParagraph())
+        }
+    }
+
+    private fun mangaGo(delta: Int) {
+        if (!mangaMode || mangaPaths.isEmpty()) return
+        val next = mangaIndex + delta
+        if (next !in mangaPaths.indices) {
+            Toasts.show(
+                this,
+                if (delta > 0) R.string.mobi_manga_last else R.string.mobi_manga_first,
+            )
+            return
+        }
+        showMangaIndex(next)
+        if (allowProgressSave) saveProgress(next)
+        updateProgressLabel()
+    }
+
+    private fun showMangaIndex(i: Int) {
+        if (mangaPaths.isEmpty()) return
+        mangaIndex = i.coerceIn(0, mangaPaths.lastIndex)
+        val path = mangaPaths[mangaIndex]
+        val cached = mangaBitmapCache.get(path)
+        if (cached != null && !cached.isRecycled) {
+            binding.mangaImageView.setImageBitmap(cached)
+            binding.mangaProgress.isVisible = false
+            preloadMangaNeighbors(mangaIndex)
+            return
+        }
+        binding.mangaProgress.isVisible = true
+        mangaLoadJob?.cancel()
+        mangaLoadJob = lifecycleScope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                decodeMangaSampled(path, mangaMaxSide())
+            }
+            if (isFinishing || isDestroyed) {
+                bmp?.recycle()
+                return@launch
+            }
+            if (mangaIndex != i) {
+                if (bmp != null) mangaBitmapCache.put(path, bmp)
+                return@launch
+            }
+            if (bmp == null) {
+                binding.mangaProgress.isVisible = false
+                binding.mangaImageView.setImageBitmap(null)
+                Toasts.show(this@ReadingActivity, R.string.image_gallery_load_fail)
+                return@launch
+            }
+            mangaBitmapCache.put(path, bmp)
+            binding.mangaImageView.setImageBitmap(bmp)
+            binding.mangaProgress.isVisible = false
+            preloadMangaNeighbors(mangaIndex)
+        }
+    }
+
+    private fun preloadMangaNeighbors(i: Int) {
+        val targets = listOf(i - 1, i + 1, i + 2).filter { it in mangaPaths.indices }
+        lifecycleScope.launch(Dispatchers.IO) {
+            for (ti in targets) {
+                val p = mangaPaths[ti]
+                if (mangaBitmapCache.get(p) != null) continue
+                val bmp = decodeMangaSampled(p, mangaMaxSide()) ?: continue
+                mangaBitmapCache.put(p, bmp)
+            }
+        }
+    }
+
+    private fun mangaMaxSide(): Int {
+        val dm = resources.displayMetrics
+        return (maxOf(dm.widthPixels, dm.heightPixels) * 2).coerceAtLeast(1080)
+    }
+
+    private fun decodeMangaSampled(path: String, maxSide: Int): Bitmap? {
+        val file = File(path)
+        if (!file.isFile) return null
+        return runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+            var sample = 1
+            val longSide = maxOf(bounds.outWidth, bounds.outHeight)
+            while (longSide / sample > maxSide) sample *= 2
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            BitmapFactory.decodeFile(path, opts)
+        }.getOrNull()
     }
 
     private fun simpleSeek(onChange: (Int) -> Unit) =
@@ -2181,7 +2570,10 @@ class ReadingActivity : AppCompatActivity() {
             btn.alpha = if (selected) 1f else 0.55f
             btn.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
         }
-        mark(settingsPanel.chipFontDefault, id == ReaderFonts.ID_DEFAULT)
+        mark(
+            settingsPanel.chipFontDefault,
+            ReaderFonts.normalizeId(id) == ReaderFonts.ID_DEFAULT && !ReaderFonts.isCustom(id),
+        )
         mark(settingsPanel.chipFontSans, id == ReaderFonts.ID_SANS)
         mark(settingsPanel.chipFontSerif, id == ReaderFonts.ID_SERIF)
         mark(settingsPanel.chipFontMono, id == ReaderFonts.ID_MONO)
@@ -2365,8 +2757,10 @@ class ReadingActivity : AppCompatActivity() {
             ChineseConvert.Mode.OFF
         }
 
+        streamerJob?.cancel()
         bookStreamer?.cancel()
         bookStreamer = null
+        streamerLoading = false
         showLoadOverlay(getString(R.string.loading_book))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -2397,40 +2791,13 @@ class ReadingActivity : AppCompatActivity() {
                 }
             }
             result.onSuccess { open ->
-                // 先铺内容并恢复进度，再关遮罩，避免闪第一页/封面
+                // 遮罩保持到定位完成（见 maybeRevealReaderAfterRestore），避免闪首页
                 applyLoadedBook(open.book, isInitial = true)
                 val streamer = open.streamer
                 if (streamer != null) {
-                    bookStreamer = streamer
-                    streamer.start(
-                        onUpdate = { b ->
-                            runOnUiThread {
-                                if (isFinishing || isDestroyed) return@runOnUiThread
-                                applyLoadedBook(b, isInitial = false)
-                            }
-                        },
-                        onComplete = { b ->
-                            runOnUiThread {
-                                if (isFinishing || isDestroyed) return@runOnUiThread
-                                bookStreamer = null
-                                applyLoadedBook(b, isInitial = false)
-                                updateStreamTitle(b)
-                            }
-                        },
-                        onProgress = { msg, cur, tot ->
-                            runOnUiThread {
-                                if (isFinishing || isDestroyed) return@runOnUiThread
-                                updateStreamTitle(
-                                    book?.copy(
-                                        streamCurrent = cur,
-                                        streamTotal = tot.coerceAtLeast(1),
-                                        isComplete = false,
-                                    ) ?: return@runOnUiThread,
-                                    msg,
-                                )
-                            }
-                        },
-                    )
+                    attachBookStreamer(streamer)
+                } else {
+                    maybeRevealReaderAfterRestore()
                 }
             }.onFailure { e ->
                 hideLoadOverlay()
@@ -2448,6 +2815,10 @@ class ReadingActivity : AppCompatActivity() {
         fileKey = loaded.uri
         displayTitle = loaded.title
         updateStreamTitle(loaded)
+        if (loaded.imagePaths.isNotEmpty()) {
+            mangaPaths = loaded.imagePaths.filter { File(it).isFile }
+        }
+        updateMobiModeButtons()
 
         if (isInitial) {
             val usedEnc = loaded.encoding
@@ -2457,12 +2828,29 @@ class ReadingActivity : AppCompatActivity() {
                 }
             }
             allowProgressSave = false
+            // 用户偏好漫画，或无文字纯图 MOBI → 自动漫画模式
+            val imageOnly = isImageOnlyMobi(loaded)
+            val wantManga = isMobiBook() &&
+                mangaPaths.isNotEmpty() &&
+                (AppSettings.mobiMangaMode(this) || imageOnly)
             val saved = AppSettings.progressFor(this, loaded.uri)
             val shelfPara = BookshelfStore.findBookByUri(this, loaded.uri)?.lastParagraph ?: 0
-            pendingRestorePara = maxOf(saved, shelfPara)
+            pendingRestorePara = if (wantManga) {
+                // 漫画进度在 enterMangaMode 里按图片索引恢复
+                -1
+            } else {
+                maxOf(saved, shelfPara)
+            }
 
-            // 恢复完成前隐藏正文，避免闪封面/第 1 页
+            // 恢复完成前隐藏正文 + 保持加载遮罩，避免闪首页 1 秒
             reader.visibility = android.view.View.INVISIBLE
+            if (pendingRestorePara > 0) {
+                updateLoadOverlay(
+                    getString(R.string.loading_locate_progress),
+                    0,
+                    0,
+                )
+            }
             reader.setContent(loaded.paragraphs)
             applyStyleToUi(keepAnchor = false)
             tts.setDocument(
@@ -2478,31 +2866,33 @@ class ReadingActivity : AppCompatActivity() {
                 displayName = loaded.title,
                 lastParagraph = pendingRestorePara.coerceAtLeast(0),
             )
-            ReadingProgressStore.saveTxt(
-                this,
-                loaded.uri,
-                pendingRestorePara.coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0)),
-                loaded.paragraphs.size,
-            )
+            if (!wantManga) {
+                ReadingProgressStore.saveTxt(
+                    this,
+                    loaded.uri,
+                    pendingRestorePara.coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0)),
+                    loaded.paragraphs.size,
+                    fileExt = progressFileExt(),
+                )
+            }
             AppSettings.setLastBook(this, loaded.uri, loaded.title)
 
-            // 布局完成后再测高并滚到进度，然后显示
-            reader.post(object : Runnable {
-                override fun run() {
-                    if (isFinishing || isDestroyed) return
+            // 布局后再尝试定位；未到目标前不 reveal
+            reader.post {
+                if (isFinishing || isDestroyed) return@post
+                if (wantManga) {
+                    enterMangaMode(restoreIndex = true)
+                } else {
                     tryRestoreProgress(loaded)
-                    reader.visibility = android.view.View.VISIBLE
-                    hideLoadOverlay()
-                    allowProgressSave = true
-                    saveProgress(reader.firstVisibleParagraph())
-                    // 二次校正：首帧 contentWidth 偶发不准
-                    reader.post {
-                        if (isFinishing || isDestroyed) return@post
-                        if (pendingRestorePara > 0) tryRestoreProgress(loaded)
-                    }
+                    maybeRevealReaderAfterRestore()
                 }
-            })
+            }
         } else {
+            if (mangaMode) {
+                // 漫画模式不依赖流式正文，仅刷新进度文案
+                updateProgressLabel()
+                return
+            }
             reader.updateContent(loaded.paragraphs, keepScroll = true)
             if (::tts.isInitialized) {
                 tts.updateDocumentKeepPosition(
@@ -2511,6 +2901,7 @@ class ReadingActivity : AppCompatActivity() {
                 )
             }
             tryRestoreProgress(loaded)
+            maybeRevealReaderAfterRestore()
             updateProgressLabel()
             // 总段数变化时刷新进度存储的 total
             ReadingProgressStore.saveTxt(
@@ -2518,6 +2909,7 @@ class ReadingActivity : AppCompatActivity() {
                 loaded.uri,
                 reader.firstVisibleParagraph(),
                 loaded.paragraphs.size,
+                fileExt = progressFileExt(),
             )
         }
     }
@@ -2530,11 +2922,62 @@ class ReadingActivity : AppCompatActivity() {
         }
         if (target in loaded.paragraphs.indices) {
             reader.scrollToParagraph(target)
-            if (loaded.isComplete || target < loaded.paragraphs.size - 5) {
+            // 目标已在当前已载入正文内 → 清除待恢复
+            if (loaded.isComplete || target <= loaded.paragraphs.lastIndex) {
                 pendingRestorePara = -1
             }
+        } else {
+            // 仍在加载：更新遮罩进度
+            val tot = loaded.streamTotal.coerceAtLeast(1)
+            val cur = loaded.streamCurrent.coerceIn(0, tot)
+            updateLoadOverlay(
+                getString(R.string.loading_locate_progress),
+                cur,
+                tot,
+            )
         }
         updateProgressLabel()
+    }
+
+    /**
+     * 打开书时：目标段已就绪（或无需恢复）才显示正文并关掉遮罩。
+     * 避免先闪首页再跳转。
+     */
+    private fun maybeRevealReaderAfterRestore() {
+        if (isFinishing || isDestroyed) return
+        if (!::reader.isInitialized) return
+        if (mangaMode) {
+            hideLoadOverlay()
+            allowProgressSave = true
+            updateProgressLabel()
+            return
+        }
+        // 仍在等目标段
+        if (pendingRestorePara > 0) {
+            val last = book?.paragraphs?.lastIndex ?: -1
+            if (pendingRestorePara > last) {
+                // 继续加载
+                if (bookStreamer != null) {
+                    requestStreamBatch()
+                } else {
+                    // 无 streamer 却仍超范围：落到末尾并显示
+                    pendingRestorePara = -1
+                }
+                return
+            }
+            // 已在范围内但 flag 未清
+            book?.let { tryRestoreProgress(it) }
+            if (pendingRestorePara > 0) return
+        }
+        if (reader.visibility != android.view.View.VISIBLE) {
+            reader.visibility = android.view.View.VISIBLE
+        }
+        hideLoadOverlay()
+        allowProgressSave = true
+        saveProgress(reader.firstVisibleParagraph())
+        updateProgressLabel()
+        updateChapterTitleBar(reader.firstVisibleParagraph())
+        updateBookmarkButton()
     }
 
     private fun updateStreamTitle(loaded: LoadedBook, progressMsg: String? = null) {
@@ -2599,10 +3042,11 @@ class ReadingActivity : AppCompatActivity() {
             Toasts.show(this, getString(R.string.link_not_found))
             return
         }
-        // 流式加载未到目标时：记下待恢复位置并尽量滚
+        // 按需续载未到目标时：记下待恢复位置并继续解析
         val maxIdx = book?.paragraphs?.lastIndex ?: -1
         if (target > maxIdx) {
             pendingRestorePara = target
+            requestStreamBatch()
             Toasts.show(this, getString(R.string.link_loading_target))
             return
         }
@@ -2833,10 +3277,24 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun saveProgress(paragraphIndex: Int) {
         if (fileKey.isEmpty() || !allowProgressSave) return
-        AppSettings.saveProgress(this, fileKey, paragraphIndex)
-        BookshelfStore.updateProgress(this, fileKey, paragraphIndex)
-        val total = book?.paragraphs?.size ?: 0
-        ReadingProgressStore.saveTxt(this, fileKey, paragraphIndex, total)
+        val pos: Int
+        val total: Int
+        if (mangaMode && mangaPaths.isNotEmpty()) {
+            pos = mangaIndex.coerceIn(0, mangaPaths.lastIndex)
+            total = mangaPaths.size
+        } else {
+            pos = paragraphIndex
+            total = book?.paragraphs?.size ?: 0
+        }
+        AppSettings.saveProgress(this, fileKey, pos)
+        BookshelfStore.updateProgress(this, fileKey, pos)
+        ReadingProgressStore.saveTxt(
+            this,
+            fileKey,
+            pos,
+            total,
+            fileExt = progressFileExt(),
+        )
         if (displayTitle.isNotEmpty()) {
             AppSettings.setLastBook(this, fileKey, displayTitle)
         }
@@ -2985,6 +3443,11 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun jumpChapter(delta: Int) {
+        if (mangaMode) {
+            // 漫画：上下章=翻图，保持菜单不关
+            mangaGo(delta)
+            return
+        }
         val b = book ?: return
         val chapters = b.chapters
         if (chapters.isEmpty()) {
@@ -2996,12 +3459,40 @@ class ReadingActivity : AppCompatActivity() {
         val target = idx + delta
         when {
             target < 0 -> Toasts.show(this, R.string.no_prev_chapter)
-            target > chapters.lastIndex ->
-                Toasts.show(this, R.string.no_next_chapter)
+            target > chapters.lastIndex -> {
+                // 章节表尚未完全解析时，继续加载再试
+                if (bookStreamer != null && !b.isComplete) {
+                    pendingRestorePara = (b.paragraphs.size + 50).coerceAtLeast(pendingRestorePara)
+                    requestStreamBatch()
+                    Toasts.show(this, R.string.link_loading_target)
+                } else {
+                    Toasts.show(this, R.string.no_next_chapter)
+                }
+            }
             else -> {
-                val p = chapters[target].paragraphIndex
+                val ch = chapters[target]
+                val p = ch.paragraphIndex
+                if (p < 0 || p > b.paragraphs.lastIndex) {
+                    // 目录有缓存段位但正文未载入：按需续载
+                    if (p >= 0) pendingRestorePara = p
+                    else if (ch.spineIndex >= 0) {
+                        // 尚无段索引：按 spine 预估目标，多载几批
+                        pendingRestorePara =
+                            (b.paragraphs.size + (ch.spineIndex + 1) * 80).coerceAtLeast(0)
+                    } else {
+                        pendingRestorePara = b.paragraphs.size + 50
+                    }
+                    requestStreamBatch()
+                    Toasts.show(this, R.string.link_loading_target)
+                    return
+                }
+                // 上/下一章滚动时不关底部菜单（与 PDF 上一页/下一页一致）
+                ignoreScrollChromeHideUntilMs =
+                    android.os.SystemClock.uptimeMillis() + 1_200L
                 reader.scrollToParagraph(p)
                 saveProgress(p)
+                updateProgressLabel()
+                updateChapterTitleBar(p)
                 if (tts.currentState().state != TtsManager.State.IDLE) {
                     tts.jumpToParagraph(p, autoPlay = true)
                 } else {
@@ -3013,9 +3504,14 @@ class ReadingActivity : AppCompatActivity() {
 
     /**
      * 进度跳转：0~100% 滚动条，拖动时实时跳转位置。
+     * 漫画模式按图片序号跳转。
      */
     private fun showProgressJumpSheet() {
         if (book == null) return
+        if (mangaMode && mangaPaths.isNotEmpty()) {
+            showMangaProgressJumpSheet()
+            return
+        }
         val pad = (20 * resources.displayMetrics.density).toInt()
         val container = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -3085,6 +3581,64 @@ class ReadingActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showMangaProgressJumpSheet() {
+        if (mangaPaths.isEmpty()) return
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad / 2)
+        }
+        val tvLabel = android.widget.TextView(this).apply {
+            textSize = 18f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(getColor(R.color.text_primary))
+            setPadding(0, 0, 0, pad / 2)
+        }
+        val max = (mangaPaths.size - 1).coerceAtLeast(0)
+        val seek = android.widget.SeekBar(this).apply {
+            this.max = max
+            progress = mangaIndex.coerceIn(0, max)
+        }
+        fun refreshLabel(idx: Int) {
+            tvLabel.text = getString(R.string.mobi_manga_progress, idx + 1, mangaPaths.size)
+        }
+        refreshLabel(mangaIndex)
+        container.addView(
+            tvLabel,
+            android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        container.addView(
+            seek,
+            android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                refreshLabel(progress)
+                if (fromUser) {
+                    showMangaIndex(progress)
+                    updateProgressLabel()
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                if (allowProgressSave) saveProgress(mangaIndex)
+                updateProgressLabel()
+            }
+        })
+        AlertDialog.Builder(this)
+            .setTitle(R.string.menu_jump)
+            .setView(container)
+            .setPositiveButton(R.string.close, null)
+            .show()
+    }
+
     private fun showVoicePicker() {
         TtsVoicePicker.show(this, tts) {
             if (tts.currentState().state == TtsManager.State.SPEAKING) {
@@ -3103,10 +3657,25 @@ class ReadingActivity : AppCompatActivity() {
         val curPara = bookmarkAnchorParagraph()
         val totalParas = b.paragraphs.size
 
-        fun jumpTo(index: Int) {
+        fun jumpTo(index: Int, spineIndex: Int = -1) {
             dialog.dismiss()
+            val last = book?.paragraphs?.lastIndex ?: -1
+            if (index < 0 || index > last) {
+                // 大 EPUB：目录段位来自缓存，正文按需续载后再跳
+                pendingRestorePara = when {
+                    index >= 0 -> index
+                    spineIndex >= 0 ->
+                        (last + 1 + (spineIndex + 1) * 80).coerceAtLeast(0)
+                    else -> last + 50
+                }
+                requestStreamBatch()
+                Toasts.show(this, R.string.link_loading_target)
+                return
+            }
             reader.scrollToParagraph(index)
             saveProgress(index)
+            updateProgressLabel()
+            updateChapterTitleBar(index)
             if (tts.currentState().state != TtsManager.State.IDLE) {
                 tts.jumpToParagraph(index, autoPlay = true)
             } else {
@@ -3116,8 +3685,8 @@ class ReadingActivity : AppCompatActivity() {
 
         val chapterAdapter = TocAdapter(
             onClick = { item ->
-                val index = (item as? TocItem.ChapterItem)?.chapter?.paragraphIndex ?: return@TocAdapter
-                jumpTo(index)
+                val ch = (item as? TocItem.ChapterItem)?.chapter ?: return@TocAdapter
+                jumpTo(ch.paragraphIndex, ch.spineIndex)
             },
         )
         lateinit var bookmarkAdapter: TocAdapter
@@ -3176,6 +3745,20 @@ class ReadingActivity : AppCompatActivity() {
                     rv.isVisible = n > 0
                 }
                 syncEmpty()
+                // 目录页：滚到当前章节
+                if (position == 0 && ad is TocAdapter) {
+                    val chIdx = ad.indexOfActiveChapter()
+                    if (chIdx >= 0) {
+                        rv.post {
+                            val lm = rv.layoutManager as? LinearLayoutManager
+                            if (lm != null) {
+                                lm.scrollToPositionWithOffset(chIdx, rv.height / 3)
+                            } else {
+                                rv.scrollToPosition(chIdx)
+                            }
+                        }
+                    }
+                }
                 // 每个 page 只挂一次 observer，避免重复注册
                 if (page.getTag(R.id.rvList) !== ad) {
                     page.setTag(R.id.rvList, ad)

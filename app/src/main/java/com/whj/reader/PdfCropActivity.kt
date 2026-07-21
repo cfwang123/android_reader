@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import androidx.appcompat.app.AppCompatActivity
+import com.whj.reader.ui.AppTheme
 import androidx.lifecycle.lifecycleScope
 import com.whj.reader.data.AppSettings
 import com.whj.reader.databinding.ActivityPdfCropBinding
@@ -52,6 +53,7 @@ class PdfCropActivity : AppCompatActivity() {
     private var cropB = 0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivityPdfCropBinding.inflate(layoutInflater)
         setContentView(binding.root)

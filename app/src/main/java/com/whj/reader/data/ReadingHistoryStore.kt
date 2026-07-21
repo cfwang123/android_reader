@@ -46,6 +46,7 @@ object ReadingHistoryStore {
             var position: Int,
             var displayName: String?,
             var pathHint: String?,
+            var fileExt: String?,
         )
 
         val map = LinkedHashMap<String, Acc>()
@@ -56,6 +57,7 @@ object ReadingHistoryStore {
             position: Int = 0,
             displayName: String? = null,
             pathHint: String? = null,
+            fileExt: String? = null,
         ) {
             if (uri.isBlank() || lastOpened <= 0L) return
             if (uri.startsWith("asset://")) return
@@ -66,6 +68,7 @@ object ReadingHistoryStore {
                     position = position.coerceAtLeast(0),
                     displayName = displayName?.takeIf { it.isNotBlank() },
                     pathHint = pathHint?.takeIf { it.isNotBlank() },
+                    fileExt = fileExt?.takeIf { it.isNotBlank() },
                 )
             } else {
                 if (lastOpened >= cur.lastOpened) {
@@ -74,11 +77,12 @@ object ReadingHistoryStore {
                 }
                 if (!displayName.isNullOrBlank()) cur.displayName = displayName
                 if (!pathHint.isNullOrBlank()) cur.pathHint = pathHint
+                if (!fileExt.isNullOrBlank()) cur.fileExt = fileExt
             }
         }
 
         ReadingProgressStore.exportAll(ctx).forEach { (uri, p) ->
-            merge(uri, p.lastOpened, p.position)
+            merge(uri, p.lastOpened, p.position, fileExt = p.fileExt)
         }
         BookshelfStore.books(ctx).forEach { b ->
             merge(
@@ -115,9 +119,29 @@ object ReadingHistoryStore {
         return map.entries
             .sortedByDescending { it.value.lastOpened }
             .mapIndexed { index, (uri, acc) ->
-                val name = acc.displayName?.takeIf { it.isNotBlank() }
-                    ?: displayNameFromUri(uri)
-                val hint = acc.pathHint?.takeIf { it.isNotBlank() } ?: name
+                val uriName = displayNameFromUri(uri)
+                val name = acc.displayName?.takeIf { it.isNotBlank() } ?: uriName
+                val ext = listOfNotNull(
+                    BookFileType.extensionOf(acc.pathHint),
+                    BookFileType.extensionOf(uriName),
+                    BookFileType.extensionOf(name),
+                    BookFileType.extensionOf(uri),
+                    acc.fileExt?.takeIf { it.startsWith(".") },
+                ).firstOrNull()
+                // pathHint 尽量保留带扩展名的真实文件名，避免历史列表误标成 .txt
+                val baseHint = when {
+                    !acc.pathHint.isNullOrBlank() &&
+                        BookFileType.extensionOf(acc.pathHint) != null -> acc.pathHint!!
+                    BookFileType.extensionOf(uriName) != null -> uriName
+                    BookFileType.extensionOf(name) != null -> name
+                    !acc.pathHint.isNullOrBlank() -> acc.pathHint!!
+                    else -> name
+                }
+                val hint = if (BookFileType.extensionOf(baseHint) == null && ext != null) {
+                    BookFileType.stripBookExt(baseHint) + ext
+                } else {
+                    baseHint
+                }
                 ShelfBook(
                     id = "hist_${uri.hashCode()}_${index}",
                     uri = uri,

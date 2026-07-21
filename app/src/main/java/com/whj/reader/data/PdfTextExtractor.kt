@@ -444,9 +444,10 @@ object PdfTextExtractor {
         }
         steps.sort()
         val normalStep = if (steps.isEmpty()) avgH * 1.2f else steps[steps.size / 2]
-        val paraBreakStep = normalStep * 1.55f
-        // 字号差 ≥12% 即分段（标题常略大于正文）
-        val fontBreakRatio = 1.12f
+        // 连续行并段：行距容忍略放宽（原 1.55× 中位行距，易把正常段拆碎）
+        val paraBreakStep = normalStep * 2.05f
+        // 字号差 ≥18% 才分段（略放宽，避免同段轻微字号差被拆开）
+        val fontBreakRatio = 1.18f
 
         fun isTitleLike(seg: LineSeg): Boolean {
             val t = seg.text.trim()

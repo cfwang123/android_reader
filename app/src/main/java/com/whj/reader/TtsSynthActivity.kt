@@ -16,6 +16,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.SeekBar
 import androidx.appcompat.app.AppCompatActivity
+import com.whj.reader.ui.AppTheme
 import androidx.core.content.FileProvider
 import com.whj.reader.data.AppSettings
 import com.whj.reader.databinding.ActivityTtsSynthBinding
@@ -54,6 +55,7 @@ class TtsSynthActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var exportCallback: ((Boolean, String?) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivityTtsSynthBinding.inflate(layoutInflater)
         setContentView(binding.root)

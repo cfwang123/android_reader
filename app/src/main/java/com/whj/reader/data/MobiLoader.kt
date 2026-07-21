@@ -59,26 +59,16 @@ object MobiLoader {
         val open = openFromUri(context, uri, displayName, chineseMode, null)
         if (open.streamer == null) return open.book
         var latest = open.book
-        val lock = Object()
         var done = false
         open.streamer.start(
-            onUpdate = { b -> synchronized(lock) { latest = b } },
+            onUpdate = { b -> latest = b },
             onComplete = { b ->
-                synchronized(lock) {
-                    latest = b
-                    done = true
-                    lock.notifyAll()
-                }
+                latest = b
+                done = true
             },
         )
-        synchronized(lock) {
-            while (!done) {
-                try {
-                    lock.wait(100)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
+        while (!done && open.streamer.loadNextBatchBlocking()) {
+            // drain
         }
         return latest
     }
@@ -93,26 +83,16 @@ object MobiLoader {
         val open = openFromFile(file, workDir, titleHint, uriStr, chineseMode, null)
         if (open.streamer == null) return open.book
         var latest = open.book
-        val lock = Object()
         var done = false
         open.streamer.start(
-            onUpdate = { b -> synchronized(lock) { latest = b } },
+            onUpdate = { b -> latest = b },
             onComplete = { b ->
-                synchronized(lock) {
-                    latest = b
-                    done = true
-                    lock.notifyAll()
-                }
+                latest = b
+                done = true
             },
         )
-        synchronized(lock) {
-            while (!done) {
-                try {
-                    lock.wait(100)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
+        while (!done && open.streamer.loadNextBatchBlocking()) {
+            // drain
         }
         return latest
     }
@@ -240,6 +220,7 @@ object MobiLoader {
         val imageMap = HashMap<String, String>() // recindex / src → path
 
         // 提取图片记录（从 firstImageIndex 起，直到非图片）
+        val orderedImagePaths = ArrayList<String>()
         if (firstImageIndex in 1 until numRecords) {
             var imgN = 0
             for (ri in firstImageIndex until numRecords) {
@@ -254,7 +235,8 @@ object MobiLoader {
                 val key = String.format(Locale.US, "%05d", imgN)
                 imageMap[key] = out.absolutePath
                 imageMap[imgN.toString()] = out.absolutePath
-                if (imgN > 500) break
+                orderedImagePaths.add(out.absolutePath)
+                if (imgN > 2000) break
             }
         }
 
@@ -318,13 +300,20 @@ object MobiLoader {
             chunkIdx = chunks.size
         }
 
-        if (paragraphs.isEmpty()) error("MOBI 中未解析到正文")
+        if (paragraphs.isEmpty() && orderedImagePaths.isEmpty()) {
+            error("MOBI 中未解析到正文或图片")
+        }
+        // 纯图漫画：无正文时放占位段，避免阅读页空内容崩溃；漫画模式只用 imagePaths
+        if (paragraphs.isEmpty()) {
+            paragraphs.add(Paragraph(index = 0, text = ""))
+        }
 
         @Suppress("UNUSED_VARIABLE")
         val unusedMobiType = mobiType
 
         reindexParas(paragraphs)
         val totalChunks = chunks.size.coerceAtLeast(1)
+        val imagePaths = orderedImagePaths.toList()
         val firstBook = LoadedBook(
             title = fullName,
             paragraphs = paragraphs.toList(),
@@ -339,6 +328,7 @@ object MobiLoader {
             streamCurrent = chunkIdx,
             streamTotal = totalChunks,
             linkTargets = linkTargets.toMap(),
+            imagePaths = imagePaths,
         )
         onProgress?.invoke("显示正文…", chunkIdx, totalChunks)
 
@@ -357,6 +347,7 @@ object MobiLoader {
             linkTargets = linkTargets,
             title = fullName,
             uriStr = uriStr,
+            imagePaths = imagePaths,
         )
         return BookOpenResult(firstBook, streamer)
     }
@@ -484,47 +475,76 @@ object MobiLoader {
         private val linkTargets: MutableMap<String, Int>,
         private val title: String,
         private val uriStr: String,
+        private val imagePaths: List<String>,
     ) : BookStreamer {
+        /** 每批解析的 HTML 块数（按需续载，避免一次扫完全书） */
+        private val batchChunks = 2
+
         @Volatile
         private var cancelled = false
-        private var thread: Thread? = null
+        @Volatile
+        private var finished = false
+        private var onUpdate: ((LoadedBook) -> Unit)? = null
+        private var onComplete: ((LoadedBook) -> Unit)? = null
+        private var onProgress: LoadProgressListener? = null
 
         override fun start(
             onUpdate: (LoadedBook) -> Unit,
             onComplete: (LoadedBook) -> Unit,
             onProgress: LoadProgressListener?,
         ) {
-            if (thread != null) return
-            thread = Thread({
-                try {
-                    while (!cancelled && nextChunk < chunks.size) {
-                        appendBlocks(
-                            HtmlRichParser.parse(chunks[nextChunk]),
-                            imageMap,
-                            chineseMode,
-                            paragraphs,
-                            chapters,
-                            linkTargets,
-                        )
-                        nextChunk++
-                        reindexParas(paragraphs)
-                        val book = snapshot(complete = false)
-                        onProgress?.invoke(
-                            "后台加载 $nextChunk/${chunks.size}",
-                            nextChunk,
-                            chunks.size,
-                        )
-                        if (!cancelled) onUpdate(book)
-                    }
-                    reindexParas(paragraphs)
-                    if (!cancelled) {
-                        onProgress?.invoke("完成", chunks.size, chunks.size)
-                        onComplete(snapshot(complete = true))
-                    }
-                } catch (_: Exception) {
-                    if (!cancelled) onComplete(snapshot(complete = true))
+            this.onUpdate = onUpdate
+            this.onComplete = onComplete
+            this.onProgress = onProgress
+        }
+
+        override fun loadNextBatchBlocking(): Boolean {
+            if (cancelled || finished) return false
+            if (nextChunk >= chunks.size) {
+                finishComplete()
+                return false
+            }
+            return try {
+                var n = 0
+                while (!cancelled && nextChunk < chunks.size && n < batchChunks) {
+                    appendBlocks(
+                        HtmlRichParser.parse(chunks[nextChunk]),
+                        imageMap,
+                        chineseMode,
+                        paragraphs,
+                        chapters,
+                        linkTargets,
+                    )
+                    nextChunk++
+                    n++
                 }
-            }, "MobiStreamer").also { it.start() }
+                if (cancelled) return false
+                reindexParas(paragraphs)
+                if (nextChunk >= chunks.size) {
+                    finishComplete()
+                    false
+                } else {
+                    onProgress?.invoke(
+                        "加载 $nextChunk/${chunks.size}",
+                        nextChunk,
+                        chunks.size,
+                    )
+                    onUpdate?.invoke(snapshot(complete = false))
+                    true
+                }
+            } catch (_: Exception) {
+                finished = true
+                onComplete?.invoke(snapshot(complete = true))
+                false
+            }
+        }
+
+        private fun finishComplete() {
+            if (finished) return
+            finished = true
+            reindexParas(paragraphs)
+            onProgress?.invoke("完成", chunks.size, chunks.size)
+            onComplete?.invoke(snapshot(complete = true))
         }
 
         private fun snapshot(complete: Boolean): LoadedBook {
@@ -542,12 +562,13 @@ object MobiLoader {
                 streamCurrent = nextChunk,
                 streamTotal = chunks.size.coerceAtLeast(1),
                 linkTargets = linkTargets.toMap(),
+                imagePaths = imagePaths,
             )
         }
 
         override fun cancel() {
             cancelled = true
-            thread?.interrupt()
+            finished = true
         }
     }
 

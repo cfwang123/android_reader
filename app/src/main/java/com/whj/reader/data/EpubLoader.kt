@@ -14,6 +14,8 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
+import org.json.JSONArray
+import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 
@@ -21,9 +23,10 @@ import org.xmlpull.v1.XmlPullParserFactory
  * EPUB → [LoadedBook]（段落流 + 富文本 span + 图片缓存路径）。
  *
  * **流式首屏**：
- * 1. 缓存命中 → 整本秒开
+ * 1. 小体积整本缓存命中 → 秒开
  * 2. 否则：索引 OPF + 只解析前几章 → 立即返回可显示正文
- * 3. 后台 [BookStreamer] 续解析其余 spine，完成后写磁盘缓存
+ * 3. 按需 [BookStreamer] 续解析其余 spine；目录用 [chapter_index] 缓存章→段/spine
+ * 4. 大书不写/不读整本解析缓存，避免首页卡顿
  */
 object EpubLoader {
 
@@ -36,6 +39,15 @@ object EpubLoader {
     private const val FIRST_BUDGET_MS = 350L
     /** 后台每解析多少 spine 回调一次 UI */
     private const val BATCH_SPINES = 8
+    /**
+     * 整本解析缓存超过此大小则跳过（大 EPUB 反序列化 + 一次 setContent 会卡数秒）。
+     * 仍保留 chapter_index 轻量目录缓存。
+     */
+    private const val MAX_FULL_CACHE_BYTES = 6L * 1024L * 1024L
+    private const val CHAPTER_INDEX_NAME = "chapter_index_v1.json"
+    private const val SPINE_CACHE_DIR = "spine_cache"
+    /** 跳转/恢复进度时每批解析更多 spine，减少往返 */
+    private const val BATCH_SPINES_SEEK = 24
 
     fun openFromUri(
         context: Context,
@@ -59,7 +71,12 @@ object EpubLoader {
                 0,
             )
             workDir.listFiles()?.forEach { f ->
-                if (f.name.startsWith("parsed_")) f.delete()
+                if (f.name.startsWith("parsed_") ||
+                    f.name == CHAPTER_INDEX_NAME ||
+                    f.name == SPINE_CACHE_DIR
+                ) {
+                    if (f.isDirectory) f.deleteRecursively() else f.delete()
+                }
             }
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(epubFile).use { out -> copyStream(input, out) }
@@ -84,12 +101,25 @@ object EpubLoader {
         val tAll = System.currentTimeMillis()
         // v7：表格列对齐
         val parsedCache = File(workDir, "parsed_${chineseMode.name}_v7.bin")
+        val chapterIndexFile = File(workDir, CHAPTER_INDEX_NAME)
         onProgress?.invoke("读取缓存…", 0, 0)
-        loadParsedCache(parsedCache, uriStr)?.let { cached ->
-            Log.i(TAG, "hit parse cache paras=${cached.paragraphs.size} in ${System.currentTimeMillis() - tAll}ms")
-            onProgress?.invoke("完成", 1, 1)
-            return BookOpenResult(book = cached.copy(isComplete = true), streamer = null)
+        // 大缓存跳过：整本反序列化会卡首页数秒；改用按需续载 + 章节索引
+        if (parsedCache.isFile && parsedCache.length() > MAX_FULL_CACHE_BYTES) {
+            Log.i(
+                TAG,
+                "skip large full cache ${parsedCache.length()}B (>${MAX_FULL_CACHE_BYTES}B), use progressive",
+            )
+        } else {
+            loadParsedCache(parsedCache, uriStr)?.let { cached ->
+                Log.i(TAG, "hit parse cache paras=${cached.paragraphs.size} in ${System.currentTimeMillis() - tAll}ms")
+                // 去掉旧版「章节n/m」前缀；保持 isChapter 样式
+                val cleaned = stripLegacyChapterPrefixes(cached)
+                runCatching { saveChapterIndex(chapterIndexFile, uriStr, cleaned.chapters) }
+                onProgress?.invoke("完成", 1, 1)
+                return BookOpenResult(book = cleaned.copy(isComplete = true), streamer = null)
+            }
         }
+        val cachedChapterIndex = loadChapterIndex(chapterIndexFile, uriStr)
 
         onProgress?.invoke("打开 EPUB…", 0, 0)
         val zip = ZipFile(epubFile)
@@ -109,6 +139,7 @@ object EpubLoader {
                 ?: titleHint.removeSuffix(".epub").removeSuffix(".EPUB")
             val spine = opf.spineHrefs
             if (spine.isEmpty()) error("EPUB 无 spine")
+            val spineResolved = spine.map { resolveZipPath(opfDir, it) }
 
             val imgDir = File(workDir, "images").apply { mkdirs() }
             val paragraphs = ArrayList<Paragraph>(512)
@@ -148,25 +179,49 @@ object EpubLoader {
             val tFirst = System.currentTimeMillis()
             var nextSpine = 0
             var textParas = 0
+            val spineCacheDir = File(workDir, SPINE_CACHE_DIR).apply { mkdirs() }
             while (nextSpine < spine.size &&
                 nextSpine < FIRST_MAX_SPINES &&
                 (textParas < FIRST_MIN_TEXT_PARAS || nextSpine < 2) &&
                 System.currentTimeMillis() - tFirst < FIRST_BUDGET_MS
             ) {
-                val added = appendSpine(
-                    index, zip, opfDir, spine[nextSpine], imgDir,
-                    chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
+                val before = paragraphs.size
+                val fromCache = loadSpineCache(
+                    spineCacheDir, nextSpine, spineResolved.getOrNull(nextSpine),
+                    paragraphs, headingChapters, linkTargets,
                 )
+                val added = if (fromCache) {
+                    paragraphs.size - before
+                } else {
+                    val n = appendSpine(
+                        index, zip, opfDir, spine[nextSpine], imgDir,
+                        chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
+                    )
+                    saveSpineCache(spineCacheDir, nextSpine, paragraphs, before, paragraphs.size)
+                    n
+                }
                 nextSpine++
                 textParas += added
             }
             // 若预算内几乎无正文（全封面），再硬解几章
             while (textParas < 8 && nextSpine < spine.size && nextSpine < FIRST_MAX_SPINES + 8) {
-                textParas += appendSpine(
-                    index, zip, opfDir, spine[nextSpine], imgDir,
-                    chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
+                val before = paragraphs.size
+                val fromCache = loadSpineCache(
+                    spineCacheDir, nextSpine, spineResolved.getOrNull(nextSpine),
+                    paragraphs, headingChapters, linkTargets,
                 )
+                val added = if (fromCache) {
+                    paragraphs.size - before
+                } else {
+                    val n = appendSpine(
+                        index, zip, opfDir, spine[nextSpine], imgDir,
+                        chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
+                    )
+                    saveSpineCache(spineCacheDir, nextSpine, paragraphs, before, paragraphs.size)
+                    n
+                }
                 nextSpine++
+                textParas += added
             }
 
             if (paragraphs.isEmpty()) {
@@ -176,36 +231,42 @@ object EpubLoader {
 
             reindex(paragraphs)
             val injectedNavKeys = HashSet<String>(navChapters.size)
-            injectTocTitleLines(
+            markTocTargetChapters(
                 paragraphs = paragraphs,
-                headingChapters = headingChapters,
                 navChapters = navChapters,
                 linkTargets = linkTargets,
-                chineseMode = chineseMode,
-                alreadyInjected = injectedNavKeys,
+                alreadyMarked = injectedNavKeys,
             )
             reindex(paragraphs)
-            val firstBook = buildBook(
+            val firstBookRaw = buildBook(
                 title = title,
                 uriStr = uriStr,
                 paragraphs = paragraphs,
                 headingChapters = headingChapters,
                 navChapters = navChapters,
+                spineResolved = spineResolved,
+                cachedChapters = cachedChapterIndex,
                 complete = nextSpine >= spine.size,
                 streamCurrent = nextSpine,
                 streamTotal = spine.size,
                 linkTargets = linkTargets,
             )
+            // 合并磁盘章节索引：未加载到的章也有 title/paraIndex，目录可跳转（触发按需续载）
+            val firstBook = firstBookRaw.copy(
+                chapters = mergeChapterLists(firstBookRaw.chapters, cachedChapterIndex),
+            )
+            runCatching { saveChapterIndex(chapterIndexFile, uriStr, firstBook.chapters) }
             Log.i(
                 TAG,
                 "first screen spines=$nextSpine/${spine.size} paras=${paragraphs.size} " +
-                    "nav=${navChapters.size} injected=${injectedNavKeys.size} " +
-                    "in ${System.currentTimeMillis() - tAll}ms",
+                    "nav=${navChapters.size} ch=${firstBook.chapters.size} " +
+                    "injected=${injectedNavKeys.size} in ${System.currentTimeMillis() - tAll}ms",
             )
             onProgress?.invoke("显示正文…", nextSpine, spine.size)
 
             if (nextSpine >= spine.size) {
-                runCatching { saveParsedCache(parsedCache, firstBook) }
+                runCatching { saveChapterIndex(chapterIndexFile, uriStr, firstBook.chapters) }
+                maybeSaveParsedCache(parsedCache, firstBook)
                 zip.close()
                 onProgress?.invoke("完成", 1, 1)
                 return BookOpenResult(firstBook, null)
@@ -216,6 +277,7 @@ object EpubLoader {
                 index = index,
                 opfDir = opfDir,
                 spine = spine,
+                spineResolved = spineResolved,
                 nextSpine = nextSpine,
                 imgDir = imgDir,
                 chineseMode = chineseMode,
@@ -227,6 +289,9 @@ object EpubLoader {
                 title = title,
                 uriStr = uriStr,
                 parsedCache = parsedCache,
+                chapterIndexFile = chapterIndexFile,
+                spineCacheDir = spineCacheDir,
+                cachedChapters = cachedChapterIndex,
                 injectedNavKeys = injectedNavKeys,
             )
             return BookOpenResult(firstBook, streamer)
@@ -251,27 +316,17 @@ object EpubLoader {
     private fun drainStreamer(open: BookOpenResult): LoadedBook {
         val streamer = open.streamer ?: return open.book
         var latest = open.book
-        val lock = Object()
         var done = false
         streamer.start(
-            onUpdate = { b -> synchronized(lock) { latest = b } },
+            onUpdate = { b -> latest = b },
             onComplete = { b ->
-                synchronized(lock) {
-                    latest = b
-                    done = true
-                    lock.notifyAll()
-                }
+                latest = b
+                done = true
             },
             onProgress = null,
         )
-        synchronized(lock) {
-            while (!done) {
-                try {
-                    lock.wait(100)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
+        while (!done && streamer.loadNextBatchBlocking()) {
+            // 阻塞抽干（兼容 loadFromUri）
         }
         return latest
     }
@@ -406,23 +461,36 @@ object EpubLoader {
         paragraphs: List<Paragraph>,
         headingChapters: List<Chapter>,
         navChapters: List<NavChapter>,
+        spineResolved: List<String> = emptyList(),
+        cachedChapters: List<Chapter> = emptyList(),
         complete: Boolean,
         streamCurrent: Int,
         streamTotal: Int,
         linkTargets: Map<String, Int>,
     ): LoadedBook {
-        val fromNav = resolveNavToChapters(navChapters, linkTargets, paragraphs)
-        val ch = when {
-            fromNav.isNotEmpty() -> fromNav
-            else -> headingChapters
-                .map { Chapter(it.title, it.paragraphIndex.coerceIn(0, paragraphs.lastIndex.coerceAtLeast(0))) }
-                .distinctBy { it.paragraphIndex }
-                .ifEmpty {
-                    paragraphs.filter { it.isChapter }.map {
-                        Chapter(it.text.lineSequence().first().take(60), it.index)
-                    }
+        val fromNav = resolveNavToChapters(navChapters, linkTargets, paragraphs, spineResolved)
+        val fromHeadings = headingChapters
+            .map {
+                Chapter(
+                    it.title,
+                    it.paragraphIndex.coerceIn(0, paragraphs.lastIndex.coerceAtLeast(0)),
+                    it.spineIndex,
+                )
+            }
+            .distinctBy { it.paragraphIndex }
+            .ifEmpty {
+                paragraphs.filter { it.isChapter }.map {
+                    Chapter(it.text.lineSequence().first().take(60), it.index)
                 }
-        }
+            }
+        // 当前已解析段上的目录 + 磁盘索引（含尚未加载章的 paraIndex）
+        val ch = mergeChapterLists(
+            when {
+                fromNav.isNotEmpty() -> fromNav
+                else -> fromHeadings
+            },
+            cachedChapters,
+        )
         return LoadedBook(
             title = title,
             paragraphs = paragraphs.toList(),
@@ -436,82 +504,187 @@ object EpubLoader {
         )
     }
 
+    /** 以 [primary] 的已解析位置覆盖 [cached] 同题目录；缓存中多出的章保留（便于跳转） */
+    private fun mergeChapterLists(primary: List<Chapter>, cached: List<Chapter>): List<Chapter> {
+        if (cached.isEmpty()) return primary
+        if (primary.isEmpty()) return cached
+        val byTitle = LinkedHashMap<String, Chapter>(primary.size * 2)
+        for (c in primary) {
+            val k = c.title.trim()
+            if (k.isNotEmpty()) byTitle[k] = c
+        }
+        val out = ArrayList<Chapter>(maxOf(primary.size, cached.size))
+        val seen = HashSet<String>()
+        for (c in cached) {
+            val k = c.title.trim()
+            if (k.isEmpty()) continue
+            val p = byTitle[k]
+            out += if (p != null && p.paragraphIndex >= 0) {
+                // 保留更新后的段索引，spine 优先用已解析
+                Chapter(
+                    p.title,
+                    p.paragraphIndex,
+                    spineIndex = if (p.spineIndex >= 0) p.spineIndex else c.spineIndex,
+                )
+            } else {
+                c
+            }
+            seen += k
+        }
+        for (c in primary) {
+            val k = c.title.trim()
+            if (k.isEmpty() || k in seen) continue
+            out += c
+            seen += k
+        }
+        return out
+    }
+
+    private fun spineIndexOf(hrefPath: String, spineResolved: List<String>): Int {
+        if (hrefPath.isEmpty() || spineResolved.isEmpty()) return -1
+        val h = hrefPath.replace('\\', '/').trim()
+        val hLower = h.lowercase(Locale.ROOT)
+        val hFile = h.substringAfterLast('/')
+        for (i in spineResolved.indices) {
+            val s = spineResolved[i].replace('\\', '/')
+            if (s.equals(h, ignoreCase = true)) return i
+            if (s.lowercase(Locale.ROOT).endsWith(hLower)) return i
+            if (hLower.endsWith(s.lowercase(Locale.ROOT))) return i
+            if (hFile.isNotEmpty() && s.substringAfterLast('/').equals(hFile, ignoreCase = true)) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    private fun saveChapterIndex(file: File, uri: String, chapters: List<Chapter>) {
+        if (chapters.isEmpty()) return
+        runCatching {
+            val arr = JSONArray()
+            for (c in chapters) {
+                arr.put(
+                    JSONObject()
+                        .put("title", c.title)
+                        .put("para", c.paragraphIndex)
+                        .put("spine", c.spineIndex),
+                )
+            }
+            val o = JSONObject()
+                .put("v", 1)
+                .put("uri", uri)
+                .put("chapters", arr)
+            file.writeText(o.toString(), Charsets.UTF_8)
+        }.onFailure { Log.w(TAG, "save chapter index fail", it) }
+    }
+
+    private fun loadChapterIndex(file: File, expectedUri: String): List<Chapter> {
+        if (!file.isFile || file.length() < 8) return emptyList()
+        return runCatching {
+            val o = JSONObject(file.readText(Charsets.UTF_8))
+            if (o.optString("uri") != expectedUri) return emptyList()
+            val arr = o.optJSONArray("chapters") ?: return emptyList()
+            val out = ArrayList<Chapter>(arr.length())
+            for (i in 0 until arr.length()) {
+                val c = arr.optJSONObject(i) ?: continue
+                val title = c.optString("title").trim()
+                if (title.isEmpty()) continue
+                out += Chapter(
+                    title = title,
+                    paragraphIndex = c.optInt("para", -1),
+                    spineIndex = c.optInt("spine", -1),
+                )
+            }
+            out
+        }.getOrDefault(emptyList())
+    }
+
+    private fun maybeSaveParsedCache(file: File, book: LoadedBook) {
+        // 预估体积：段数很多时不写整本缓存
+        if (book.paragraphs.size > 12_000) {
+            Log.i(TAG, "skip save full cache paras=${book.paragraphs.size}")
+            return
+        }
+        runCatching { saveParsedCache(file, book) }
+            .onFailure { Log.w(TAG, "save full cache fail", it) }
+        // 写完后若过大则删掉，下次走渐进
+        if (file.isFile && file.length() > MAX_FULL_CACHE_BYTES) {
+            Log.i(TAG, "full cache too large ${file.length()}B, delete")
+            runCatching { file.delete() }
+        }
+    }
+
     /**
-     * 在每个 TOC 目标段落**之前**插入一行 TOC 标题（[Paragraph.isChapter]）。
-     * 流式加载时可反复调用；[alreadyInjected] 防止重复插入。
-     * 正文已有相同标题则跳过。
+     * 将目录可跳转目标 / 正文标题段标记为 [Paragraph.isChapter]（阅读器加大字号+前后留白）。
+     * **不**插入附加标题行，**不**加「章节n/m」前缀；若旧缓存带有此前缀则剥掉。
      */
-    private fun injectTocTitleLines(
+    private fun markTocTargetChapters(
         paragraphs: ArrayList<Paragraph>,
-        headingChapters: ArrayList<Chapter>,
         navChapters: List<NavChapter>,
         linkTargets: MutableMap<String, Int>,
-        chineseMode: ChineseConvert.Mode,
-        alreadyInjected: MutableSet<String>,
+        alreadyMarked: MutableSet<String>,
     ) {
-        if (navChapters.isEmpty() || paragraphs.isEmpty()) return
-
-        data class Pending(val at: Int, val title: String, val key: String)
-
-        val pending = ArrayList<Pending>(navChapters.size)
+        if (paragraphs.isEmpty()) return
+        // 清除历史「章节n/m 」前缀（旧版缓存）
+        for (i in paragraphs.indices) {
+            val p = paragraphs[i]
+            if (!hasChapterPrefix(p.text)) continue
+            paragraphs[i] = p.copy(text = stripChapterPrefix(p.text), isChapter = true)
+        }
+        if (navChapters.isEmpty()) return
+        var marked = 0
         for (n in navChapters) {
             val key = navKey(n)
-            if (key in alreadyInjected) continue
+            if (key in alreadyMarked) continue
             val title = n.title.trim()
             if (title.isEmpty()) continue
             val para = lookupNavParagraph(n, linkTargets) ?: continue
             if (para !in paragraphs.indices) continue
 
+            var target = para
             val targetText = paragraphs[para].text.lineSequence().firstOrNull()?.trim().orEmpty()
-            if (tocTitleMatchesBody(title, targetText)) {
-                // 正文已有该标题，不重复插入
-                alreadyInjected.add(key)
-                continue
-            }
             if (para > 0) {
                 val prev = paragraphs[para - 1]
                 if (prev.isChapter && tocTitleMatchesBody(title, prev.text.trim())) {
-                    alreadyInjected.add(key)
-                    continue
+                    target = para - 1
                 }
             }
-            pending.add(Pending(para, title, key))
+            if (tocTitleMatchesBody(title, targetText) || target != para || paragraphs[para].isChapter) {
+                // 正文标题或目录落点：仅标记样式，不改文案（除剥前缀）
+            }
+            val p = paragraphs[target]
+            val clean = stripChapterPrefix(p.text)
+            if (!p.isChapter || clean != p.text) {
+                paragraphs[target] = p.copy(text = clean, isChapter = true)
+                marked++
+            }
+            // 目录跳到该段
+            putLinkTarget(linkTargets, nPathKey(key), target)
+            alreadyMarked.add(key)
         }
-        if (pending.isEmpty()) return
+        if (marked > 0) {
+            Log.i(TAG, "mark TOC targets as chapter style: +$marked (total=${alreadyMarked.size})")
+        }
+    }
 
-        // 从后往前插，避免打乱尚未处理的 at
-        pending.sortByDescending { it.at }
-        for (ins in pending) {
-            var t = ins.title
-            if (chineseMode != ChineseConvert.Mode.OFF) {
-                t = ChineseConvert.apply(t, chineseMode)
-            }
-            val at = ins.at.coerceIn(0, paragraphs.size)
-            paragraphs.add(
-                at,
-                Paragraph(
-                    index = at,
-                    text = t,
-                    isChapter = true,
-                ),
-            )
-            // 其后所有段索引 +1
-            for ((k, v) in linkTargets.entries.toList()) {
-                if (v >= at) linkTargets[k] = v + 1
-            }
-            // 目录跳转落在标题行
-            putLinkTarget(linkTargets, nPathKey(ins.key), at)
-            // 启发式章节表同步偏移
-            for (i in headingChapters.indices) {
-                val c = headingChapters[i]
-                if (c.paragraphIndex >= at) {
-                    headingChapters[i] = Chapter(c.title, c.paragraphIndex + 1)
-                }
-            }
-            alreadyInjected.add(ins.key)
+    private fun hasChapterPrefix(text: String): Boolean =
+        Regex("""^章节\s*\d+\s*/\s*\d+\s+""").containsMatchIn(text.trim())
+
+    /** 去掉旧版「章节n/m 」前缀 */
+    private fun stripChapterPrefix(text: String): String {
+        val m = Regex("""^章节\s*\d+\s*/\s*\d+\s+(.*)$""").find(text.trim())
+        return m?.groupValues?.get(1)?.trim()?.ifEmpty { text } ?: text
+    }
+
+    /** 整本缓存里剥掉旧前缀，并保留 isChapter */
+    private fun stripLegacyChapterPrefixes(book: LoadedBook): LoadedBook {
+        var changed = false
+        val paras = book.paragraphs.map { p ->
+            if (!hasChapterPrefix(p.text)) return@map p
+            changed = true
+            p.copy(text = stripChapterPrefix(p.text), isChapter = true)
         }
-        reindex(paragraphs)
-        Log.i(TAG, "inject TOC titles +${pending.size} (total injected=${alreadyInjected.size})")
+        if (!changed) return book
+        return book.copy(paragraphs = paras)
     }
 
     private fun navKey(n: NavChapter): String =
@@ -526,13 +699,182 @@ object EpubLoader {
 
     private fun tocTitleMatchesBody(tocTitle: String, bodyFirstLine: String): Boolean {
         if (bodyFirstLine.isEmpty()) return false
-        if (bodyFirstLine == tocTitle) return true
-        // 正文标题常略短/带序号差异
+        val body = stripChapterPrefix(bodyFirstLine)
+        if (body == tocTitle || bodyFirstLine == tocTitle) return true
         val a = tocTitle.replace(Regex("\\s+"), "")
-        val b = bodyFirstLine.replace(Regex("\\s+"), "")
+        val b = body.replace(Regex("\\s+"), "")
         if (a == b) return true
         if (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a))) return true
         return false
+    }
+
+    // ─── 按 spine 的段落磁盘缓存（二次打开 / 跳转加速） ───
+
+    private fun spineCacheFile(dir: File, spineIndex: Int): File =
+        File(dir, String.format(Locale.US, "%05d.bin", spineIndex))
+
+    private fun saveSpineCache(
+        dir: File,
+        spineIndex: Int,
+        paragraphs: List<Paragraph>,
+        from: Int,
+        toExclusive: Int,
+    ) {
+        if (from >= toExclusive || from !in paragraphs.indices) return
+        val end = toExclusive.coerceAtMost(paragraphs.size)
+        runCatching {
+            dir.mkdirs()
+            spineCacheFile(dir, spineIndex).outputStream().buffered().use { out ->
+                out.write("SPN1".toByteArray(Charsets.US_ASCII))
+                writeInt(out, end - from)
+                for (i in from until end) {
+                    val p = paragraphs[i]
+                    writeStr(out, p.text)
+                    writeInt(out, if (p.isChapter) 1 else 0)
+                    writeStr(out, p.imagePath.orEmpty())
+                    writeInt(
+                        out,
+                        when (p.align) {
+                            com.whj.reader.model.TextAlign.CENTER -> 1
+                            com.whj.reader.model.TextAlign.END -> 2
+                            else -> 0
+                        },
+                    )
+                    writeInt(out, if (p.preformatted) 1 else 0)
+                    writeInt(out, p.spans.size)
+                    for (s in p.spans) {
+                        writeInt(out, s.start)
+                        writeInt(out, s.end)
+                        writeInt(
+                            out,
+                            (if (s.bold) 1 else 0) or
+                                (if (s.italic) 2 else 0) or
+                                (if (s.underline) 4 else 0),
+                        )
+                        writeInt(out, s.color ?: Int.MIN_VALUE)
+                        writeInt(out, s.backgroundColor ?: Int.MIN_VALUE)
+                        writeStr(out, s.linkHref.orEmpty())
+                    }
+                    writeInt(out, p.inlineImages.size)
+                    for (im in p.inlineImages) {
+                        writeInt(out, im.start)
+                        writeInt(out, im.end)
+                        writeStr(out, im.path)
+                    }
+                }
+            }
+        }.onFailure { Log.w(TAG, "save spine cache $spineIndex fail", it) }
+    }
+
+    /**
+     * 从磁盘加载某 spine 的段落并追加；成功返回 true。
+     * 注册 spine 文件 → 首段 的 linkTargets，便于 inject 章节标题行。
+     */
+    private fun loadSpineCache(
+        dir: File,
+        spineIndex: Int,
+        spineHref: String?,
+        paragraphs: ArrayList<Paragraph>,
+        headingChapters: ArrayList<Chapter>,
+        linkTargets: MutableMap<String, Int>,
+    ): Boolean {
+        val f = spineCacheFile(dir, spineIndex)
+        if (!f.isFile || f.length() < 8) return false
+        return runCatching {
+            f.inputStream().buffered().use { inp ->
+                val magic = ByteArray(4)
+                if (inp.read(magic) != 4) return false
+                if (String(magic, Charsets.US_ASCII) != "SPN1") return false
+                val count = readInt(inp)
+                if (count < 0 || count > 500_000) return false
+                val base = paragraphs.size
+                repeat(count) { i ->
+                    val text = readStr(inp)
+                    val isCh = readInt(inp) == 1
+                    val img = readStr(inp).ifEmpty { null }
+                    val alignCode = readInt(inp)
+                    val pre = readInt(inp) == 1
+                    val align = when (alignCode) {
+                        1 -> com.whj.reader.model.TextAlign.CENTER
+                        2 -> com.whj.reader.model.TextAlign.END
+                        else -> com.whj.reader.model.TextAlign.START
+                    }
+                    val sc = readInt(inp).coerceAtLeast(0)
+                    val spans = ArrayList<com.whj.reader.model.TextSpanStyle>(sc)
+                    repeat(sc) {
+                        val start = readInt(inp)
+                        val end = readInt(inp)
+                        val flags = readInt(inp)
+                        val col = readInt(inp).let { v -> if (v == Int.MIN_VALUE) null else v }
+                        val bg = readInt(inp).let { v -> if (v == Int.MIN_VALUE) null else v }
+                        val href = readStr(inp).ifEmpty { null }
+                        spans += com.whj.reader.model.TextSpanStyle(
+                            start = start,
+                            end = end,
+                            bold = flags and 1 != 0,
+                            italic = flags and 2 != 0,
+                            underline = flags and 4 != 0,
+                            color = col,
+                            backgroundColor = bg,
+                            linkHref = href,
+                        )
+                    }
+                    val ic = readInt(inp).coerceAtLeast(0)
+                    val inlines = ArrayList<InlineImage>(ic)
+                    repeat(ic) {
+                        val s = readInt(inp)
+                        val e = readInt(inp)
+                        val path = readStr(inp)
+                        if (path.isNotEmpty()) {
+                            inlines += InlineImage(s, e, path)
+                        }
+                    }
+                    val idx = base + i
+                    paragraphs += Paragraph(
+                        index = idx,
+                        text = text,
+                        isChapter = isCh,
+                        spans = spans,
+                        imagePath = img,
+                        inlineImages = inlines,
+                        align = align,
+                        preformatted = pre,
+                    )
+                    if (isCh) {
+                        headingChapters += Chapter(
+                            stripChapterPrefix(text).take(80),
+                            idx,
+                            spineIndex,
+                        )
+                    }
+                }
+                reindex(paragraphs)
+                if (!spineHref.isNullOrBlank() && count > 0) {
+                    putLinkTarget(linkTargets, spineHref, base)
+                    putLinkTarget(linkTargets, spineHref.substringAfterLast('/'), base)
+                }
+                true
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun writeStr(out: java.io.OutputStream, s: String) {
+        val b = s.toByteArray(Charsets.UTF_8)
+        writeInt(out, b.size)
+        out.write(b)
+    }
+
+    private fun readStr(inp: java.io.InputStream): String {
+        val n = readInt(inp)
+        if (n < 0 || n > 50_000_000) error("bad str")
+        val b = ByteArray(n)
+        var off = 0
+        while (off < n) {
+            val k = inp.read(b, off, n - off)
+            if (k < 0) error("eof")
+            off += k
+        }
+        return String(b, Charsets.UTF_8)
     }
 
     /** 将 NCX/nav 条目解析到段落索引（优先 path#id，其次文件首段；优先 TOC 注入标题行） */
@@ -540,6 +882,7 @@ object EpubLoader {
         nav: List<NavChapter>,
         linkTargets: Map<String, Int>,
         paragraphs: List<Paragraph>,
+        spineResolved: List<String> = emptyList(),
     ): List<Chapter> {
         if (nav.isEmpty() || paragraphs.isEmpty()) return emptyList()
         val last = paragraphs.lastIndex
@@ -562,7 +905,8 @@ object EpubLoader {
                 // keep
             }
             if (!seenPara.add(para)) continue
-            out.add(Chapter(title.take(80), para))
+            val spineIdx = spineIndexOf(n.hrefPath, spineResolved)
+            out.add(Chapter(title.take(80), para, spineIdx))
         }
         return out.sortedBy { it.paragraphIndex }
     }
@@ -592,6 +936,7 @@ object EpubLoader {
         private val index: ZipIndex,
         private val opfDir: String,
         private val spine: List<String>,
+        private val spineResolved: List<String>,
         private var nextSpine: Int,
         private val imgDir: File,
         private val chineseMode: ChineseConvert.Mode,
@@ -603,30 +948,61 @@ object EpubLoader {
         private val title: String,
         private val uriStr: String,
         private val parsedCache: File,
+        private val chapterIndexFile: File,
+        private val spineCacheDir: File,
+        private val cachedChapters: List<Chapter>,
         private val injectedNavKeys: MutableSet<String>,
     ) : BookStreamer {
         @Volatile
         private var cancelled = false
-        private var thread: Thread? = null
+        @Volatile
+        private var finished = false
+        private var onUpdate: ((LoadedBook) -> Unit)? = null
+        private var onComplete: ((LoadedBook) -> Unit)? = null
+        private var onProgress: LoadProgressListener? = null
 
         private fun injectAndBuild(complete: Boolean, streamCurrent: Int): LoadedBook {
             reindex(paragraphs)
-            injectTocTitleLines(
+            markTocTargetChapters(
+                paragraphs = paragraphs,
+                navChapters = navChapters,
+                linkTargets = linkTargets,
+                alreadyMarked = injectedNavKeys,
+            )
+            reindex(paragraphs)
+            val book = buildBook(
+                title = title,
+                uriStr = uriStr,
                 paragraphs = paragraphs,
                 headingChapters = headingChapters,
                 navChapters = navChapters,
-                linkTargets = linkTargets,
-                chineseMode = chineseMode,
-                alreadyInjected = injectedNavKeys,
-            )
-            reindex(paragraphs)
-            return buildBook(
-                title, uriStr, paragraphs, headingChapters, navChapters,
+                spineResolved = spineResolved,
+                cachedChapters = cachedChapters,
                 complete = complete,
                 streamCurrent = streamCurrent,
                 streamTotal = spine.size,
                 linkTargets = linkTargets,
             )
+            runCatching { saveChapterIndex(chapterIndexFile, uriStr, book.chapters) }
+            return book
+        }
+
+        /** 解析或读缓存一个 spine，返回新增段数 */
+        private fun consumeOneSpine(): Int {
+            val before = paragraphs.size
+            val href = spineResolved.getOrNull(nextSpine)
+            val fromCache = loadSpineCache(
+                spineCacheDir, nextSpine, href, paragraphs, headingChapters, linkTargets,
+            )
+            if (!fromCache) {
+                appendSpine(
+                    index, zip, opfDir, spine[nextSpine], imgDir,
+                    chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
+                )
+                saveSpineCache(spineCacheDir, nextSpine, paragraphs, before, paragraphs.size)
+            }
+            nextSpine++
+            return paragraphs.size - before
         }
 
         override fun start(
@@ -634,64 +1010,132 @@ object EpubLoader {
             onComplete: (LoadedBook) -> Unit,
             onProgress: LoadProgressListener?,
         ) {
-            if (thread != null) return
-            thread = Thread({
-                try {
-                    var batch = 0
-                    while (!cancelled && nextSpine < spine.size) {
-                        appendSpine(
-                            index, zip, opfDir, spine[nextSpine], imgDir,
-                            chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
-                        )
-                        nextSpine++
-                        batch++
-                        if (batch >= BATCH_SPINES || nextSpine >= spine.size) {
-                            batch = 0
-                            val partial = injectAndBuild(
-                                complete = false,
-                                streamCurrent = nextSpine,
-                            )
-                            onProgress?.invoke(
-                                "后台加载 ${nextSpine}/${spine.size}",
-                                nextSpine,
-                                spine.size,
-                            )
-                            if (!cancelled) onUpdate(partial)
-                        }
-                    }
-                    val finalBook = injectAndBuild(
-                        complete = true,
-                        streamCurrent = spine.size,
-                    )
-                    if (!cancelled) {
-                        runCatching { saveParsedCache(parsedCache, finalBook) }
-                        onProgress?.invoke("完成", spine.size, spine.size)
-                        onComplete(finalBook)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "stream fail", e)
-                    val partial = runCatching {
-                        injectAndBuild(complete = true, streamCurrent = nextSpine)
-                    }.getOrElse {
-                        reindex(paragraphs)
-                        buildBook(
-                            title, uriStr, paragraphs, headingChapters, navChapters,
-                            complete = true,
-                            streamCurrent = nextSpine,
-                            streamTotal = spine.size,
-                            linkTargets = linkTargets,
-                        )
-                    }
-                    if (!cancelled) onComplete(partial)
-                } finally {
-                    runCatching { zip.close() }
+            this.onUpdate = onUpdate
+            this.onComplete = onComplete
+            this.onProgress = onProgress
+        }
+
+        override fun loadNextBatchBlocking(): Boolean {
+            if (cancelled || finished) return false
+            if (nextSpine >= spine.size) {
+                finishComplete()
+                return false
+            }
+            return try {
+                var batch = 0
+                while (!cancelled && nextSpine < spine.size && batch < BATCH_SPINES) {
+                    consumeOneSpine()
+                    batch++
                 }
-            }, "EpubStreamer").also { it.start() }
+                if (cancelled) return false
+                if (nextSpine >= spine.size) {
+                    finishComplete()
+                    false
+                } else {
+                    val partial = injectAndBuild(complete = false, streamCurrent = nextSpine)
+                    onProgress?.invoke(
+                        "加载 ${nextSpine}/${spine.size}",
+                        nextSpine,
+                        spine.size,
+                    )
+                    onUpdate?.invoke(partial)
+                    true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "stream batch fail", e)
+                val partial = runCatching {
+                    injectAndBuild(complete = true, streamCurrent = nextSpine)
+                }.getOrElse {
+                    reindex(paragraphs)
+                    buildBook(
+                        title = title,
+                        uriStr = uriStr,
+                        paragraphs = paragraphs,
+                        headingChapters = headingChapters,
+                        navChapters = navChapters,
+                        spineResolved = spineResolved,
+                        cachedChapters = cachedChapters,
+                        complete = true,
+                        streamCurrent = nextSpine,
+                        streamTotal = spine.size,
+                        linkTargets = linkTargets,
+                    )
+                }
+                finished = true
+                runCatching { zip.close() }
+                onComplete?.invoke(partial)
+                false
+            }
+        }
+
+        /**
+         * 连续加载到目标段落：优先读 spine 磁盘缓存，中间不刷 UI，只在结束时 onUpdate。
+         * 这是大 EPUB 跳章/恢复进度不再卡十几秒的关键。
+         */
+        override fun loadUntilParagraphBlocking(targetParaInclusive: Int): Boolean {
+            if (cancelled || finished) return false
+            if (nextSpine >= spine.size) {
+                finishComplete()
+                return false
+            }
+            return try {
+                val t0 = System.currentTimeMillis()
+                var loadedSpines = 0
+                while (!cancelled &&
+                    nextSpine < spine.size &&
+                    paragraphs.size <= targetParaInclusive + 8
+                ) {
+                    consumeOneSpine()
+                    loadedSpines++
+                    // 进度条低频更新，不触发全文 setContent
+                    if (loadedSpines % 16 == 0) {
+                        onProgress?.invoke(
+                            "加载 ${nextSpine}/${spine.size}",
+                            nextSpine,
+                            spine.size,
+                        )
+                    }
+                }
+                if (cancelled) return false
+                Log.i(
+                    TAG,
+                    "seek load spines=$loadedSpines paras=${paragraphs.size} " +
+                        "target=$targetParaInclusive in ${System.currentTimeMillis() - t0}ms",
+                )
+                if (nextSpine >= spine.size) {
+                    finishComplete()
+                    false
+                } else {
+                    val partial = injectAndBuild(complete = false, streamCurrent = nextSpine)
+                    onProgress?.invoke(
+                        "加载 ${nextSpine}/${spine.size}",
+                        nextSpine,
+                        spine.size,
+                    )
+                    onUpdate?.invoke(partial)
+                    true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "seek load fail", e)
+                loadNextBatchBlocking()
+            }
+        }
+
+        private fun finishComplete() {
+            if (finished) return
+            finished = true
+            val finalBook = injectAndBuild(complete = true, streamCurrent = spine.size)
+            runCatching { saveChapterIndex(chapterIndexFile, uriStr, finalBook.chapters) }
+            maybeSaveParsedCache(parsedCache, finalBook)
+            onProgress?.invoke("完成", spine.size, spine.size)
+            onComplete?.invoke(finalBook)
+            runCatching { zip.close() }
         }
 
         override fun cancel() {
             cancelled = true
-            thread?.interrupt()
+            finished = true
+            runCatching { zip.close() }
         }
     }
 

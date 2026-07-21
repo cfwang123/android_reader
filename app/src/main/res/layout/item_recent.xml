@@ -1,34 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- CX 风格文件行：无卡片边框、紧凑间距、右侧多选框 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="8dp"
-    android:background="@drawable/bg_round_card"
+    android:background="@drawable/bg_list_item"
     android:foreground="?attr/selectableItemBackground"
-    android:clipToOutline="true">
+    android:minHeight="56dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingHorizontal="14dp"
-        android:paddingTop="14dp"
-        android:paddingBottom="16dp">
-
-        <ImageView
-            android:id="@+id/ivCheck"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:layout_marginEnd="8dp"
-            android:contentDescription="@string/selection_mode"
-            android:src="@drawable/ic_check_box_outline"
-            android:visibility="gone" />
+        android:paddingStart="12dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="10dp">
 
         <ImageView
             android:id="@+id/ivFileType"
             android:layout_width="40dp"
-            android:layout_height="52dp"
+            android:layout_height="48dp"
             android:contentDescription="@null"
             android:scaleType="centerCrop"
             android:src="@drawable/ic_file_txt" />
@@ -37,10 +29,10 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
+            android:layout_marginEnd="8dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
-            <!-- 第 1 行：完整文件名（含扩展名） -->
             <TextView
                 android:id="@+id/tvTitle"
                 android:layout_width="match_parent"
@@ -48,10 +40,8 @@
                 android:ellipsize="middle"
                 android:maxLines="2"
                 android:textColor="@color/text_primary"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:textSize="15sp" />
 
-            <!-- 保留 id 兼容绑定；默认隐藏（不再显示路径第 2 行） -->
             <TextView
                 android:id="@+id/tvPath"
                 android:layout_width="match_parent"
@@ -62,29 +52,40 @@
                 android:id="@+id/tvMeta"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="2dp"
                 android:textColor="@color/text_muted"
-                android:textSize="11sp" />
+                android:textSize="12sp" />
         </LinearLayout>
 
         <ImageView
             android:id="@+id/ivDragHandle"
-            android:layout_width="32dp"
-            android:layout_height="40dp"
+            android:layout_width="28dp"
+            android:layout_height="36dp"
             android:contentDescription="@string/drag_to_reorder"
-            android:padding="4dp"
+            android:padding="2dp"
             android:src="@drawable/ic_drag_handle"
+            android:visibility="gone" />
+
+        <!-- 右侧多选框（对齐 CX 文件管理器） -->
+        <ImageView
+            android:id="@+id/ivCheck"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="2dp"
+            android:contentDescription="@string/selection_mode"
+            android:padding="2dp"
+            android:src="@drawable/ic_check_box_outline"
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- 底部绿色阅读进度条 -->
     <ProgressBar
         android:id="@+id/progressRead"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
-        android:layout_height="4dp"
+        android:layout_height="2dp"
         android:layout_gravity="bottom"
         android:max="100"
         android:progress="0"
-        android:progressDrawable="@drawable/shelf_progress_bar" />
+        android:progressDrawable="@drawable/shelf_progress_bar"
+        android:visibility="invisible" />
 </FrameLayout>

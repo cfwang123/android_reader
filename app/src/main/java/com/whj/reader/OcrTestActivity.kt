@@ -10,6 +10,7 @@ import android.util.Log
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.whj.reader.ui.AppTheme
 import androidx.lifecycle.lifecycleScope
 import com.whj.reader.databinding.ActivityOcrTestBinding
 import com.whj.reader.ocr.TfliteOcrEngine
@@ -59,6 +60,7 @@ class OcrTestActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         binding = ActivityOcrTestBinding.inflate(layoutInflater)
         setContentView(binding.root)

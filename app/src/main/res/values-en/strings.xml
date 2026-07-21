@@ -39,6 +39,22 @@
     <string name="shelf_sort_by_custom">Custom</string>
     <string name="selection_mode">Multi-select</string>
     <string name="multiselect_shelf_only">Multi-select is not available in linked folders</string>
+    <string name="file_details">Details</string>
+    <string name="file_details_title">File details</string>
+    <string name="file_details_name">Name: %1$s</string>
+    <string name="file_details_path">Path: %1$s</string>
+    <string name="file_details_uri">URI: %1$s</string>
+    <string name="file_details_size">Size: %1$s</string>
+    <string name="file_details_format">Format: %1$s</string>
+    <string name="file_details_encoding">Encoding: %1$s</string>
+    <string name="file_details_progress">Progress: %1$s</string>
+    <string name="file_details_last_opened">Last read: %1$s</string>
+    <string name="file_details_unknown">Unknown</string>
+    <string name="file_format_txt">TXT</string>
+    <string name="file_format_epub">EPUB</string>
+    <string name="file_format_mobi">MOBI/AZW</string>
+    <string name="file_format_pdf">PDF</string>
+    <string name="file_format_other">Other</string>
     <string name="history_delete_record">Remove from history</string>
     <string name="history_delete_title">Remove reading record?</string>
     <string name="history_delete_msg">Clears progress and history for this book. Shelf entry and source file are kept.</string>
@@ -105,6 +121,15 @@
     <string name="pdf_page_of">%1$d / %2$d</string>
     <string name="pdf_page_of_progress">%1$d / %2$d  %3$d%%</string>
     <string name="pdf_page_jump">Jump to page</string>
+    <string name="mobi_view_mode">View mode</string>
+    <string name="mobi_mode_text">Text mode</string>
+    <string name="mobi_mode_manga">Manga mode</string>
+    <string name="mobi_mode_current">Now: %1$s</string>
+    <string name="mobi_mode_hint">Manga mode ignores text and shows one image at a time. Pinch to zoom; tap sides or swipe to turn pages. Progress is image N of total. Selected mode is filled in the theme color.</string>
+    <string name="mobi_manga_progress">Image %1$d / %2$d</string>
+    <string name="mobi_manga_no_images">No images in this book</string>
+    <string name="mobi_manga_first">Already the first image</string>
+    <string name="mobi_manga_last">Already the last image</string>
     <string name="pdf_page_mode">Page mode</string>
     <string name="pdf_mode_continuous">Continuous scroll</string>
     <string name="pdf_mode_single">Single page</string>
@@ -264,6 +289,7 @@
     <string name="add_bookmark">Add bookmark</string>
     <string name="jump_to_paragraph">Go to paragraph %1$d</string>
     <string name="paragraph_progress">Paragraph %1$d / %2$d</string>
+    <string name="chapter_progress">Ch. %1$d/%2$d  %3$d%%</string>
     <string name="prev_chapter">Previous chapter</string>
     <string name="next_chapter">Next chapter</string>
     <string name="no_prev_chapter">Already at the first chapter</string>
@@ -418,6 +444,7 @@
 
     <string name="font_section">Font</string>
     <string name="font_default">Default</string>
+
     <string name="font_sans">Sans</string>
     <string name="font_serif">Serif</string>
     <string name="font_mono">Mono</string>
@@ -455,10 +482,6 @@
     <string name="settings_idle_screen_off_value">%1$d min</string>
     <string name="settings_idle_screen_off_never">Disabled</string>
     <string name="settings_auto_scroll">While speaking: scroll sentence to top if not fully visible</string>
-    <string name="settings_idle_exit">Idle exit</string>
-    <string name="settings_idle_exit_hint">Exit reading after this idle time (0 = never)</string>
-    <string name="settings_idle_exit_value">%1$d min</string>
-    <string name="settings_idle_exit_never">Never</string>
     <string name="settings_default_rate">Default speech rate</string>
     <string name="settings_section_gesture">Gestures</string>
     <string name="settings_volume_key_page">Volume keys turn pages</string>
@@ -472,12 +495,12 @@
     <string name="edge_toast_rate">Rate %1$.1f×</string>
     <string name="edge_toast_font">Font size %1$d</string>
     <string name="tts_read_from_here">Read from this paragraph</string>
-    <string name="idle_exit_toast">Idle timeout — left reading</string>
     <string name="confirm">OK</string>
     <string name="cancel">Cancel</string>
     <string name="delete">Delete</string>
     <string name="close">Close</string>
     <string name="loading_book">Opening…</string>
+    <string name="loading_locate_progress">Jumping to last position…</string>
     <string name="load_stage_copy">Copying file…</string>
     <string name="load_stage_parse">Parsing…</string>
     <string name="load_stage_done">Done</string>
@@ -510,6 +533,9 @@
     <string name="settings_section_about">About</string>
     <string name="settings_app_version">Version %1$s</string>
     <string name="settings_check_update">Check for updates</string>
+    <string name="settings_license">License</string>
+    <string name="settings_license_title">Open-source license</string>
+    <string name="settings_license_load_fail">Could not load license text</string>
     <string name="update_checking">Checking for updates…</string>
     <string name="update_up_to_date">You have the latest version (%1$s)</string>
     <string name="update_available_title">Update available %1$s</string>
@@ -535,6 +561,24 @@
     <string name="lang_zh">中文</string>
     <string name="lang_en">English</string>
     <string name="lang_switched">Language changed</string>
+    <string name="settings_ui_theme">Color theme</string>
+    <string name="ui_theme_green">Green (default)</string>
+    <string name="ui_theme_blue">Sky blue</string>
+    <string name="ui_theme_amber">Amber</string>
+    <string name="ui_theme_teal">Teal</string>
+    <string name="ui_theme_violet">Violet</string>
+    <string name="ui_theme_dark">Dark night</string>
+    <string name="ui_theme_rose">Rose</string>
+    <string name="ui_theme_indigo">Indigo</string>
+    <string name="ui_theme_lime">Lime</string>
+    <string name="ui_theme_coral">Coral</string>
+    <string name="ui_theme_pink">Cherry pink</string>
+    <string name="ui_theme_cyan">Cyan sky</string>
+    <string name="ui_theme_forest">Forest</string>
+    <string name="ui_theme_wine">Wine</string>
+    <string name="ui_theme_gold">Gold</string>
+    <string name="ui_theme_slate">Slate</string>
+    <string name="ui_theme_switched">Theme applied</string>
 
     <string name="unnamed">Untitled</string>
     <string name="import_shelf_default">Imported shelf</string>

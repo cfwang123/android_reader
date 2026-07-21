@@ -7,7 +7,8 @@ import android.net.Uri
  * 统一入口：按扩展名/MIME 分发到 TXT / EPUB / MOBI 加载器。
  * PDF 仍走 [com.whj.reader.PdfReadingActivity]，不经过此处。
  *
- * EPUB/MOBI 返回 [BookOpenResult.streamer] 时：首屏已可显示，需 [BookStreamer.start] 后台续载。
+ * EPUB/MOBI 返回 [BookOpenResult.streamer] 时：首屏已可显示；
+ * 按需 [BookStreamer.loadNextBatchBlocking] 续载，不必一次加载全书。
  */
 object BookLoader {
 
@@ -71,27 +72,13 @@ object BookLoader {
         )
         val streamer = open.streamer ?: return open.book
         var latest = open.book
-        val lock = Object()
-        var done = false
         streamer.start(
-            onUpdate = { b -> synchronized(lock) { latest = b } },
-            onComplete = { b ->
-                synchronized(lock) {
-                    latest = b
-                    done = true
-                    lock.notifyAll()
-                }
-            },
+            onUpdate = { b -> latest = b },
+            onComplete = { b -> latest = b },
             onProgress = onProgress,
         )
-        synchronized(lock) {
-            while (!done) {
-                try {
-                    lock.wait(200)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
+        while (streamer.loadNextBatchBlocking()) {
+            // 阻塞抽干
         }
         return latest
     }

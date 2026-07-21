@@ -127,7 +127,7 @@
         android:id="@+id/selectionBar"
         android:layout_width="0dp"
         android:layout_height="48dp"
-        android:background="@color/primary_soft"
+        android:background="?attr/colorAccentSoft"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingHorizontal="4dp"
@@ -164,7 +164,7 @@
             android:gravity="center"
             android:paddingHorizontal="10dp"
             android:text="@string/select_all"
-            android:textColor="@color/primary"
+            android:textColor="?attr/colorPrimary"
             android:textSize="13sp"
             android:textStyle="bold" />
 
@@ -176,7 +176,7 @@
             android:gravity="center"
             android:paddingHorizontal="10dp"
             android:text="@string/move_book"
-            android:textColor="@color/primary"
+            android:textColor="?attr/colorPrimary"
             android:textSize="13sp"
             android:textStyle="bold" />
 
@@ -256,7 +256,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:clipToPadding="false"
-                android:padding="12dp" />
+                android:paddingTop="0dp"
+                android:paddingBottom="8dp"
+                android:scrollbars="vertical" />
 
             <TextView
                 android:id="@+id/tvEmpty"

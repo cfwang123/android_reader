@@ -8,32 +8,38 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 
 | Area | Capabilities |
 |------|----------------|
-| **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore |
-| **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then keep loading |
+| **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history |
+| **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then keep loading on demand |
+| **MOBI manga** | One image at a time (ignore text), pinch-zoom, side-tap / swipe; image-only books open in manga mode automatically |
 | **PDF** | Continuous/single page, zoom, crop, fast scroll, TOC, in-book links, TTS, scan OCR, page-range audio export |
 | **TTS / export** | System speech, sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
 | **OCR** | Gallery or camera; runs fully on device; scanned PDFs can be recognized |
-| **Other** | Portrait / landscape / auto; fullscreen; app language; keep screen on / idle timeout |
+| **Other** | UI color themes (16); portrait / landscape / auto; fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
 
 ### Bookshelf
 
 - Import files or folders; bind a folder (browse only, no copy)
+- List style: compact rows, multi-select checkbox on the right
 - Multi-select: move / remove (does not delete source files)
-- Reading history; progress and bookmarks are remembered
+- **Reading history** with correct format labels (TXT / PDF / EPUB / MOBI…)
+- Progress and bookmarks are remembered
+- Long-press → **Details** (name, path, format, size, progress, last read, …)
 - **Backup / import** shelves and progress (local only)
 - Settings → **Check for updates** (download install from the release page)
+- Settings → **Appearance → Color theme** (16 skins for chrome UI; reading page colors stay separate)
 - Overflow: text-to-speech, OCR
 
 ### E-book reading (TXT / EPUB / MOBI)
 
-- **Open**: large books paint the first screen first, then continue loading with a progress hint
-- **Themes**: default / white / green / blue / purple / sepia / night / **custom background**
-- **Fonts**: default / sans / serif / mono; **install your own font files** (long-press to remove); size and spacing
+- **Open**: large books paint the first screen first, then load more on demand (near end / jump); restore position without flashing page 1
+- **Progress**: EPUB/MOBI show **chapter n/m + within-chapter %**; TXT shows percentage
+- **Reading style**: background textures / solid color / imported image; text color presets + custom HSV; size and spacing; install custom fonts (long-press to remove); system default font (no bundled commercial typeface)
 - **TXT**: auto or manual encoding; simplified↔traditional Chinese
-- **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; tap image → gallery
-- **TOC / bookmarks / jump**; progress, battery, clock in the title bar
+- **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; long-press image → gallery
+- **MOBI manga mode** (Style → View mode): ignore body text, one image at a time, pinch-zoom, side-tap or swipe; progress **image n / total**; **image-only MOBI auto-enters manga mode**
+- **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter
 - **In-book search**: live results, tap to jump
-- **Gestures**: side-tap page turn, scroll; back can stop TTS only
+- **Gestures**: side-tap page turn, scroll; **volume keys** page turn (default on); back can stop TTS only
 - **TTS**: sentence highlight; lock-screen / background continue (below); sleep timer
 - **Export speech**: full book or line range; MP3 / M4A / WAV + bitrate
 
@@ -44,7 +50,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **TOC** prepared in the background after open
 - **Links**: page jump; external links need confirm; back / forward
 - Select text when available; **OCR scanned pages** (page range, cancelable)
-- **TTS / export** after text or OCR; export by page range
+- **TTS / export** after text or OCR; continuous mode highlight follows scroll; export by page range
 - Side-tap page turn; center-tap opens the menu
 
 ### TTS & export
@@ -54,7 +60,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 | System TTS | Engine, language, voice, rate, highlight, sleep timer |
 | Continuity | Prepares the next sentences to reduce gaps |
 | Lock-screen | See below |
-| Export | Build audio in chunks, then merge; prefer MP3, else M4A / WAV |
+| Export | Build audio in chunks, then merge; prefer MP3, else M4A / WAV; live progress dialog |
 | Bitrate | 32–192 kbps for MP3/M4A |
 | Standalone | Shelf ⋮ → Text to speech |
 
@@ -164,7 +170,11 @@ Auto-detect common encodings, or set encoding in the reader.
 
 ### EPUB / MOBI slow or incomplete styling
 
-Large books show the first screen first. Only common styling is supported; complex layouts/tables may not match the desktop reader. DRM books will not open.
+Large books show the first screen first, then load more on demand. Only common styling is supported; complex layouts/tables may not match the desktop reader. DRM books will not open.
+
+### MOBI is only images / comic
+
+Use **Style → Manga mode**, or open an image-only MOBI (auto manga). Progress is image n / total.
 
 ### Scanned PDF has no text
 
@@ -182,6 +192,18 @@ Some emulators or non-64-bit devices fall back to M4A.
 
 PDF needs real links; EPUB needs links in the book. Use the TOC panel for plain-text contents.
 
+## License
+
+```
+MIT License
+Copyright (c) 2026 whj
+```
+
+Full text: [LICENSE](LICENSE).
+
+- **Covered by MIT**: this project’s original Kotlin/Java source, layouts, and docs by the copyright holder  
+- **Not covered by MIT**: AndroidX / Material, PdfBox-Android, TensorFlow Lite, LAME/TAndroidLame, OCR model weights, etc. — see the third-party notice at the end of `LICENSE`
+
 ## Notes
 
-Personal/learning prototype. TTS uses the system engine; OCR never uploads images. Check third-party licenses if you redistribute.
+Personal/learning prototype. TTS uses the system engine; OCR never uploads images.

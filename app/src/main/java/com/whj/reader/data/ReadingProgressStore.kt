@@ -14,11 +14,15 @@ object ReadingProgressStore {
 
     data class Progress(
         val lastOpened: Long,
-        /** 0-based：TXT 为段落索引，PDF 为页码 */
+        /** 0-based：TXT 为段落索引，PDF 为页码；漫画模式为图片索引 */
         val position: Int,
-        /** 总量：TXT 段数，PDF 页数；未知为 0 */
+        /** 总量：TXT 段数，PDF 页数，漫画为图片数；未知为 0 */
         val total: Int,
         val kind: Kind,
+        /**
+         * 展示用扩展名（含点，如 `.mobi`），解决 content URI 无后缀时历史列表误标成 .txt。
+         */
+        val fileExt: String = "",
     ) {
         /** 0–100 进度百分比 */
         fun percent(): Int {
@@ -34,20 +38,23 @@ object ReadingProgressStore {
 
     private fun key(uri: String) = "p_${uri.hashCode()}"
 
+    private fun parseProgress(o: JSONObject): Progress =
+        Progress(
+            lastOpened = o.optLong("lastOpened", 0L),
+            position = o.optInt("position", 0).coerceAtLeast(0),
+            total = o.optInt("total", 0).coerceAtLeast(0),
+            kind = when (o.optString("kind", "TXT").uppercase()) {
+                "PDF" -> Kind.PDF
+                else -> Kind.TXT
+            },
+            fileExt = o.optString("fileExt", "").orEmpty(),
+        )
+
     fun get(ctx: Context, uri: String): Progress? {
         if (uri.isBlank()) return null
         val raw = prefs(ctx).getString(key(uri), null) ?: return null
         return runCatching {
-            val o = JSONObject(raw)
-            Progress(
-                lastOpened = o.optLong("lastOpened", 0L),
-                position = o.optInt("position", 0).coerceAtLeast(0),
-                total = o.optInt("total", 0).coerceAtLeast(0),
-                kind = when (o.optString("kind", "TXT").uppercase()) {
-                    "PDF" -> Kind.PDF
-                    else -> Kind.TXT
-                },
-            )
+            parseProgress(JSONObject(raw))
         }.getOrNull()
     }
 
@@ -56,8 +63,18 @@ object ReadingProgressStore {
         prefs(ctx).edit().remove(key(uri)).apply()
     }
 
-    fun saveTxt(ctx: Context, uri: String, paragraphIndex: Int, totalParagraphs: Int) {
+    fun saveTxt(
+        ctx: Context,
+        uri: String,
+        paragraphIndex: Int,
+        totalParagraphs: Int,
+        fileExt: String? = null,
+    ) {
         if (uri.isBlank()) return
+        val prev = get(ctx, uri)
+        val ext = fileExt?.takeIf { it.isNotBlank() }
+            ?: prev?.fileExt?.takeIf { it.isNotBlank() }
+            ?: BookFileType.extensionOf(uri).orEmpty()
         write(
             ctx,
             uri,
@@ -66,6 +83,7 @@ object ReadingProgressStore {
                 position = paragraphIndex.coerceAtLeast(0),
                 total = totalParagraphs.coerceAtLeast(0),
                 kind = Kind.TXT,
+                fileExt = ext,
             ),
         )
     }
@@ -76,6 +94,7 @@ object ReadingProgressStore {
         if (pages > 0) {
             ShelfFileMetaStore.setPdfPageCount(ctx, uri, pages)
         }
+        val prev = get(ctx, uri)
         write(
             ctx,
             uri,
@@ -84,6 +103,7 @@ object ReadingProgressStore {
                 position = pageIndex.coerceAtLeast(0),
                 total = pages,
                 kind = Kind.PDF,
+                fileExt = prev?.fileExt?.takeIf { it.isNotBlank() } ?: ".pdf",
             ),
         )
     }
@@ -95,6 +115,7 @@ object ReadingProgressStore {
             .put("total", p.total)
             .put("kind", p.kind.name)
             .put("uri", uri)
+            .put("fileExt", p.fileExt)
         prefs(ctx).edit().putString(key(uri), o.toString()).apply()
     }
 
@@ -121,16 +142,7 @@ object ReadingProgressStore {
                 val o = JSONObject(value)
                 val uri = o.optString("uri", "")
                 if (uri.isBlank()) return@runCatching
-                val p = Progress(
-                    lastOpened = o.optLong("lastOpened", 0L),
-                    position = o.optInt("position", 0).coerceAtLeast(0),
-                    total = o.optInt("total", 0).coerceAtLeast(0),
-                    kind = when (o.optString("kind", "TXT").uppercase()) {
-                        "PDF" -> Kind.PDF
-                        else -> Kind.TXT
-                    },
-                )
-                out.add(uri to p)
+                out.add(uri to parseProgress(o))
             }
         }
         return out
@@ -147,6 +159,7 @@ object ReadingProgressStore {
                 .put("total", p.total)
                 .put("kind", p.kind.name)
                 .put("uri", uri)
+                .put("fileExt", p.fileExt)
             ed.putString(key(uri), o.toString())
         }
         ed.apply()
