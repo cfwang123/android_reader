@@ -164,7 +164,7 @@ class ImageGalleryActivity : AppCompatActivity() {
 
     private fun maxSide(): Int {
         val dm = resources.displayMetrics
-        // 解码边长：屏长边 * 2，便于双击放大仍清晰
+        // 解码边长：屏长边 * 2，便于双指放大仍清晰
         return (maxOf(dm.widthPixels, dm.heightPixels) * 2).coerceAtLeast(1080)
     }
 

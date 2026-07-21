@@ -346,7 +346,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             ready = false
             statusMessage = str(R.string.tts_init_failed)
             Log.e(TAG, "all TTS engines failed")
-            listener?.onError(statusMessage)
+            // 不弹 Toast：状态栏/重试按钮已提示，避免反复 reinit 刷屏
             finishSwitchCallback(false)
             notifyState()
             return
@@ -976,7 +976,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 reinit()
             }
             statusMessage = str(R.string.tts_waiting)
-            listener?.onError(str(R.string.tts_initializing))
+            // 初始化中不弹 Toast，避免连点刷屏
             notifyState()
             return
         }
@@ -1314,7 +1314,9 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private fun speakCurrent(flush: Boolean = true) {
         val engine = tts
         if (engine == null || !ready) {
-            listener?.onError(str(R.string.tts_not_ready))
+            // 未就绪：只更新面板状态，不 Toast
+            statusMessage = str(R.string.tts_not_ready)
+            notifyState()
             return
         }
         if (flush) {

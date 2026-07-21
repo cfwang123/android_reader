@@ -209,18 +209,28 @@ enum class ReadTheme {
 }
 
 data class ReadStyle(
+    /** 兼容旧版；界面已改为纹理 + 字色，夜间快捷仍可能写 NIGHT */
     val theme: ReadTheme = ReadTheme.DEFAULT,
     val fontSizeSp: Float = 18f,
     val lineSpacingMult: Float = 1.4f,
     val paraSpacingDp: Int = 8,
     val letterSpacing: Float = 0f,
     /**
-     * 系统字体预设 id：default / sans / serif / mono
+     * 字体 id：default / sans / serif / mono，或 custom:&lt;uuid&gt;（已安装 TTF/OTF）
      * @see com.whj.reader.util.ReaderFonts
      */
     val fontFamily: String = "default",
-    /** [ReadTheme.CUSTOM] 时的背景 ARGB */
-    val customBgColor: Int = 0xFFFFFFFF.toInt(),
+    /** 无纹理/无自定义图时的纯色背景 */
+    val customBgColor: Int = 0xFFF7F4ED.toInt(),
+    /**
+     * 背景：空=纯色 [customBgColor]；预设纹理 id；[BgTextures.IMPORT]=导入图
+     * @see com.whj.reader.util.BgTextures
+     */
+    val bgTextureId: String = "",
+    /** 正文颜色 ARGB */
+    val textColor: Int = 0xFF2C2C2C.toInt(),
+    /** 导入背景图文件名（位于 app filesDir/bg/），仅 [bgTextureId]=import 时有效 */
+    val customBgImageFile: String = "",
 )
 
 /** 阅读页屏幕常亮 */

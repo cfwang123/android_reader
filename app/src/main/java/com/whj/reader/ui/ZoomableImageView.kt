@@ -19,7 +19,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * 单图查看：双指缩放、单指平移/惯性、双击缩放切换。
+ * 单图查看：双指缩放、单指平移/惯性（无双击放大）。
  * 未放大时横向滑动 / fling 回调 [onSwipePage]（上一张/下一张）。
  * 侧边轻点 [onSideTap]（0=左 2=右）；中心轻点 [onCenterTap]。
  */
@@ -88,39 +88,32 @@ class ZoomableImageView @JvmOverloads constructor(
                 }
             }
         },
-    )
+    ).also {
+        // 关闭双击拖拽缩放（Quick Scale）
+        it.isQuickScaleEnabled = false
+    }
 
     /**
-     * 仅处理双击缩放、中心单击（确认后）。
-     * **侧边翻页在 ACTION_UP 里立刻处理**，绝不走 onSingleTapConfirmed（双击等待 ~300ms）。
+     * 中心单击；侧边翻页在 ACTION_UP 立刻处理。
+     * 不启用双击放大（与 PDF ZoomableFrameLayout 一致）。
      */
     private val gestureDetector = GestureDetector(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
 
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                abortFling()
-                val target = if (currentScale < minScale * 1.4f) {
-                    min(minScale * 2.5f, maxScale)
-                } else {
-                    minScale
-                }
-                val factor = target / currentScale.coerceAtLeast(0.001f)
-                currentScale = target
-                transX = e.x - (e.x - transX) * factor
-                transY = e.y - (e.y - transY) * factor
-                clampTranslation()
-                applyMatrix()
-                invalidate()
+            override fun onDoubleTap(e: MotionEvent): Boolean = false
+
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                // 中心立即响应，不等 double-tap 超时
+                if (isSideZone(e.x)) return false
+                onCenterTap?.invoke()
                 return true
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                // 侧边已在 UP 处理；中心等双击确认后再响应
-                if (isSideZone(e.x)) return true
-                onCenterTap?.invoke()
-                return true
+                // 已在 onSingleTapUp 处理
+                return false
             }
         },
     ).also {

@@ -23,6 +23,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
 import android.view.ActionMode
+import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -62,6 +63,7 @@ import com.whj.reader.tts.TtsExportHelper
 import com.whj.reader.tts.TtsManager
 import com.whj.reader.ui.PdfPageAdapter
 import com.whj.reader.ui.PdfPageSurface
+import com.whj.reader.ui.TtsExportProgressDialog
 import com.whj.reader.util.KeepScreenController
 import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.OrientationHelper
@@ -229,6 +231,7 @@ class PdfReadingActivity : AppCompatActivity() {
     private lateinit var pdfSettings: PanelPdfSettingsBinding
     private lateinit var exportPanel: PanelPdfTtsExportBinding
     private var ttsExport: TtsExportHelper? = null
+    private var exportProgressDlg: TtsExportProgressDialog? = null
 
     private var fileKey: String = ""
     private var displayTitle: String = ""
@@ -553,6 +556,7 @@ class PdfReadingActivity : AppCompatActivity() {
         ocrJob = null
         pendingAfterExtract = null
         sleepTimer.cancel()
+        dismissExportProgressDlg()
         ttsExport?.shutdown()
         ttsExport = null
         if (::tts.isInitialized) {
@@ -794,7 +798,10 @@ class PdfReadingActivity : AppCompatActivity() {
 
         override fun onError(message: String) {
             runOnUiThread {
-                if (!isFinishing && !isDestroyed) Toasts.show(this@PdfReadingActivity, message)
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                // 初始化失败/进行中：仅 UI 状态，不 Toast
+                if (isTtsInitNoise(message)) return@runOnUiThread
+                Toasts.show(this@PdfReadingActivity, message)
             }
         }
 
@@ -2417,11 +2424,32 @@ class PdfReadingActivity : AppCompatActivity() {
     }
 
     /**
+     * 音量键翻页：减=向下/下一页，加=向上/上一页（默认开启）。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (AppSettings.volumeKeyPageTurn(this) &&
+            event.action == KeyEvent.ACTION_DOWN &&
+            event.repeatCount == 0
+        ) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    pageTurn(forward = true)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    pageTurn(forward = false)
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /**
      * 左点 = 向上翻，右点 = 向下翻；无动画。
      * 连续模式：页高 > 屏高则滚 80% 屏高，否则滚一页实际高度。
      * 单页模式：仍按页切换。
-     */
-    /**
+     *
      * @param closeMenu 为 false 时保持底部菜单（上一页/下一页按钮）
      */
     private fun pageTurn(forward: Boolean, closeMenu: Boolean = true) {
@@ -2816,6 +2844,10 @@ class PdfReadingActivity : AppCompatActivity() {
             AppSettings.setTtsExportBitrateKbps(this, kbps)
             val helper = TtsExportHelper(this).also { ttsExport = it }
             setPdfExportProgressUi(active = true, done = 0, total = 1)
+            val dlg = TtsExportProgressDialog(this) {
+                helper.cancel()
+            }.also { exportProgressDlg = it }
+            dlg.show()
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             helper.export(
                 text = text,
@@ -2823,23 +2855,36 @@ class PdfReadingActivity : AppCompatActivity() {
                 filePrefix = "pdf",
                 bitRateKbps = kbps,
                 listener = object : TtsExportHelper.Listener {
-                    override fun onProgress(done: Int, total: Int, phase: String) {
+                    override fun onProgress(
+                        done: Int,
+                        total: Int,
+                        phase: String,
+                        doneChars: Int,
+                        totalChars: Int,
+                        partFraction: Float,
+                    ) {
                         if (isFinishing || isDestroyed) return
+                        val t = total.coerceAtLeast(1)
+                        val cur = if (phase == "synth" && done < t) done + 1 else done.coerceAtMost(t)
                         val label = when (phase) {
+                            "prepare", "init" -> getString(R.string.tts_export_phase_prepare)
                             "encode" -> getString(R.string.tts_export_encoding)
-                            "merge" -> getString(R.string.tts_export_progress, total, total)
-                            else -> getString(
-                                R.string.tts_export_progress,
-                                done.coerceAtMost(total),
-                                total,
-                            )
+                            "merge" -> getString(R.string.tts_export_phase_merge)
+                            else -> getString(R.string.tts_export_progress, cur, t)
                         }
-                        setPdfExportProgressUi(true, done, total.coerceAtLeast(1), label)
+                        val pct = pdfExportProgressPercent(
+                            done, t, phase, doneChars, totalChars, partFraction,
+                        )
+                        setPdfExportProgressUi(true, pct, 100, label)
+                        exportProgressDlg?.update(
+                            done, total, phase, doneChars, totalChars, partFraction,
+                        )
                     }
 
                     override fun onSuccess(file: File) {
                         if (isFinishing || isDestroyed) return
                         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        dismissExportProgressDlg()
                         setPdfExportProgressUi(false)
                         Toasts.show(
                             this@PdfReadingActivity,
@@ -2852,6 +2897,7 @@ class PdfReadingActivity : AppCompatActivity() {
                     override fun onError(message: String) {
                         if (isFinishing || isDestroyed) return
                         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        dismissExportProgressDlg()
                         setPdfExportProgressUi(false)
                         Toasts.show(
                             this@PdfReadingActivity,
@@ -2863,11 +2909,42 @@ class PdfReadingActivity : AppCompatActivity() {
                     override fun onCancelled() {
                         if (isFinishing || isDestroyed) return
                         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        dismissExportProgressDlg()
                         setPdfExportProgressUi(false)
                         Toasts.show(this@PdfReadingActivity, R.string.tts_export_cancelled)
                     }
                 },
             )
+        }
+    }
+
+    private fun dismissExportProgressDlg() {
+        exportProgressDlg?.dismiss()
+        exportProgressDlg = null
+    }
+
+    private fun pdfExportProgressPercent(
+        done: Int,
+        total: Int,
+        phase: String,
+        doneChars: Int,
+        totalChars: Int,
+        partFraction: Float,
+    ): Int {
+        return when (phase) {
+            "prepare", "init" -> 1
+            "merge" -> 94
+            "encode" -> 98
+            else -> {
+                if (totalChars > 0) {
+                    ((doneChars.toFloat() / totalChars) * 92f).toInt().coerceIn(0, 92)
+                } else {
+                    val t = total.coerceAtLeast(1)
+                    val base = (done.toFloat() / t) * 92f
+                    val within = if (done < t) partFraction.coerceIn(0f, 1f) * (92f / t) else 0f
+                    (base + within).toInt().coerceIn(0, 92)
+                }
+            }
         }
     }
 
@@ -3543,7 +3620,8 @@ class PdfReadingActivity : AppCompatActivity() {
         withTtsNotificationPermission {
             if (!tts.isReady()) {
                 tts.reinit()
-                Toasts.show(this, R.string.tts_not_ready)
+                // 状态仅显示在 TTS 面板，不 Toast
+                updateTtsUi(tts.currentState())
             }
             val snap = tts.currentState()
             if (snap.state == TtsManager.State.IDLE) {
@@ -3681,7 +3759,7 @@ class PdfReadingActivity : AppCompatActivity() {
         applyChromeVisibility()
         if (!tts.isReady()) {
             tts.reinit()
-            Toasts.show(this, R.string.tts_not_ready)
+            updateTtsUi(tts.currentState())
         }
         if (mapped != null) {
             tts.playFromParagraphOffset(mapped.first, mapped.second)
@@ -3818,6 +3896,18 @@ class PdfReadingActivity : AppCompatActivity() {
                 tts.playFrom(snap.paragraphIndex, snap.sentenceIndex)
             }
         }
+    }
+
+    /** TTS 初始化/未就绪：不弹 Toast（状态文案已在 TTS 面板显示） */
+    private fun isTtsInitNoise(message: String): Boolean {
+        if (message.isBlank()) return false
+        return message == getString(R.string.tts_init_failed) ||
+            message == getString(R.string.tts_initializing) ||
+            message == getString(R.string.tts_init_pending) ||
+            message == getString(R.string.tts_still_not_ready) ||
+            message == getString(R.string.tts_not_ready) ||
+            message == getString(R.string.tts_reinit) ||
+            message.startsWith(getString(R.string.tts_init_failed))
     }
 
     private fun updateTtsUi(snapshot: TtsManager.Snapshot) {

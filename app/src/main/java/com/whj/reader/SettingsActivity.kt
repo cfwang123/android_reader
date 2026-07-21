@@ -14,18 +14,35 @@ import com.whj.reader.databinding.ActivitySettingsBinding
 import com.whj.reader.model.AppLanguage
 import com.whj.reader.model.EdgeSwipeAction
 import com.whj.reader.model.KeepScreenMode
+import com.whj.reader.util.AppUpdate
 import com.whj.reader.util.Toasts
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
+    private var pendingInstallAfterPermission: java.io.File? = null
+    private var downloadCancel: AtomicBoolean? = null
 
     private val importLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) confirmAndImport(uri)
+    }
+
+    /** 未知来源安装权限返回后继续安装已下载 APK */
+    private val installPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val file = pendingInstallAfterPermission
+        pendingInstallAfterPermission = null
+        if (file != null && file.isFile && AppUpdate.canInstallPackages(this)) {
+            launchInstall(file)
+        } else if (file != null) {
+            Toasts.show(this, R.string.update_cancelled)
+        }
     }
 
     /**
@@ -209,6 +226,14 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
+        binding.switchVolumeKeyPage.isChecked = AppSettings.volumeKeyPageTurn(this)
+        binding.switchVolumeKeyPage.setOnCheckedChangeListener { _, checked ->
+            AppSettings.setVolumeKeyPageTurn(this, checked)
+        }
+        binding.rowVolumeKeyPage.setOnClickListener {
+            binding.switchVolumeKeyPage.isChecked = !binding.switchVolumeKeyPage.isChecked
+        }
+
         refreshEdgeLabels()
         binding.rowLeftEdge.setOnClickListener {
             pickEdgeAction(
@@ -234,6 +259,145 @@ class SettingsActivity : AppCompatActivity() {
                 ),
             )
         }
+
+        binding.tvAppVersion.text =
+            getString(R.string.settings_app_version, AppUpdate.currentVersionName())
+        binding.btnCheckUpdate.setOnClickListener { checkForUpdate() }
+    }
+
+    private fun checkForUpdate() {
+        binding.btnCheckUpdate.isEnabled = false
+        Toasts.show(this, R.string.update_checking)
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { AppUpdate.checkLatest() }
+            binding.btnCheckUpdate.isEnabled = true
+            if (isFinishing || isDestroyed) return@launch
+            when (result) {
+                is AppUpdate.CheckResult.UpToDate -> {
+                    Toasts.show(
+                        this@SettingsActivity,
+                        getString(R.string.update_up_to_date, result.latest),
+                    )
+                }
+                is AppUpdate.CheckResult.UpdateAvailable -> {
+                    showUpdateDialog(result.info)
+                }
+                is AppUpdate.CheckResult.Error -> {
+                    Toasts.show(
+                        this@SettingsActivity,
+                        getString(R.string.update_check_fail, result.message),
+                        android.widget.Toast.LENGTH_LONG,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun showUpdateDialog(info: AppUpdate.ReleaseInfo) {
+        val notes = info.body.trim().ifBlank { "—" }.let { body ->
+            if (body.length > 1200) body.take(1200) + "…" else body
+        }
+        val sizeLabel = formatBytes(info.sizeBytes)
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.update_available_title, info.versionName))
+            .setMessage(
+                getString(
+                    R.string.update_available_msg,
+                    AppUpdate.currentVersionName(),
+                    info.versionName,
+                    sizeLabel,
+                    notes,
+                ),
+            )
+            .setPositiveButton(R.string.update_download) { _, _ ->
+                downloadAndInstall(info)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun downloadAndInstall(info: AppUpdate.ReleaseInfo) {
+        val cancel = AtomicBoolean(false)
+        downloadCancel = cancel
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.settings_check_update)
+            .setMessage(getString(R.string.update_downloading, 0))
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                cancel.set(true)
+            }
+            .setCancelable(false)
+            .create()
+        dialog.show()
+
+        lifecycleScope.launch {
+            val destDir = AppUpdate.updateCacheDir(this@SettingsActivity)
+            val result = withContext(Dispatchers.IO) {
+                AppUpdate.downloadApk(
+                    info = info,
+                    destDir = destDir,
+                    cancel = cancel,
+                ) { pct ->
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && dialog.isShowing) {
+                            dialog.setMessage(getString(R.string.update_downloading, pct))
+                        }
+                    }
+                }
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (dialog.isShowing) dialog.dismiss()
+            downloadCancel = null
+            result.onSuccess { file ->
+                ensureInstallPermissionThenInstall(file)
+            }.onFailure { e ->
+                if (e is InterruptedException || cancel.get()) {
+                    Toasts.show(this@SettingsActivity, R.string.update_cancelled)
+                } else {
+                    Toasts.show(
+                        this@SettingsActivity,
+                        getString(R.string.update_download_fail, e.message ?: ""),
+                        android.widget.Toast.LENGTH_LONG,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun ensureInstallPermissionThenInstall(apk: java.io.File) {
+        if (AppUpdate.canInstallPackages(this)) {
+            launchInstall(apk)
+            return
+        }
+        pendingInstallAfterPermission = apk
+        AlertDialog.Builder(this)
+            .setTitle(R.string.update_install_permission_title)
+            .setMessage(R.string.update_install_permission_msg)
+            .setPositiveButton(R.string.update_go_settings) { _, _ ->
+                installPermissionLauncher.launch(AppUpdate.installPermissionSettingsIntent(this))
+            }
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                pendingInstallAfterPermission = null
+            }
+            .show()
+    }
+
+    private fun launchInstall(apk: java.io.File) {
+        try {
+            Toasts.show(this, R.string.update_installing)
+            AppUpdate.installApk(this, apk)
+        } catch (e: Exception) {
+            Toasts.show(
+                this,
+                getString(R.string.update_download_fail, e.message ?: ""),
+                android.widget.Toast.LENGTH_LONG,
+            )
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes <= 0L) return "—"
+        val mb = bytes / (1024.0 * 1024.0)
+        return if (mb >= 1) String.format("%.1f MB", mb) else "${bytes / 1024} KB"
     }
 
     private fun exportData() {

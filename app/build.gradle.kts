@@ -65,6 +65,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     // 模型从 assets 内存映射，勿再压缩

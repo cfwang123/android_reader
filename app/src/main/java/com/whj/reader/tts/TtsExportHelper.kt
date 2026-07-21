@@ -25,7 +25,22 @@ class TtsExportHelper(private val context: Context) {
     enum class Format { MP3, M4A, WAV }
 
     interface Listener {
-        fun onProgress(done: Int, total: Int, phase: String)
+        /**
+         * @param done 已完成段数（synth 时为已完成段；当前段合成中仍为已完成数）
+         * @param total 总段数
+         * @param phase prepare / synth / merge / encode
+         * @param doneChars 已合成字数（含当前段估算）
+         * @param totalChars 全文总字数
+         * @param partFraction 当前段内进度 0..1（仅 synth 有效）
+         */
+        fun onProgress(
+            done: Int,
+            total: Int,
+            phase: String,
+            doneChars: Int = 0,
+            totalChars: Int = 0,
+            partFraction: Float = 0f,
+        )
         fun onSuccess(file: File)
         fun onError(message: String)
         fun onCancelled()
@@ -105,8 +120,45 @@ class TtsExportHelper(private val context: Context) {
     private var waitingUtterance: String? = null
     private var waitingPart: File? = null
     private var advancing = false
+    private var totalChars: Int = 0
+    private var doneChars: Int = 0
+
+    private fun reportProgress(
+        done: Int,
+        total: Int,
+        phase: String,
+        partFraction: Float = 0f,
+        softDoneChars: Int = -1,
+    ) {
+        val chars = if (softDoneChars >= 0) softDoneChars else doneChars
+        // 始终主线程回调，避免 UI 不刷新
+        main.post {
+            if (!working && phase != "encode" && phase != "merge") return@post
+            listenerRef?.onProgress(
+                done,
+                total,
+                phase,
+                chars.coerceIn(0, totalChars.coerceAtLeast(chars)),
+                totalChars,
+                partFraction.coerceIn(0f, 1f),
+            )
+        }
+    }
+
+    /** 当前段合成中的软进度（字数 = 已完成 + 当前段×fraction） */
+    private fun reportSynthSoft(partFraction: Float) {
+        val total = chunks.size.coerceAtLeast(1)
+        val i = chunkIndex.coerceIn(0, total)
+        val curLen = chunks.getOrNull(i)?.length ?: 0
+        val soft = (doneChars + (curLen * partFraction.coerceIn(0f, 0.99f))).toInt()
+            .coerceAtMost(totalChars.coerceAtLeast(1))
+        reportProgress(i, total, "synth", partFraction, soft)
+    }
 
     private fun bindEngine(body: String) {
+        totalChars = body.length
+        doneChars = 0
+        reportProgress(0, 1, "prepare")
         val enginePkg = AppSettings.ttsEnginePackage(context)?.takeIf { it.isNotBlank() }
         val app = context.applicationContext
         val initListener = TextToSpeech.OnInitListener { status ->
@@ -179,6 +231,8 @@ class TtsExportHelper(private val context: Context) {
 
     private fun startChunks(body: String) {
         chunks = chunkText(body, MAX_CHUNK)
+        totalChars = body.length
+        doneChars = 0
         Log.i(TAG, "chunks=${chunks.size} totalChars=${body.length}")
         if (chunks.isEmpty()) {
             finishError("empty chunks")
@@ -189,6 +243,7 @@ class TtsExportHelper(private val context: Context) {
         }
         partFiles = mutableListOf()
         chunkIndex = 0
+        reportProgress(0, chunks.size, "synth")
         synthesizeNext()
     }
 
@@ -211,7 +266,7 @@ class TtsExportHelper(private val context: Context) {
         val total = chunks.size
         val i = chunkIndex
         val text = chunks[i]
-        listener.onProgress(i, total, "synth")
+        reportProgress(i, total, "synth")
         val part = File(dir, String.format(Locale.US, "part_%03d.wav", i))
         if (part.exists()) part.delete()
         val id = "exp_${i}_${System.nanoTime()}"
@@ -243,35 +298,53 @@ class TtsExportHelper(private val context: Context) {
         val startAt = SystemClock.uptimeMillis()
         // 按时长粗估：~4 字/秒 + 余量，最少 20s，最多 180s
         val timeoutMs = ((charCount / 3.5f) * 1000f + 15_000f).toLong().coerceIn(20_000L, 180_000L)
+        // 段内进度时间尺度：约 4 字/秒，上限 timeout 的 85%
+        val expectMs = ((charCount / 4f) * 1000f).toLong().coerceIn(2_000L, (timeoutMs * 0.85f).toLong())
         var lastSize = -1L
         var stableTicks = 0
+        var peakSize = 0L
         val watch = object : Runnable {
             override fun run() {
                 if (waitingUtterance != id || cancelled.get()) return
-                if (part.exists() && part.length() >= 44L) {
+                val elapsed = SystemClock.uptimeMillis() - startAt
+                // 段内软进度：时间推进 + 文件增大
+                var frac = (elapsed.toFloat() / expectMs).coerceIn(0f, 0.92f)
+                if (part.exists()) {
                     val sz = part.length()
-                    if (sz == lastSize && sz > 44L) {
-                        stableTicks++
-                        if (stableTicks >= 2) {
-                            Log.i(TAG, "part ready by poll size=$sz id=$id")
-                            tryAdvanceFromFile(id)
-                            return
+                    if (sz > peakSize) peakSize = sz
+                    // 文件在写：按体积粗估（WAV 头后每秒约 32k～176k 字节，用相对增长）
+                    if (peakSize > 44L) {
+                        val bySize = ((peakSize - 44L).toFloat() / (charCount * 200f + 1f))
+                            .coerceIn(0f, 0.95f)
+                        frac = maxOf(frac, bySize)
+                    }
+                    if (sz >= 44L) {
+                        if (sz == lastSize && sz > 44L) {
+                            stableTicks++
+                            if (stableTicks >= 2) {
+                                Log.i(TAG, "part ready by poll size=$sz id=$id")
+                                tryAdvanceFromFile(id)
+                                return
+                            }
+                        } else {
+                            stableTicks = 0
+                            lastSize = sz
                         }
-                    } else {
-                        stableTicks = 0
-                        lastSize = sz
                     }
                 }
-                if (SystemClock.uptimeMillis() - startAt > timeoutMs) {
+                reportSynthSoft(frac)
+                if (elapsed > timeoutMs) {
                     Log.e(TAG, "part timeout id=$id exists=${part.exists()} size=${part.length()}")
                     failCurrent("timeout part $chunkIndex")
                     return
                 }
-                main.postDelayed(this, 350L)
+                main.postDelayed(this, 300L)
             }
         }
         partWatchRunnable = watch
-        main.postDelayed(watch, 500L)
+        // 立刻刷一次进度，避免首段长时间 0%
+        reportSynthSoft(0.02f)
+        main.postDelayed(watch, 300L)
     }
 
     private fun clearPartWatch() {
@@ -310,9 +383,11 @@ class TtsExportHelper(private val context: Context) {
             finishCancelled()
             return
         }
+        // 本段算完成
+        doneChars = (doneChars + (chunks.getOrNull(chunkIndex)?.length ?: 0)).coerceAtMost(totalChars)
         partFiles.add(part)
         chunkIndex++
-        listenerRef?.onProgress(chunkIndex, chunks.size, "synth")
+        reportProgress(chunkIndex, chunks.size, "synth")
         // 下一段略延迟，避免引擎队列忙
         main.postDelayed({
             advancing = false
@@ -337,10 +412,11 @@ class TtsExportHelper(private val context: Context) {
                 finishError("no audio parts")
                 return
             }
+            doneChars = totalChars
             val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
             val outDir = File(context.getExternalFilesDir(null), "tts_export").also { it.mkdirs() }
             val merged = File(dir, "merged.wav")
-            listener.onProgress(chunks.size, chunks.size, "merge")
+            reportProgress(chunks.size, chunks.size, "merge")
             WavMerger.merge(partFiles, merged)
             val kbps = (aacBitRate / 1000).coerceIn(16, 320)
             val finalFile = when (outFormat) {
@@ -350,11 +426,11 @@ class TtsExportHelper(private val context: Context) {
                     dest
                 }
                 Format.MP3 -> {
-                    listener.onProgress(chunks.size, chunks.size, "encode")
+                    reportProgress(chunks.size, chunks.size, "encode")
                     encodePreferMp3(merged, outDir, prefix, stamp, kbps)
                 }
                 Format.M4A -> {
-                    listener.onProgress(chunks.size, chunks.size, "encode")
+                    reportProgress(chunks.size, chunks.size, "encode")
                     encodePreferM4a(merged, outDir, prefix, stamp, aacBitRate)
                 }
             }

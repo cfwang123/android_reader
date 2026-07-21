@@ -24,8 +24,8 @@ object TtsVoicePicker {
     ) {
         if (activity.isFinishing) return
         if (!tts.isReady()) {
+            // 未就绪：后台重试，状态在 TTS 面板显示，不 Toast
             tts.reinit()
-            Toasts.show(activity, R.string.tts_not_ready)
             return
         }
 

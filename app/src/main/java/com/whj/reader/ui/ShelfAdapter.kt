@@ -323,14 +323,8 @@ class ShelfAdapter(
             binding.tvTitle.text = entry.name.ifBlank {
                 fullFileName(entry.displayName, entry.name, entry.isPdf)
             }
-            // 搜索命中子目录文件时显示相对路径
-            val rel = entry.relativePath.trim()
-            if (rel.isNotEmpty() && rel != entry.name && rel.contains('/')) {
-                binding.tvPath.visibility = View.VISIBLE
-                binding.tvPath.text = rel
-            } else {
-                binding.tvPath.visibility = View.GONE
-            }
+            // 文件夹列表不显示第 2 行详细路径（relativePath 仍供搜索匹配）
+            binding.tvPath.visibility = View.GONE
             val (meta, pct) = resolveProgress(
                 uri = entry.uri,
                 displayName = entry.displayName,

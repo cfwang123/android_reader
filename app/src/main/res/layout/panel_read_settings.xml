@@ -1,17 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@color/white"
+    android:clipToPadding="false"
     android:elevation="8dp"
-    android:orientation="vertical"
-    android:padding="16dp">
+    android:fillViewport="false"
+    android:overScrollMode="ifContentScrolls"
+    android:scrollbars="vertical">
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="28dp">
+
+    <!-- 背景纹理 + 导入 -->
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingBottom="10dp"
-        android:text="@string/theme_section"
+        android:paddingBottom="8dp"
+        android:text="@string/bg_texture_section"
         android:textColor="@color/text_primary"
         android:textSize="14sp"
         android:textStyle="bold" />
@@ -22,118 +33,58 @@
         android:scrollbars="none">
 
         <LinearLayout
-            android:id="@+id/themeRow"
+            android:id="@+id/textureRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeDefault"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_default"
-                android:textSize="12sp" />
+    <!-- 背景纯色 -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:paddingBottom="8dp"
+        android:text="@string/bg_color_section"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp"
+        android:textStyle="bold" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeWhite"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:backgroundTint="#FFFFFF"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_white"
-                android:textColor="#222222"
-                android:textSize="12sp" />
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeCustom"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_custom"
-                android:textSize="12sp" />
+        <LinearLayout
+            android:id="@+id/bgColorRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeGreen"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:backgroundTint="@color/read_bg_green"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_green"
-                android:textColor="@color/read_text_green"
-                android:textSize="12sp" />
+    <!-- 字体颜色 -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:paddingBottom="8dp"
+        android:text="@string/text_color_section"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp"
+        android:textStyle="bold" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeBlue"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:backgroundTint="@color/read_bg_blue"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_blue"
-                android:textColor="@color/read_text_blue"
-                android:textSize="12sp" />
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemePurple"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:backgroundTint="@color/read_bg_purple"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_purple"
-                android:textColor="@color/read_text_purple"
-                android:textSize="12sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeSepia"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginEnd="8dp"
-                android:backgroundTint="@color/read_bg_sepia"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_sepia"
-                android:textColor="@color/read_text_sepia"
-                android:textSize="12sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/chipThemeNight"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:backgroundTint="@color/read_bg_night"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="@string/theme_night"
-                android:textColor="@color/read_text_night"
-                android:textSize="12sp" />
-        </LinearLayout>
+        <LinearLayout
+            android:id="@+id/textColorRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal" />
     </HorizontalScrollView>
 
     <!-- 字体 -->
@@ -199,10 +150,23 @@
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="wrap_content"
                 android:layout_height="36dp"
+                android:layout_marginEnd="8dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
                 android:text="@string/font_mono"
+                android:textSize="12sp" />
+
+            <!-- 动态自定义字体 chip 插在此与安装钮之间（代码注入） -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/chipFontInstall"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="@string/font_install"
                 android:textSize="12sp" />
         </LinearLayout>
     </HorizontalScrollView>
@@ -344,36 +308,5 @@
             android:textSize="13sp" />
     </LinearLayout>
 
-    <!-- 语速 -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
-
-        <TextView
-            android:layout_width="64dp"
-            android:layout_height="wrap_content"
-            android:text="@string/tts_rate"
-            android:textColor="@color/text_primary"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/seekTtsRate"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:max="20"
-            android:progress="10" />
-
-        <TextView
-            android:id="@+id/tvTtsRate"
-            android:layout_width="48dp"
-            android:layout_height="wrap_content"
-            android:gravity="end"
-            android:text="1.0x"
-            android:textColor="@color/text_secondary"
-            android:textSize="13sp" />
-    </LinearLayout>
 </LinearLayout>
+</androidx.core.widget.NestedScrollView>

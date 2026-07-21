@@ -11,12 +11,16 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.TypedValue
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
+import android.widget.LinearLayout
 import android.widget.SeekBar
+import com.google.android.material.button.MaterialButton
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -36,6 +40,7 @@ import com.whj.reader.data.BookFileType
 import com.whj.reader.data.BookmarkStore
 import com.whj.reader.data.BookshelfStore
 import com.whj.reader.data.ChineseConvert
+import com.whj.reader.data.CustomFontStore
 import com.whj.reader.data.ReadingProgressStore
 import com.whj.reader.data.BookLoader
 import com.whj.reader.data.LoadedBook
@@ -55,7 +60,10 @@ import com.whj.reader.tts.TtsManager
 import com.whj.reader.ui.ParagraphAdapter
 import com.whj.reader.ui.TocAdapter
 import com.whj.reader.ui.TocItem
+import com.whj.reader.ui.HsvColorPickerDialog
+import com.whj.reader.ui.TtsExportProgressDialog
 import com.whj.reader.ui.VirtualReaderView
+import com.whj.reader.util.BgTextures
 import com.whj.reader.util.KeepScreenController
 import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.OrientationHelper
@@ -88,12 +96,19 @@ class ReadingActivity : AppCompatActivity() {
     private lateinit var reader: VirtualReaderView
     private lateinit var tts: TtsManager
     private var ttsExport: TtsExportHelper? = null
+    private var exportProgressDlg: TtsExportProgressDialog? = null
 
     private var book: LoadedBook? = null
     private var bookStreamer: com.whj.reader.data.BookStreamer? = null
     /** 流式加载时待恢复的段落（内容够长后再滚） */
     private var pendingRestorePara: Int = -1
     private var style: ReadStyle = ReadStyle()
+    /** 设置面板上动态注入的自定义字体 chip（tag = font id） */
+    private val customFontChips = mutableListOf<MaterialButton>()
+    /** 背景纹理 chip（tag = texture id） */
+    private val textureChips = mutableListOf<MaterialButton>()
+    private val textColorSwatches = mutableListOf<View>()
+    private val bgColorSwatches = mutableListOf<View>()
     private var chromeVisible = false
     /** 用户通过「朗读」打开过 TTS 条；停止后关闭 */
     private var ttsBarOpen = false
@@ -162,6 +177,22 @@ class ReadingActivity : AppCompatActivity() {
         reader.scrollToParagraph(para)
         if (allowProgressSave) saveProgress(para)
         updateProgressLabel()
+    }
+
+    /** 安装自定义字体（TTF/OTF） */
+    private val installFontLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        installCustomFont(uri)
+    }
+
+    /** 导入阅读背景图 */
+    private val importBgImageLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        importBackgroundImage(uri)
     }
 
     /** 打开失败：重新选文件 */
@@ -503,6 +534,8 @@ class ReadingActivity : AppCompatActivity() {
         override fun onError(message: String) {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                // 初始化失败/进行中：仅 UI 状态，不 Toast
+                if (isTtsInitNoise(message)) return@runOnUiThread
                 Toasts.show(this@ReadingActivity, message)
             }
         }
@@ -515,6 +548,7 @@ class ReadingActivity : AppCompatActivity() {
         idleHandler.removeCallbacks(idleExitRunnable)
         if (::keepScreen.isInitialized) keepScreen.onDestroy()
         sleepTimer.cancel()
+        dismissExportProgressDlg()
         ttsExport?.shutdown()
         ttsExport = null
         if (::tts.isInitialized) {
@@ -868,6 +902,26 @@ class ReadingActivity : AppCompatActivity() {
         )
     }
 
+    /** 音量键翻页：减=下一页，加=上一页（默认开启） */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (AppSettings.volumeKeyPageTurn(this) &&
+            event.action == KeyEvent.ACTION_DOWN &&
+            event.repeatCount == 0
+        ) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    pageTurn(forward = true)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    pageTurn(forward = false)
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     /** 瞬时翻页：下翻末行顶置，上翻首行底置；第 1 行在标题栏下完整显示 */
     private fun pageTurn(forward: Boolean) {
         if (chromeVisible) hideChrome()
@@ -907,7 +961,8 @@ class ReadingActivity : AppCompatActivity() {
         readMenu.btnNextChapter.setOnClickListener { jumpChapter(1) }
         readMenu.menuStyle.setOnClickListener {
             hideChrome()
-            binding.settingsPanelContainer.isVisible = true
+            rebuildCustomFontChips()
+            openStyleSettingsPanel()
         }
         readMenu.menuPref.setOnClickListener {
             hideChrome()
@@ -949,8 +1004,7 @@ class ReadingActivity : AppCompatActivity() {
             // 不关菜单；抑制 applyStyle 重布局触发的滚动收栏
             ignoreScrollChromeHideUntilMs =
                 android.os.SystemClock.uptimeMillis() + 600L
-            val next = if (style.theme == ReadTheme.NIGHT) ReadTheme.DEFAULT else ReadTheme.NIGHT
-            setTheme(next)
+            toggleNightStyle()
         }
         readMenu.menuRead.setOnClickListener {
             // 关闭菜单，打开 TTS 条并朗读
@@ -960,7 +1014,8 @@ class ReadingActivity : AppCompatActivity() {
             withTtsNotificationPermission {
                 if (!tts.isReady()) {
                     tts.reinit()
-                    Toasts.show(this, R.string.tts_not_ready)
+                    // 状态仅显示在 TTS 面板，不 Toast
+                    updateTtsUi(tts.currentState())
                 }
                 val snap = tts.currentState()
                 if (snap.state == TtsManager.State.IDLE) {
@@ -1252,6 +1307,10 @@ class ReadingActivity : AppCompatActivity() {
         AppSettings.setTtsExportBitrateKbps(this, bitRateKbps)
         val helper = TtsExportHelper(this).also { ttsExport = it }
         setExportProgressUi(active = true, done = 0, total = 1)
+        val dlg = TtsExportProgressDialog(this) {
+            helper.cancel()
+        }.also { exportProgressDlg = it }
+        dlg.show()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         helper.export(
             text = text,
@@ -1259,40 +1318,101 @@ class ReadingActivity : AppCompatActivity() {
             filePrefix = "book",
             bitRateKbps = bitRateKbps,
             listener = object : TtsExportHelper.Listener {
-                override fun onProgress(done: Int, total: Int, phase: String) {
+                override fun onProgress(
+                    done: Int,
+                    total: Int,
+                    phase: String,
+                    doneChars: Int,
+                    totalChars: Int,
+                    partFraction: Float,
+                ) {
                     if (isFinishing || isDestroyed) return
+                    val t = total.coerceAtLeast(1)
+                    val cur = if (phase == "synth" && done < t) done + 1 else done.coerceAtMost(t)
                     val label = when (phase) {
+                        "prepare", "init" -> getString(R.string.tts_export_phase_prepare)
                         "encode" -> getString(R.string.tts_export_encoding)
-                        "merge" -> getString(R.string.tts_export_progress, total, total)
-                        else -> getString(R.string.tts_export_progress, done.coerceAtMost(total), total)
+                        "merge" -> getString(R.string.tts_export_phase_merge)
+                        else -> getString(R.string.tts_export_progress, cur, t)
                     }
-                    setExportProgressUi(active = true, done = done, total = total.coerceAtLeast(1), label = label)
+                    // 面板进度条：按字数 0–100，否则按段+段内
+                    val pct = progressPercent(done, t, phase, doneChars, totalChars, partFraction)
+                    setExportProgressUi(
+                        active = true,
+                        done = pct,
+                        total = 100,
+                        label = label,
+                    )
+                    exportProgressDlg?.update(
+                        done, total, phase, doneChars, totalChars, partFraction,
+                    )
                 }
 
                 override fun onSuccess(file: File) {
                     if (isFinishing || isDestroyed) return
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    dismissExportProgressDlg()
                     setExportProgressUi(active = false)
-                    // 若请求 MP3 却落到 m4a/wav，文件名可看出；成功 toast 显示实际文件名
-                    Toasts.show(this@ReadingActivity, getString(R.string.tts_export_ok, file.name), android.widget.Toast.LENGTH_LONG)
+                    Toasts.show(
+                        this@ReadingActivity,
+                        getString(R.string.tts_export_ok, file.name),
+                        android.widget.Toast.LENGTH_LONG,
+                    )
                     shareExportedAudio(file)
                 }
 
                 override fun onError(message: String) {
                     if (isFinishing || isDestroyed) return
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    dismissExportProgressDlg()
                     setExportProgressUi(active = false)
-                    Toasts.show(this@ReadingActivity, getString(R.string.tts_export_fail, message), android.widget.Toast.LENGTH_LONG)
+                    Toasts.show(
+                        this@ReadingActivity,
+                        getString(R.string.tts_export_fail, message),
+                        android.widget.Toast.LENGTH_LONG,
+                    )
                 }
 
                 override fun onCancelled() {
                     if (isFinishing || isDestroyed) return
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    dismissExportProgressDlg()
                     setExportProgressUi(active = false)
                     Toasts.show(this@ReadingActivity, R.string.tts_export_cancelled)
                 }
             },
         )
+    }
+
+    private fun dismissExportProgressDlg() {
+        exportProgressDlg?.dismiss()
+        exportProgressDlg = null
+    }
+
+    /** 导出进度 0–100（与进度窗算法一致） */
+    private fun progressPercent(
+        done: Int,
+        total: Int,
+        phase: String,
+        doneChars: Int,
+        totalChars: Int,
+        partFraction: Float,
+    ): Int {
+        return when (phase) {
+            "prepare", "init" -> 1
+            "merge" -> 94
+            "encode" -> 98
+            else -> {
+                if (totalChars > 0) {
+                    ((doneChars.toFloat() / totalChars) * 92f).toInt().coerceIn(0, 92)
+                } else {
+                    val t = total.coerceAtLeast(1)
+                    val base = (done.toFloat() / t) * 92f
+                    val within = if (done < t) partFraction.coerceIn(0f, 1f) * (92f / t) else 0f
+                    (base + within).toInt().coerceIn(0, 92)
+                }
+            }
+        }
     }
 
     private fun setExportProgressUi(
@@ -1374,7 +1494,7 @@ class ReadingActivity : AppCompatActivity() {
             withTtsNotificationPermission {
                 if (!tts.isReady()) {
                     tts.reinit()
-                    Toasts.show(this, R.string.tts_reinit)
+                    updateTtsUi(tts.currentState())
                 }
                 val snap = tts.currentState()
                 if (snap.state == TtsManager.State.IDLE) {
@@ -1437,9 +1557,6 @@ class ReadingActivity : AppCompatActivity() {
             AppSettings.setTtsRate(this, rate)
             tts.setSpeechRate(rate, restartCurrent = true)
             updateTtsRateLabel(rate)
-            settingsPanel.seekTtsRate.progress =
-                ((rate - 0.5f) / 0.1f).toInt().coerceIn(0, 20)
-            settingsPanel.tvTtsRate.text = String.format("%.1fx", rate)
             true
         }
         popup.show()
@@ -1515,8 +1632,27 @@ class ReadingActivity : AppCompatActivity() {
         AppSettings.setTtsRate(this, rounded)
         tts.setSpeechRate(rounded, restartCurrent = true)
         updateTtsRateLabel(rounded)
-        settingsPanel.seekTtsRate.progress = ((rounded - 0.5f) / 0.1f).toInt().coerceIn(0, 20)
-        settingsPanel.tvTtsRate.text = String.format("%.1fx", rounded)
+    }
+
+    /** 样式面板：可滚动，高度不超过屏高约 78%，避免底部被裁切 */
+    private fun openStyleSettingsPanel() {
+        val panel = binding.settingsPanel.root
+        val maxH = (resources.displayMetrics.heightPixels * 0.78f).toInt()
+        val lp = panel.layoutParams as android.widget.FrameLayout.LayoutParams
+        lp.height = android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        lp.gravity = android.view.Gravity.BOTTOM
+        panel.layoutParams = lp
+        binding.settingsPanelContainer.isVisible = true
+        panel.post {
+            if (!binding.settingsPanelContainer.isVisible) return@post
+            val natural = panel.height
+            if (natural > maxH) {
+                val lp2 = panel.layoutParams as android.widget.FrameLayout.LayoutParams
+                lp2.height = maxH
+                lp2.gravity = android.view.Gravity.BOTTOM
+                panel.layoutParams = lp2
+            }
+        }
     }
 
     private fun setupSettingsPanel() {
@@ -1532,9 +1668,6 @@ class ReadingActivity : AppCompatActivity() {
             settingsPanel.tvLineSpacing.text = String.format("%.1f", style.lineSpacingMult)
             settingsPanel.seekParaSpacing.progress = style.paraSpacingDp.coerceIn(0, 32)
             settingsPanel.tvParaSpacing.text = style.paraSpacingDp.toString()
-            val rate = AppSettings.ttsRate(this)
-            settingsPanel.seekTtsRate.progress = ((rate - 0.5f) / 0.1f).toInt().coerceIn(0, 20)
-            settingsPanel.tvTtsRate.text = String.format("%.1fx", rate)
         }
         bindSeekers()
 
@@ -1554,34 +1687,17 @@ class ReadingActivity : AppCompatActivity() {
             settingsPanel.tvParaSpacing.text = p.toString()
             persistAndApplyStyle(keepAnchor = true)
         })
-        settingsPanel.seekTtsRate.setOnSeekBarChangeListener(simpleSeek { p ->
-            val rate = 0.5f + p * 0.1f
-            settingsPanel.tvTtsRate.text = String.format("%.1fx", rate)
-            AppSettings.setTtsRate(this, rate)
-            tts.setSpeechRate(rate, restartCurrent = true)
-            updateTtsRateLabel(rate)
-        })
 
-        settingsPanel.chipThemeDefault.setOnClickListener { setTheme(ReadTheme.DEFAULT) }
-        settingsPanel.chipThemeWhite.setOnClickListener { setTheme(ReadTheme.WHITE) }
-        settingsPanel.chipThemeCustom.setOnClickListener { showCustomBgPicker() }
-        settingsPanel.chipThemeGreen.setOnClickListener { setTheme(ReadTheme.GREEN) }
-        settingsPanel.chipThemeBlue.setOnClickListener { setTheme(ReadTheme.BLUE) }
-        settingsPanel.chipThemePurple.setOnClickListener { setTheme(ReadTheme.PURPLE) }
-        settingsPanel.chipThemeSepia.setOnClickListener { setTheme(ReadTheme.SEPIA) }
-        settingsPanel.chipThemeNight.setOnClickListener { setTheme(ReadTheme.NIGHT) }
-        refreshThemeChips()
+        rebuildTextureChips()
+        rebuildTextColorSwatches()
+        rebuildBgColorSwatches()
 
-        fun setFont(id: String) {
-            style = style.copy(fontFamily = id)
-            persistAndApplyStyle(keepAnchor = true)
-            refreshFontChips()
-        }
         settingsPanel.chipFontDefault.setOnClickListener { setFont(ReaderFonts.ID_DEFAULT) }
         settingsPanel.chipFontSans.setOnClickListener { setFont(ReaderFonts.ID_SANS) }
         settingsPanel.chipFontSerif.setOnClickListener { setFont(ReaderFonts.ID_SERIF) }
         settingsPanel.chipFontMono.setOnClickListener { setFont(ReaderFonts.ID_MONO) }
-        refreshFontChips()
+        settingsPanel.chipFontInstall.setOnClickListener { launchInstallFont() }
+        rebuildCustomFontChips()
 
         settingsPanel.btnLayoutCompact.setOnClickListener {
             style = style.copy(fontSizeSp = 16f, lineSpacingMult = 1.2f, paraSpacingDp = 4)
@@ -1610,78 +1726,458 @@ class ReadingActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         }
 
-    private fun setTheme(theme: ReadTheme) {
-        style = style.copy(theme = theme)
+    /** 菜单夜间快捷：亮色 / 夜色颗粒 切换 */
+    private fun toggleNightStyle() {
+        val isNight = style.bgTextureId == BgTextures.NIGHT_GRAIN ||
+            style.theme == ReadTheme.NIGHT ||
+            !ParagraphAdapter.isLightColor(style.customBgColor)
+        if (isNight) {
+            style = style.copy(
+                theme = ReadTheme.DEFAULT,
+                bgTextureId = "",
+                customBgColor = 0xFFF7F4ED.toInt(),
+                textColor = 0xFF2C2C2C.toInt(),
+            )
+        } else {
+            style = style.copy(
+                theme = ReadTheme.NIGHT,
+                bgTextureId = BgTextures.NIGHT_GRAIN,
+                customBgColor = 0xFF1C1C1E.toInt(),
+                textColor = 0xFFC8C8C8.toInt(),
+            )
+        }
         persistAndApplyStyle(keepAnchor = true)
-        refreshThemeChips()
+        refreshTextureChips()
+        refreshTextColorSwatches()
+        refreshBgColorSwatches()
     }
 
-    /** 自定义背景色：预设色板 */
-    private fun showCustomBgPicker() {
-        val colors = intArrayOf(
-            0xFFFFFFFF.toInt(),
-            0xFFFAFAFA.toInt(),
-            0xFFF5F5F5.toInt(),
-            0xFFF7F4ED.toInt(),
-            0xFFFFF8E7.toInt(),
-            0xFFF4ECD8.toInt(),
-            0xFFE8F5E9.toInt(),
-            0xFFE3F2FD.toInt(),
-            0xFFF3E5F5.toInt(),
-            0xFFFFEBEE.toInt(),
-            0xFFECEFF1.toInt(),
-            0xFF212121.toInt(),
-            0xFF1A1A1A.toInt(),
-            0xFF263238.toInt(),
-            0xFF1B2A1B.toInt(),
-            0xFF1A237E.toInt(),
-        )
-        val labels = arrayOf(
-            "纯白", "浅灰1", "浅灰2", "米黄", "象牙", "羊皮纸",
-            "淡绿", "淡蓝", "淡紫", "淡粉", "蓝灰",
-            "深灰", "近黑", "蓝黑", "墨绿", "深蓝",
-        )
-        AlertDialog.Builder(this)
-            .setTitle(R.string.theme_pick_bg)
-            .setItems(labels) { _, which ->
-                val c = colors[which]
-                style = style.copy(theme = ReadTheme.CUSTOM, customBgColor = c)
-                settingsPanel.chipThemeCustom.backgroundTintList =
-                    android.content.res.ColorStateList.valueOf(c)
+    private fun setBgTexture(id: String) {
+        when (id) {
+            BgTextures.NONE -> {
+                // 纯色：清除纹理，用当前背景色
+                style = style.copy(
+                    bgTextureId = "",
+                    customBgImageFile = "",
+                    theme = ReadTheme.CUSTOM,
+                )
                 persistAndApplyStyle(keepAnchor = true)
-                refreshThemeChips()
+                refreshTextureChips()
+                refreshBgColorSwatches()
+            }
+            BgTextures.IMPORT -> {
+                importBgImageLauncher.launch(arrayOf("image/*"))
+            }
+            else -> {
+                val base = BgTextures.baseColor(id) ?: style.customBgColor
+                val autoText = ParagraphAdapter.textColorForBackground(base)
+                style = style.copy(
+                    bgTextureId = id,
+                    theme = if (id == BgTextures.NIGHT_GRAIN) ReadTheme.NIGHT else ReadTheme.CUSTOM,
+                    textColor = autoText,
+                    customBgColor = base,
+                    customBgImageFile = "",
+                )
+                persistAndApplyStyle(keepAnchor = true)
+                refreshTextureChips()
+                refreshTextColorSwatches()
+                refreshBgColorSwatches()
+            }
+        }
+    }
+
+    private fun rebuildTextureChips() {
+        if (!::settingsPanel.isInitialized) return
+        val row = settingsPanel.textureRow
+        row.removeAllViews()
+        textureChips.clear()
+        val density = resources.displayMetrics.density
+        val marginEnd = (8 * density).toInt()
+        fun addChip(id: String, label: String, tint: Int?) {
+            val btn = MaterialButton(
+                this,
+                null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle,
+            ).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                    (36 * density).toInt(),
+                ).also { lp -> lp.marginEnd = marginEnd }
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+                text = label
+                tag = id
+                if (tint != null && tint != 0) {
+                    backgroundTintList =
+                        android.content.res.ColorStateList.valueOf(tint)
+                    setTextColor(ParagraphAdapter.textColorForBackground(tint))
+                }
+                setOnClickListener { setBgTexture(id) }
+            }
+            row.addView(btn)
+            textureChips.add(btn)
+        }
+        for (spec in BgTextures.PRESETS) {
+            addChip(spec.id, getString(spec.labelRes), spec.baseColor)
+        }
+        // 导入图片
+        addChip(BgTextures.IMPORT, getString(R.string.bg_texture_import), null)
+        refreshTextureChips()
+    }
+
+    private fun refreshTextureChips() {
+        if (!::settingsPanel.isInitialized) return
+        val cur = when {
+            style.bgTextureId == BgTextures.IMPORT -> BgTextures.IMPORT
+            style.bgTextureId.isBlank() -> BgTextures.NONE
+            else -> style.bgTextureId
+        }
+        fun mark(btn: MaterialButton, selected: Boolean) {
+            btn.alpha = if (selected) 1f else 0.55f
+            btn.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
+        }
+        textureChips.forEach { btn ->
+            mark(btn, (btn.tag as? String) == cur)
+        }
+    }
+
+    /** 常用字体色（圆形色点） */
+    private val textColorPresets = intArrayOf(
+        0xFF2C2C2C.toInt(),
+        0xFF1A1A1A.toInt(),
+        0xFF3E3224.toInt(),
+        0xFF1E3A24.toInt(),
+        0xFF1A3344.toInt(),
+        0xFF4A148C.toInt(),
+        0xFFB71C1C.toInt(),
+        0xFF666666.toInt(),
+        0xFFC8C8C8.toInt(),
+        0xFFFFFFFF.toInt(),
+    )
+
+    /** 常用背景纯色 */
+    private val bgColorPresets = intArrayOf(
+        0xFFFFFFFF.toInt(),
+        0xFFF7F4ED.toInt(),
+        0xFFFFF8E7.toInt(),
+        0xFFF4ECD8.toInt(),
+        0xFFC7EDCC.toInt(),
+        0xFFDCEEF8.toInt(),
+        0xFFF0E8F5.toInt(),
+        0xFFECEFF1.toInt(),
+        0xFF1A1A1A.toInt(),
+        0xFF263238.toInt(),
+    )
+
+    private fun rebuildTextColorSwatches() {
+        if (!::settingsPanel.isInitialized) return
+        val row = settingsPanel.textColorRow
+        row.removeAllViews()
+        textColorSwatches.clear()
+        val density = resources.displayMetrics.density
+        // 圆形色点约原 36dp 的 2/3
+        val size = (24 * density).toInt()
+        val gap = (8 * density).toInt()
+        for (c in textColorPresets) {
+            val v = makeColorSwatchView(size, gap, c) {
+                applyTextColor(c)
+            }
+            row.addView(v)
+            textColorSwatches.add(v)
+        }
+        // 尾部：自定义 → HSV
+        val custom = makeCustomColorChip(size, gap) {
+            HsvColorPickerDialog.show(
+                this,
+                getString(R.string.color_picker_text_title),
+                style.textColor,
+            ) { c -> applyTextColor(c) }
+        }
+        row.addView(custom)
+        textColorSwatches.add(custom)
+        refreshTextColorSwatches()
+    }
+
+    private fun rebuildBgColorSwatches() {
+        if (!::settingsPanel.isInitialized) return
+        val row = settingsPanel.bgColorRow
+        row.removeAllViews()
+        bgColorSwatches.clear()
+        val density = resources.displayMetrics.density
+        val size = (24 * density).toInt()
+        val gap = (8 * density).toInt()
+        for (c in bgColorPresets) {
+            val v = makeColorSwatchView(size, gap, c) {
+                applyBgColor(c)
+            }
+            row.addView(v)
+            bgColorSwatches.add(v)
+        }
+        val custom = makeCustomColorChip(size, gap) {
+            HsvColorPickerDialog.show(
+                this,
+                getString(R.string.color_picker_bg_title),
+                style.customBgColor,
+            ) { c -> applyBgColor(c) }
+        }
+        row.addView(custom)
+        bgColorSwatches.add(custom)
+        refreshBgColorSwatches()
+    }
+
+    private fun makeColorSwatchView(
+        size: Int,
+        marginEnd: Int,
+        color: Int,
+        onClick: () -> Unit,
+    ): View {
+        return View(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(size, size).also {
+                it.marginEnd = marginEnd
+            }
+            background = androidx.core.content.ContextCompat.getDrawable(
+                this@ReadingActivity,
+                R.drawable.bg_color_swatch,
+            )?.mutate()
+            backgroundTintList = android.content.res.ColorStateList.valueOf(color)
+            tag = color
+            setOnClickListener { onClick() }
+            contentDescription = String.format("#%06X", color and 0xFFFFFF)
+        }
+    }
+
+    private fun makeCustomColorChip(size: Int, marginEnd: Int, onClick: () -> Unit): View {
+        return MaterialButton(
+            this,
+            null,
+            com.google.android.material.R.attr.materialButtonOutlinedStyle,
+        ).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                size,
+            ).also { it.marginEnd = marginEnd }
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+            text = getString(R.string.color_custom)
+            tag = "custom"
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun applyTextColor(c: Int) {
+        style = style.copy(textColor = c or 0xFF000000.toInt())
+        persistAndApplyStyle(keepAnchor = true)
+        refreshTextColorSwatches()
+    }
+
+    private fun applyBgColor(c: Int) {
+        val color = c or 0xFF000000.toInt()
+        style = style.copy(
+            theme = ReadTheme.CUSTOM,
+            customBgColor = color,
+            bgTextureId = "",
+            customBgImageFile = "",
+            // 字色若对比差会不好读：不强制改用户字色
+        )
+        persistAndApplyStyle(keepAnchor = true)
+        refreshTextureChips()
+        refreshBgColorSwatches()
+    }
+
+    private fun refreshTextColorSwatches() {
+        if (!::settingsPanel.isInitialized) return
+        val cur = style.textColor or 0xFF000000.toInt()
+        textColorSwatches.forEach { v ->
+            val selected = when (val t = v.tag) {
+                is Int -> (t or 0xFF000000.toInt()) == cur
+                else -> {
+                    // 自定义：当前色不在预设中
+                    textColorPresets.none { (it or 0xFF000000.toInt()) == cur }
+                }
+            }
+            markSwatchSelected(v, selected)
+        }
+    }
+
+    private fun refreshBgColorSwatches() {
+        if (!::settingsPanel.isInitialized) return
+        val solidMode = style.bgTextureId.isBlank() || style.bgTextureId == BgTextures.NONE
+        val cur = style.customBgColor or 0xFF000000.toInt()
+        bgColorSwatches.forEach { v ->
+            val selected = if (!solidMode) {
+                false
+            } else {
+                when (val t = v.tag) {
+                    is Int -> (t or 0xFF000000.toInt()) == cur
+                    else -> bgColorPresets.none { (it or 0xFF000000.toInt()) == cur }
+                }
+            }
+            markSwatchSelected(v, selected)
+        }
+    }
+
+    private fun markSwatchSelected(v: View, selected: Boolean) {
+        if (v is MaterialButton) {
+            v.alpha = if (selected) 1f else 0.55f
+            v.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
+            return
+        }
+        val dens = resources.displayMetrics.density
+        v.scaleX = if (selected) 1.12f else 1f
+        v.scaleY = if (selected) 1.12f else 1f
+        v.foreground = if (selected) {
+            androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_color_swatch_ring)
+        } else {
+            null
+        }
+        // 轻微外扩选中感
+        v.elevation = if (selected) 3f * dens else 0f
+    }
+
+    private fun importBackgroundImage(uri: Uri) {
+        lifecycleScope.launch {
+            val name = withContext(Dispatchers.IO) {
+                BgTextures.importFromUri(this@ReadingActivity, uri)
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (name.isNullOrBlank()) {
+                Toasts.show(this@ReadingActivity, R.string.bg_texture_import_fail)
+                return@launch
+            }
+            style = style.copy(
+                bgTextureId = BgTextures.IMPORT,
+                customBgImageFile = name,
+                theme = ReadTheme.CUSTOM,
+            )
+            persistAndApplyStyle(keepAnchor = true)
+            refreshTextureChips()
+            refreshBgColorSwatches()
+            Toasts.show(this@ReadingActivity, R.string.bg_texture_import_ok)
+        }
+    }
+
+    private fun setFont(id: String) {
+        style = style.copy(fontFamily = id)
+        persistAndApplyStyle(keepAnchor = true)
+        refreshFontChips()
+    }
+
+    private fun launchInstallFont() {
+        // */*：部分 OEM 不暴露 font/* MIME
+        installFontLauncher.launch(arrayOf("*/*"))
+    }
+
+    private fun installCustomFont(uri: Uri) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                CustomFontStore.installFromUri(this@ReadingActivity, uri)
+            }
+            if (isFinishing || isDestroyed) return@launch
+            when (result) {
+                is CustomFontStore.InstallResult.Ok -> {
+                    Toasts.show(
+                        this@ReadingActivity,
+                        getString(R.string.font_install_ok, result.entry.name),
+                    )
+                    rebuildCustomFontChips()
+                    setFont(result.entry.id)
+                }
+                is CustomFontStore.InstallResult.Fail -> {
+                    val msg = when (result.reason) {
+                        CustomFontStore.FailReason.BAD_FORMAT ->
+                            getString(R.string.font_install_bad_format)
+                        CustomFontStore.FailReason.TOO_LARGE ->
+                            getString(R.string.font_install_too_large)
+                        CustomFontStore.FailReason.LIMIT ->
+                            getString(R.string.font_install_limit, CustomFontStore.MAX_COUNT)
+                        CustomFontStore.FailReason.INVALID_FONT,
+                        CustomFontStore.FailReason.IO,
+                        -> getString(R.string.font_install_fail)
+                    }
+                    Toasts.show(this@ReadingActivity, msg)
+                }
+            }
+        }
+    }
+
+    private fun confirmDeleteCustomFont(entry: CustomFontStore.Entry) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.font_delete_title)
+            .setMessage(getString(R.string.font_delete_msg, entry.name))
+            .setPositiveButton(R.string.delete) { _, _ ->
+                CustomFontStore.delete(this, entry.id)
+                ReaderFonts.invalidate(entry.id)
+                if (style.fontFamily == entry.id) {
+                    style = style.copy(fontFamily = ReaderFonts.ID_DEFAULT)
+                    persistAndApplyStyle(keepAnchor = true)
+                }
+                rebuildCustomFontChips()
+                Toasts.show(this, getString(R.string.font_deleted, entry.name))
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
-    private fun refreshThemeChips() {
+    /** 在 mono 与「安装」之间注入已装字体 chip */
+    private fun rebuildCustomFontChips() {
         if (!::settingsPanel.isInitialized) return
-        fun mark(btn: com.google.android.material.button.MaterialButton, selected: Boolean) {
-            btn.alpha = if (selected) 1f else 0.55f
-            btn.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
+        val row = settingsPanel.fontRow
+        customFontChips.forEach { row.removeView(it) }
+        customFontChips.clear()
+
+        val installChip = settingsPanel.chipFontInstall
+        val insertAt = row.indexOfChild(installChip).coerceAtLeast(0)
+        val density = resources.displayMetrics.density
+        val marginEnd = (8 * density).toInt()
+        val entries = CustomFontStore.list(this)
+        entries.forEachIndexed { i, entry ->
+            val btn = MaterialButton(
+                this,
+                null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle,
+            ).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    (36 * density).toInt(),
+                ).also { lp -> lp.marginEnd = marginEnd }
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                text = entry.name
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                tag = entry.id
+                setOnClickListener { setFont(entry.id) }
+                setOnLongClickListener {
+                    confirmDeleteCustomFont(entry)
+                    true
+                }
+            }
+            row.addView(btn, insertAt + i)
+            customFontChips.add(btn)
         }
-        val t = style.theme
-        mark(settingsPanel.chipThemeDefault, t == ReadTheme.DEFAULT)
-        mark(settingsPanel.chipThemeWhite, t == ReadTheme.WHITE)
-        mark(settingsPanel.chipThemeCustom, t == ReadTheme.CUSTOM)
-        mark(settingsPanel.chipThemeGreen, t == ReadTheme.GREEN)
-        mark(settingsPanel.chipThemeBlue, t == ReadTheme.BLUE)
-        mark(settingsPanel.chipThemePurple, t == ReadTheme.PURPLE)
-        mark(settingsPanel.chipThemeSepia, t == ReadTheme.SEPIA)
-        mark(settingsPanel.chipThemeNight, t == ReadTheme.NIGHT)
-        // 自定义钮显示当前色
-        settingsPanel.chipThemeCustom.backgroundTintList =
-            android.content.res.ColorStateList.valueOf(style.customBgColor)
-        val customText = ParagraphAdapter.textColorForBackground(style.customBgColor)
-        settingsPanel.chipThemeCustom.setTextColor(customText)
+        // 若当前字体记录已不存在，回退默认
+        if (ReaderFonts.isCustom(style.fontFamily) &&
+            entries.none { it.id == style.fontFamily }
+        ) {
+            style = style.copy(fontFamily = ReaderFonts.ID_DEFAULT)
+            persistAndApplyStyle(keepAnchor = true)
+        }
+        refreshFontChips()
     }
 
     private fun refreshFontChips() {
         if (!::settingsPanel.isInitialized) return
         val id = style.fontFamily
-        // 用描边按钮的 alpha 简单标出当前项
-        fun mark(btn: com.google.android.material.button.MaterialButton, selected: Boolean) {
+        fun mark(btn: MaterialButton, selected: Boolean) {
             btn.alpha = if (selected) 1f else 0.55f
             btn.strokeWidth = if (selected) (2 * resources.displayMetrics.density).toInt() else 1
         }
@@ -1689,6 +2185,11 @@ class ReadingActivity : AppCompatActivity() {
         mark(settingsPanel.chipFontSans, id == ReaderFonts.ID_SANS)
         mark(settingsPanel.chipFontSerif, id == ReaderFonts.ID_SERIF)
         mark(settingsPanel.chipFontMono, id == ReaderFonts.ID_MONO)
+        customFontChips.forEach { btn ->
+            mark(btn, btn.tag == id)
+        }
+        // 安装钮不高亮
+        settingsPanel.chipFontInstall.alpha = 0.85f
     }
 
     private fun persistAndApplyStyle(keepAnchor: Boolean = true) {
@@ -1697,14 +2198,55 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun applyStyleToUi(keepAnchor: Boolean = true) {
-        val bg = ParagraphAdapter.backgroundColor(style.theme, style.customBgColor)
-        val (textColor, hl) = ParagraphAdapter.themeColors(style.theme, style.customBgColor)
-        binding.rootReading.setBackgroundColor(bg)
-        reader.setBackgroundColor(bg)
-        window.statusBarColor = bg
-        window.navigationBarColor = bg
-        val darkChrome = style.theme == ReadTheme.NIGHT ||
-            (style.theme == ReadTheme.CUSTOM && !ParagraphAdapter.isLightColor(bg))
+        val textureId = style.bgTextureId
+        val textureBase = BgTextures.baseColor(textureId)
+        val solidBg = style.customBgColor or 0xFF000000.toInt()
+        val bgForChrome = when {
+            textureId == BgTextures.IMPORT -> solidBg
+            textureBase != null -> textureBase
+            else -> solidBg
+        }
+        val textColor = style.textColor
+        val hl = if (ParagraphAdapter.isLightColor(textColor)) {
+            // 浅色字 → 深底，高亮偏蓝
+            0x884A90C0.toInt()
+        } else {
+            0x66FFE082.toInt()
+        }
+
+        val bgDrawable: android.graphics.drawable.Drawable? = when {
+            textureId == BgTextures.IMPORT && style.customBgImageFile.isNotBlank() ->
+                BgTextures.importedDrawable(this, style.customBgImageFile)
+            textureId.isNotBlank() && textureId != BgTextures.NONE ->
+                BgTextures.tiledDrawable(this, textureId)
+            else -> null
+        }
+
+        if (bgDrawable != null) {
+            fun copyBg(): android.graphics.drawable.Drawable? =
+                when {
+                    textureId == BgTextures.IMPORT ->
+                        BgTextures.importedDrawable(this, style.customBgImageFile)
+                    else -> BgTextures.tiledDrawable(this, textureId)
+                }
+            binding.rootReading.background = bgDrawable
+            reader.background = copyBg()
+            binding.readStatusBar.background = copyBg()
+            binding.readTitleBar.background = copyBg()
+            binding.tvReadTitle.background = null
+            binding.tvReadTitle.setBackgroundColor(0x00000000)
+        } else {
+            binding.rootReading.setBackgroundColor(bgForChrome)
+            reader.setBackgroundColor(bgForChrome)
+            binding.readStatusBar.setBackgroundColor(bgForChrome)
+            binding.readTitleBar.setBackgroundColor(bgForChrome)
+            binding.tvReadTitle.setBackgroundColor(bgForChrome)
+        }
+        window.statusBarColor = bgForChrome
+        window.navigationBarColor = bgForChrome
+        val darkChrome = !ParagraphAdapter.isLightColor(bgForChrome) ||
+            textureId == BgTextures.NIGHT_GRAIN ||
+            style.theme == ReadTheme.NIGHT
         val metaColor = if (darkChrome) 0xFF9A9A9A.toInt() else 0xFF888888.toInt()
         binding.tvBookName.setTextColor(metaColor)
         binding.tvChapterTitle.setTextColor(metaColor)
@@ -1712,9 +2254,6 @@ class ReadingActivity : AppCompatActivity() {
         binding.tvBattery.setTextColor(metaColor)
         binding.tvClock.setTextColor(metaColor)
         binding.tvProgress.setTextColor(metaColor)
-        binding.readStatusBar.setBackgroundColor(bg)
-        binding.readTitleBar.setBackgroundColor(bg)
-        binding.tvReadTitle.setBackgroundColor(bg)
         @Suppress("DEPRECATION")
         if (darkChrome || immersive) {
             window.decorView.systemUiVisibility = 0
@@ -1723,7 +2262,11 @@ class ReadingActivity : AppCompatActivity() {
         }
         reader.applyStyle(style, textColor, hl, keepAnchor = keepAnchor)
         updateProgressLabel()
-        if (::settingsPanel.isInitialized) refreshThemeChips()
+        if (::settingsPanel.isInitialized) {
+            refreshTextureChips()
+            refreshTextColorSwatches()
+            refreshBgColorSwatches()
+        }
     }
 
     /**
@@ -1788,11 +2331,6 @@ class ReadingActivity : AppCompatActivity() {
                 AppSettings.setTtsRate(this, next)
                 tts.setSpeechRate(next, restartCurrent = true)
                 updateTtsRateLabel(next)
-                if (::settingsPanel.isInitialized) {
-                    settingsPanel.seekTtsRate.progress =
-                        ((next - 0.5f) / 0.1f).toInt().coerceIn(0, 20)
-                    settingsPanel.tvTtsRate.text = String.format("%.1fx", next)
-                }
                 Toasts.show(this, getString(R.string.edge_toast_rate, next))
             }
             EdgeSwipeAction.FONT -> {
@@ -2252,6 +2790,18 @@ class ReadingActivity : AppCompatActivity() {
             Toasts.show(this@ReadingActivity, R.string.open_failed_reselect_done)
             loadContent()
         }
+    }
+
+    /** TTS 初始化/未就绪：不弹 Toast（状态文案已在 TTS 面板显示） */
+    private fun isTtsInitNoise(message: String): Boolean {
+        if (message.isBlank()) return false
+        return message == getString(R.string.tts_init_failed) ||
+            message == getString(R.string.tts_initializing) ||
+            message == getString(R.string.tts_init_pending) ||
+            message == getString(R.string.tts_still_not_ready) ||
+            message == getString(R.string.tts_not_ready) ||
+            message == getString(R.string.tts_reinit) ||
+            message.startsWith(getString(R.string.tts_init_failed))
     }
 
     private fun updateTtsUi(snapshot: TtsManager.Snapshot) {

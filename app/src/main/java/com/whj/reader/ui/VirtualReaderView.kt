@@ -1572,12 +1572,20 @@ class VirtualReaderView @JvmOverloads constructor(
             resources.displayMetrics,
         )
         textPaint.textSize = sizePx
-        textPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(style.fontFamily, bold = false)
+        textPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(
+            context,
+            style.fontFamily,
+            bold = false,
+        )
         textPaint.letterSpacing = style.letterSpacing
         textPaint.color = textColor
 
         chapterPaint.textSize = sizePx
-        chapterPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(style.fontFamily, bold = true)
+        chapterPaint.typeface = com.whj.reader.util.ReaderFonts.resolve(
+            context,
+            style.fontFamily,
+            bold = true,
+        )
         chapterPaint.letterSpacing = style.letterSpacing
         chapterPaint.color = textColor
 
@@ -2232,6 +2240,7 @@ class VirtualReaderView @JvmOverloads constructor(
             dest.typeface = android.graphics.Typeface.MONOSPACE
         } else {
             dest.typeface = com.whj.reader.util.ReaderFonts.resolve(
+                context,
                 this.style.fontFamily,
                 bold = bold,
             )

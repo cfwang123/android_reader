@@ -27,6 +27,19 @@ object AppSettings {
         val theme = runCatching {
             ReadTheme.valueOf(p.getString("theme", ReadTheme.DEFAULT.name)!!)
         }.getOrDefault(ReadTheme.DEFAULT)
+        // 旧版只有 theme：迁移为纯色底 + 对应字色
+        val hasTextColor = p.contains("textColor")
+        val hasSolidBg = p.contains("customBgColor")
+        val migratedBg = if (hasSolidBg) {
+            p.getInt("customBgColor", 0xFFF7F4ED.toInt())
+        } else {
+            com.whj.reader.ui.ParagraphAdapter.backgroundColor(theme)
+        }
+        val migratedText = if (hasTextColor) {
+            p.getInt("textColor", 0xFF2C2C2C.toInt())
+        } else {
+            com.whj.reader.ui.ParagraphAdapter.themeColors(theme, migratedBg).first
+        }
         return ReadStyle(
             theme = theme,
             fontSizeSp = p.getFloat("fontSize", 18f),
@@ -34,7 +47,10 @@ object AppSettings {
             paraSpacingDp = p.getInt("paraSpacing", 8),
             letterSpacing = p.getFloat("letterSpacing", 0f),
             fontFamily = p.getString("fontFamily", "default") ?: "default",
-            customBgColor = p.getInt("customBgColor", 0xFFFFFFFF.toInt()),
+            customBgColor = migratedBg,
+            bgTextureId = p.getString("bgTextureId", "") ?: "",
+            textColor = migratedText,
+            customBgImageFile = p.getString("customBgImageFile", "") ?: "",
         )
     }
 
@@ -47,6 +63,9 @@ object AppSettings {
             .putFloat("letterSpacing", style.letterSpacing)
             .putString("fontFamily", style.fontFamily)
             .putInt("customBgColor", style.customBgColor)
+            .putString("bgTextureId", style.bgTextureId)
+            .putInt("textColor", style.textColor)
+            .putString("customBgImageFile", style.customBgImageFile)
             .apply()
     }
 
@@ -245,6 +264,14 @@ object AppSettings {
 
     fun setRightEdgeAction(ctx: Context, action: EdgeSwipeAction) {
         prefs(ctx).edit().putString("rightEdgeAction", action.name).apply()
+    }
+
+    /** 音量键翻页，默认开启 */
+    fun volumeKeyPageTurn(ctx: Context): Boolean =
+        prefs(ctx).getBoolean("volumeKeyPageTurn", true)
+
+    fun setVolumeKeyPageTurn(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean("volumeKeyPageTurn", enabled).apply()
     }
 
     /** 界面语言，默认中文 */
