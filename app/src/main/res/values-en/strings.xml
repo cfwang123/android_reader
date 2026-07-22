@@ -55,6 +55,10 @@
     <string name="file_format_mobi">MOBI/AZW</string>
     <string name="file_format_pdf">PDF</string>
     <string name="file_format_other">Other</string>
+    <string name="clear_book_record">Clear records</string>
+    <string name="clear_book_record_title">Clear this book\'s records?</string>
+    <string name="clear_book_record_msg">Clears progress, bookmarks, EPUB/MOBI chapter &amp; parse caches, PDF crop/zoom/OCR, encoding, and all other local data. Shelf entry and source file are kept.</string>
+    <string name="clear_book_record_done">Records cleared</string>
     <string name="history_delete_record">Remove from history</string>
     <string name="history_delete_title">Remove reading record?</string>
     <string name="history_delete_msg">Clears progress and history for this book. Shelf entry and source file are kept.</string>
@@ -122,10 +126,11 @@
     <string name="pdf_page_of_progress">%1$d / %2$d  %3$d%%</string>
     <string name="pdf_page_jump">Jump to page</string>
     <string name="mobi_view_mode">View mode</string>
-    <string name="mobi_mode_text">Text mode</string>
-    <string name="mobi_mode_manga">Manga mode</string>
+    <string name="mobi_mode_text">Text</string>
+    <string name="mobi_mode_manga">Manga</string>
+    <string name="mobi_mode_continuous">Continuous</string>
     <string name="mobi_mode_current">Now: %1$s</string>
-    <string name="mobi_mode_hint">Manga mode ignores text and shows one image at a time. Pinch to zoom; tap sides or swipe to turn pages. Progress is image N of total. Selected mode is filled in the theme color.</string>
+    <string name="mobi_mode_hint">Text: read paragraphs. Manga: one image at a time, side tap/swipe to turn. Continuous: vertical scroll through images. Works in portrait and landscape. Pinch to zoom; zoom and pan are restored when reopening.</string>
     <string name="mobi_manga_progress">Image %1$d / %2$d</string>
     <string name="mobi_manga_no_images">No images in this book</string>
     <string name="mobi_manga_first">Already the first image</string>
@@ -235,9 +240,10 @@
     <string name="pdf_ocr_range">Page range (1-based)</string>
     <string name="pdf_ocr_from">From</string>
     <string name="pdf_ocr_to">To</string>
-    <string name="pdf_ocr_skip_done">Skip already recognized pages</string>
+    <string name="pdf_ocr_skip_done">Skip pages with text (empty results will re-run)</string>
     <string name="pdf_ocr_recognized_none">No pages recognized yet</string>
     <string name="pdf_ocr_recognized_list">Done: %1$s</string>
+    <string name="pdf_ocr_empty_result_list">Empty (will re-run): %1$s</string>
     <string name="pdf_ocr_start">Start</string>
     <string name="pdf_ocr_cancel">Cancel</string>
     <string name="pdf_ocr_progress">OCR %1$d / %2$d (page %3$d)…</string>

@@ -30,10 +30,10 @@
             android:includeFontPadding="false" />
     </FrameLayout>
 
-    <!-- 页间细黑线（连续滚动） -->
+    <!-- 页间间隔（连续滚动，5px） -->
     <View
         android:id="@+id/pageDivider"
         android:layout_width="match_parent"
-        android:layout_height="1dp"
+        android:layout_height="5px"
         android:background="#000000" />
 </LinearLayout>

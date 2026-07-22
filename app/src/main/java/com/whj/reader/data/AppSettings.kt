@@ -206,6 +206,125 @@ object AppSettings {
         prefs(ctx).edit().putInt("progress_$fileKey", paragraphIndex).apply()
     }
 
+    fun clearTxtProgress(ctx: Context, fileKey: String) {
+        if (fileKey.isBlank()) return
+        prefs(ctx).edit().remove("progress_$fileKey").apply()
+        if (lastBookUri(ctx) == fileKey) {
+            prefs(ctx).edit()
+                .remove("lastBookUri")
+                .remove("lastBookTitle")
+                .remove("lastBookAt")
+                .apply()
+        }
+        clearMangaViewState(ctx, fileKey)
+    }
+
+    /**
+     * MOBI 漫画视图：图片索引 + 缩放/平移 + 连续图竖直滚动。
+     * 与正文段落进度分开存，避免文字/漫画模式互相覆盖索引语义。
+     */
+    data class MangaViewState(
+        val index: Int = 0,
+        val zoom: Float = 1f,
+        val panX: Float = 0f,
+        val panY: Float = 0f,
+        /**
+         * 连续图：首可见项顶边相对 RecyclerView 顶的偏移（[LinearLayoutManager.scrollToPositionWithOffset]）。
+         */
+        val itemOffset: Int = 0,
+        /** 连续图：整表竖直 scroll 像素（辅助恢复） */
+        val scrollY: Int = 0,
+    )
+
+    fun saveMangaViewState(ctx: Context, fileKey: String, state: MangaViewState) {
+        if (fileKey.isBlank()) return
+        val k = mangaStateKey(fileKey)
+        val ok = prefs(ctx).edit()
+            .putInt("manga_idx_$k", state.index.coerceAtLeast(0))
+            .putFloat("manga_zoom_$k", state.zoom.coerceIn(0.5f, 5f))
+            .putFloat("manga_panX_$k", state.panX)
+            .putFloat("manga_panY_$k", state.panY)
+            .putInt("manga_itemOff_$k", state.itemOffset)
+            .putInt("manga_scrollY_$k", state.scrollY.coerceAtLeast(0))
+            // 调试：便于 adb 对照同一本书
+            .putString("manga_uri_$k", fileKey.take(240))
+            .commit()
+        android.util.Log.i(
+            "MangaZoom",
+            "SAVE ok=$ok key=$k idx=${state.index} zoom=${state.zoom} " +
+                "pan=(${state.panX},${state.panY}) itemOff=${state.itemOffset} " +
+                "scrollY=${state.scrollY} uri=${fileKey.take(120)}",
+        )
+    }
+
+    fun loadMangaViewState(ctx: Context, fileKey: String): MangaViewState {
+        if (fileKey.isBlank()) {
+            android.util.Log.w("MangaZoom", "LOAD skip blank fileKey")
+            return MangaViewState()
+        }
+        val p = prefs(ctx)
+        val keys = listOf(mangaStateKey(fileKey), fileKey.hashCode().toString()).distinct()
+        for (k in keys) {
+            if (!p.contains("manga_zoom_$k") && !p.contains("manga_idx_$k") &&
+                !p.contains("manga_scrollY_$k")
+            ) {
+                continue
+            }
+            val state = MangaViewState(
+                index = p.getInt("manga_idx_$k", 0).coerceAtLeast(0),
+                zoom = p.getFloat("manga_zoom_$k", 1f).coerceIn(0.5f, 5f),
+                panX = p.getFloat("manga_panX_$k", 0f),
+                panY = p.getFloat("manga_panY_$k", 0f),
+                itemOffset = p.getInt("manga_itemOff_$k", 0),
+                scrollY = p.getInt("manga_scrollY_$k", 0).coerceAtLeast(0),
+            )
+            android.util.Log.i(
+                "MangaZoom",
+                "LOAD hit key=$k idx=${state.index} zoom=${state.zoom} " +
+                    "pan=(${state.panX},${state.panY}) itemOff=${state.itemOffset} " +
+                    "scrollY=${state.scrollY} savedUri=${p.getString("manga_uri_$k", "")} " +
+                    "reqUri=${fileKey.take(120)}",
+            )
+            // 命中旧 hash 键时迁移到 MD5 键
+            if (k == fileKey.hashCode().toString() && k != mangaStateKey(fileKey)) {
+                saveMangaViewState(ctx, fileKey, state)
+            }
+            return state
+        }
+        android.util.Log.i(
+            "MangaZoom",
+            "LOAD miss keys=$keys uri=${fileKey.take(120)}",
+        )
+        return MangaViewState()
+    }
+
+    fun clearMangaViewState(ctx: Context, fileKey: String) {
+        if (fileKey.isBlank()) return
+        val k = mangaStateKey(fileKey)
+        prefs(ctx).edit()
+            .remove("manga_idx_$k")
+            .remove("manga_zoom_$k")
+            .remove("manga_panX_$k")
+            .remove("manga_panY_$k")
+            .remove("manga_itemOff_$k")
+            .remove("manga_scrollY_$k")
+            .remove("manga_uri_$k")
+            .apply()
+        android.util.Log.i("MangaZoom", "CLEAR key=$k uri=${fileKey.take(120)}")
+    }
+
+    /** 稳定短键：避免仅用 hashCode 难排查；仍兼容旧 hash 键 */
+    private fun mangaStateKey(fileKey: String): String {
+        // 优先用完整 uri 的稳定短摘要
+        val digest = runCatching {
+            val md = java.security.MessageDigest.getInstance("MD5")
+            md.digest(fileKey.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+                .take(16)
+        }.getOrNull()
+        return digest ?: fileKey.hashCode().toString()
+    }
+
     /** 上次阅读的书籍 key（uri / asset://…） */
     fun lastBookUri(ctx: Context): String? =
         prefs(ctx).getString("lastBookUri", null)?.takeIf { it.isNotBlank() }
@@ -224,15 +343,38 @@ object AppSettings {
     fun lastBookAt(ctx: Context): Long =
         prefs(ctx).getLong("lastBookAt", 0L)
 
-    fun orientationMode(ctx: Context): OrientationMode =
-        runCatching {
+    fun orientationMode(ctx: Context): OrientationMode {
+        val p = prefs(ctx)
+        // 去掉自动旋转：旧 AUTO 一次性迁到竖屏
+        if (!p.getBoolean("orientMigratedNoAuto", false)) {
+            val raw = p.getString("orientationMode", OrientationMode.PORTRAIT.name)
+            val fixed = when (raw) {
+                OrientationMode.LANDSCAPE.name -> OrientationMode.LANDSCAPE
+                else -> OrientationMode.PORTRAIT
+            }
+            p.edit()
+                .putBoolean("orientMigratedNoAuto", true)
+                .putBoolean("orientMigratedAuto", true)
+                .putString("orientationMode", fixed.name)
+                .apply()
+            return fixed
+        }
+        val mode = runCatching {
             OrientationMode.valueOf(
-                prefs(ctx).getString("orientationMode", OrientationMode.PORTRAIT.name)!!,
+                p.getString("orientationMode", OrientationMode.PORTRAIT.name)!!,
             )
         }.getOrDefault(OrientationMode.PORTRAIT)
+        // 运行时若仍读到 AUTO，落到竖屏
+        return if (mode == OrientationMode.AUTO) OrientationMode.PORTRAIT else mode
+    }
 
     fun setOrientationMode(ctx: Context, mode: OrientationMode) {
-        prefs(ctx).edit().putString("orientationMode", mode.name).apply()
+        val fixed = if (mode == OrientationMode.AUTO) OrientationMode.PORTRAIT else mode
+        prefs(ctx).edit()
+            .putString("orientationMode", fixed.name)
+            .putBoolean("orientMigratedAuto", true)
+            .putBoolean("orientMigratedNoAuto", true)
+            .apply()
     }
 
     /** 左边缘滑动：默认关闭（无） */
@@ -279,14 +421,49 @@ object AppSettings {
     }
 
     /**
-     * MOBI 漫画模式：忽略正文，单张图片全屏缩放 + 侧边/滑动翻页。
-     * 默认关闭（正文模式）。
+     * MOBI 浏览模式：正文 / 单图漫画 / 连续图。
+     * 兼容旧键 [mobiMangaMode]：true → MANGA。
      */
+    enum class MobiViewMode {
+        /** 正文段落 */
+        TEXT,
+        /** 一次一张图，侧点/滑动翻页（横竖屏均可） */
+        MANGA,
+        /** 连续上下滚图（横竖屏均可） */
+        CONTINUOUS,
+    }
+
+    fun mobiViewMode(ctx: Context): MobiViewMode {
+        val p = prefs(ctx)
+        val raw = p.getString("mobiViewMode", null)
+        if (!raw.isNullOrBlank()) {
+            return runCatching { MobiViewMode.valueOf(raw) }.getOrElse {
+                // 旧拼写兼容
+                when (raw.uppercase()) {
+                    "SINGLE", "MANGA_SINGLE" -> MobiViewMode.MANGA
+                    "CONT", "CONTINUOUS_SCROLL" -> MobiViewMode.CONTINUOUS
+                    else -> MobiViewMode.TEXT
+                }
+            }
+        }
+        // 迁移旧布尔：漫画开 → 单图漫画
+        return if (p.getBoolean("mobiMangaMode", false)) MobiViewMode.MANGA else MobiViewMode.TEXT
+    }
+
+    fun setMobiViewMode(ctx: Context, mode: MobiViewMode) {
+        prefs(ctx).edit()
+            .putString("mobiViewMode", mode.name)
+            // 同步旧键，避免其它处只读布尔时不一致
+            .putBoolean("mobiMangaMode", mode != MobiViewMode.TEXT)
+            .apply()
+    }
+
+    /** @deprecated 用 [mobiViewMode]；保留给旧调用 */
     fun mobiMangaMode(ctx: Context): Boolean =
-        prefs(ctx).getBoolean("mobiMangaMode", false)
+        mobiViewMode(ctx) != MobiViewMode.TEXT
 
     fun setMobiMangaMode(ctx: Context, enabled: Boolean) {
-        prefs(ctx).edit().putBoolean("mobiMangaMode", enabled).apply()
+        setMobiViewMode(ctx, if (enabled) MobiViewMode.MANGA else MobiViewMode.TEXT)
     }
 
     /** 界面语言，默认中文 */
@@ -331,11 +508,21 @@ object AppSettings {
     ) {
         val path = linkedDocIds.zip(linkedNames)
             .joinToString("\n") { (id, name) -> "$id\t$name" }
+        // commit：退出阅读立刻能 restore 到历史/文件夹
         prefs(ctx).edit()
             .putString("shelfFocusUri", uri)
-            .putString("shelfFocusFolderId", folderId)
+            .putString("shelfFocusFolderId", folderId ?: "")
             .putString("shelfFocusLinkedPath", path)
-            .apply()
+            .putBoolean("shelfFocusNeedRestore", true)
+            .commit()
+    }
+
+    /** 打开阅读时记下「返回要 restore」；onResume 消费一次 */
+    fun consumeShelfFocusNeedRestore(ctx: Context): Boolean {
+        val p = prefs(ctx)
+        if (!p.getBoolean("shelfFocusNeedRestore", false)) return false
+        p.edit().putBoolean("shelfFocusNeedRestore", false).commit()
+        return true
     }
 
     fun lastShelfFocus(ctx: Context): ShelfFocus? {
@@ -375,14 +562,16 @@ object AppSettings {
     )
 
     fun savePdfViewState(ctx: Context, fileKey: String, state: PdfViewState) {
+        if (fileKey.isBlank()) return
         val k = fileKey.hashCode().toString()
+        // commit：缩放/页码写入文件级记录，退出后立刻可恢复
         pdfPrefs(ctx).edit()
             .putInt("pdf_progress_$fileKey", state.page.coerceAtLeast(0))
             .putFloat("pdf_zoom_$k", state.zoom.coerceIn(0.5f, 3.5f))
             .putFloat("pdf_panX_$k", state.panX)
             .putFloat("pdf_panY_$k", state.panY)
             .putInt("pdf_scrollY_$k", state.scrollY.coerceAtLeast(0))
-            .apply()
+            .commit()
     }
 
     fun loadPdfViewState(ctx: Context, fileKey: String): PdfViewState {
@@ -397,7 +586,7 @@ object AppSettings {
         )
     }
 
-    /** 清除单本 PDF 的进度/缩放等视图状态 */
+    /** 清除单本 PDF 的进度/缩放/切边等视图状态 */
     fun clearPdfViewState(ctx: Context, fileKey: String) {
         if (fileKey.isBlank()) return
         val k = fileKey.hashCode().toString()
@@ -407,6 +596,11 @@ object AppSettings {
             .remove("pdf_panX_$k")
             .remove("pdf_panY_$k")
             .remove("pdf_scrollY_$k")
+            .remove("pdf_cropL_$k")
+            .remove("pdf_cropT_$k")
+            .remove("pdf_cropR_$k")
+            .remove("pdf_cropB_$k")
+            .remove("pdf_cropMirror_$k")
             .apply()
         if (lastPdfUri(ctx) == fileKey) {
             pdfPrefs(ctx).edit()
@@ -454,69 +648,117 @@ object AppSettings {
     }
 
     /** PDF 视角（与 TXT 的 orientationMode 分离） */
-    fun pdfOrientationMode(ctx: Context): OrientationMode =
-        runCatching {
+    fun pdfOrientationMode(ctx: Context): OrientationMode {
+        val p = pdfPrefs(ctx)
+        // 去掉自动旋转：旧 AUTO 一次性迁到竖屏
+        if (!p.getBoolean("pdfOrientMigratedNoAuto", false)) {
+            val raw = p.getString("pdfOrientation", OrientationMode.PORTRAIT.name)
+            val fixed = when (raw) {
+                OrientationMode.LANDSCAPE.name -> OrientationMode.LANDSCAPE
+                else -> OrientationMode.PORTRAIT
+            }
+            p.edit()
+                .putBoolean("pdfOrientMigratedNoAuto", true)
+                .putBoolean("pdfOrientMigratedAuto", true)
+                .putString("pdfOrientation", fixed.name)
+                .apply()
+            return fixed
+        }
+        val mode = runCatching {
             OrientationMode.valueOf(
-                pdfPrefs(ctx).getString("pdfOrientation", OrientationMode.PORTRAIT.name)!!,
+                p.getString("pdfOrientation", OrientationMode.PORTRAIT.name)!!,
             )
         }.getOrDefault(OrientationMode.PORTRAIT)
+        return if (mode == OrientationMode.AUTO) OrientationMode.PORTRAIT else mode
+    }
 
     fun setPdfOrientationMode(ctx: Context, mode: OrientationMode) {
-        pdfPrefs(ctx).edit().putString("pdfOrientation", mode.name).apply()
+        val fixed = if (mode == OrientationMode.AUTO) OrientationMode.PORTRAIT else mode
+        pdfPrefs(ctx).edit()
+            .putString("pdfOrientation", fixed.name)
+            .putBoolean("pdfOrientMigratedAuto", true)
+            .putBoolean("pdfOrientMigratedNoAuto", true)
+            .apply()
     }
 
     /**
      * PDF 四边切边比例 0~0.30（左、上、右、下）。
-     * 兼容旧版单值 pdfCrop：若无新键则四边同值。
+     * **按文件独立保存**，互不影响；未设置过则为 0。
      */
-    fun pdfCropMargins(ctx: Context): FloatArray {
+    fun pdfCropMargins(ctx: Context, fileKey: String): FloatArray {
+        if (fileKey.isBlank()) return floatArrayOf(0f, 0f, 0f, 0f)
+        val k = fileKey.hashCode().toString()
         val p = pdfPrefs(ctx)
-        val legacy = p.getFloat("pdfCrop", 0f).coerceIn(0f, 0.30f)
         return floatArrayOf(
-            p.getFloat("pdfCropL", legacy).coerceIn(0f, 0.30f),
-            p.getFloat("pdfCropT", legacy).coerceIn(0f, 0.30f),
-            p.getFloat("pdfCropR", legacy).coerceIn(0f, 0.30f),
-            p.getFloat("pdfCropB", legacy).coerceIn(0f, 0.30f),
+            p.getFloat("pdf_cropL_$k", 0f).coerceIn(0f, 0.30f),
+            p.getFloat("pdf_cropT_$k", 0f).coerceIn(0f, 0.30f),
+            p.getFloat("pdf_cropR_$k", 0f).coerceIn(0f, 0.30f),
+            p.getFloat("pdf_cropB_$k", 0f).coerceIn(0f, 0.30f),
         )
     }
 
-    fun setPdfCropMargins(ctx: Context, left: Float, top: Float, right: Float, bottom: Float) {
+    fun setPdfCropMargins(
+        ctx: Context,
+        fileKey: String,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+    ) {
+        if (fileKey.isBlank()) return
         fun c(v: Float) = v.coerceIn(0f, 0.30f)
+        val k = fileKey.hashCode().toString()
         pdfPrefs(ctx).edit()
-            .putFloat("pdfCropL", c(left))
-            .putFloat("pdfCropT", c(top))
-            .putFloat("pdfCropR", c(right))
-            .putFloat("pdfCropB", c(bottom))
-            .putFloat("pdfCrop", c(maxOf(left, top, right, bottom)))
+            .putFloat("pdf_cropL_$k", c(left))
+            .putFloat("pdf_cropT_$k", c(top))
+            .putFloat("pdf_cropR_$k", c(right))
+            .putFloat("pdf_cropB_$k", c(bottom))
             .apply()
     }
 
-    /** 奇偶页左右边距镜像（扫描书常用） */
-    fun pdfCropMirrorOddEven(ctx: Context): Boolean =
-        pdfPrefs(ctx).getBoolean("pdfCropMirror", false)
+    /** 奇偶页左右边距镜像（扫描书常用）；按文件独立 */
+    fun pdfCropMirrorOddEven(ctx: Context, fileKey: String): Boolean {
+        if (fileKey.isBlank()) return false
+        val k = fileKey.hashCode().toString()
+        return pdfPrefs(ctx).getBoolean("pdf_cropMirror_$k", false)
+    }
 
-    fun setPdfCropMirrorOddEven(ctx: Context, enabled: Boolean) {
-        pdfPrefs(ctx).edit().putBoolean("pdfCropMirror", enabled).apply()
+    fun setPdfCropMirrorOddEven(ctx: Context, fileKey: String, enabled: Boolean) {
+        if (fileKey.isBlank()) return
+        val k = fileKey.hashCode().toString()
+        pdfPrefs(ctx).edit().putBoolean("pdf_cropMirror_$k", enabled).apply()
     }
 
     /**
      * 按页号取实际裁边：开启奇偶对称时，偶数页（index 奇数）左右互换。
      */
-    fun pdfCropMarginsForPage(ctx: Context, pageIndex: Int): FloatArray {
-        val m = pdfCropMargins(ctx)
-        if (!pdfCropMirrorOddEven(ctx) || pageIndex % 2 == 0) return m
+    fun pdfCropMarginsForPage(ctx: Context, fileKey: String, pageIndex: Int): FloatArray {
+        val m = pdfCropMargins(ctx, fileKey)
+        if (!pdfCropMirrorOddEven(ctx, fileKey) || pageIndex % 2 == 0) return m
         return floatArrayOf(m[2], m[1], m[0], m[3])
     }
 
-    @Deprecated("使用 pdfCropMargins")
-    fun pdfCropFraction(ctx: Context): Float {
-        val m = pdfCropMargins(ctx)
-        return maxOf(m[0], m[1], m[2], m[3])
+    /** URI 变更时迁移切边（新 URI 尚无记录才写入） */
+    fun migratePdfCrop(ctx: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val oldK = oldUri.hashCode().toString()
+        val newK = newUri.hashCode().toString()
+        val p = pdfPrefs(ctx)
+        // 新 key 已有任一边记录则不覆盖
+        if (p.contains("pdf_cropL_$newK") || p.contains("pdf_cropMirror_$newK")) return
+        val hasOld = p.contains("pdf_cropL_$oldK") || p.contains("pdf_cropMirror_$oldK")
+        if (!hasOld) return
+        val ed = p.edit()
+        if (p.contains("pdf_cropL_$oldK")) {
+            ed.putFloat("pdf_cropL_$newK", p.getFloat("pdf_cropL_$oldK", 0f).coerceIn(0f, 0.30f))
+            ed.putFloat("pdf_cropT_$newK", p.getFloat("pdf_cropT_$oldK", 0f).coerceIn(0f, 0.30f))
+            ed.putFloat("pdf_cropR_$newK", p.getFloat("pdf_cropR_$oldK", 0f).coerceIn(0f, 0.30f))
+            ed.putFloat("pdf_cropB_$newK", p.getFloat("pdf_cropB_$oldK", 0f).coerceIn(0f, 0.30f))
+        }
+        if (p.contains("pdf_cropMirror_$oldK")) {
+            ed.putBoolean("pdf_cropMirror_$newK", p.getBoolean("pdf_cropMirror_$oldK", false))
+        }
+        ed.apply()
     }
 
-    @Deprecated("使用 setPdfCropMargins")
-    fun setPdfCropFraction(ctx: Context, fraction: Float) {
-        val f = fraction.coerceIn(0f, 0.30f)
-        setPdfCropMargins(ctx, f, f, f, f)
-    }
 }

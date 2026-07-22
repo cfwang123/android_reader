@@ -26,6 +26,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.whj.reader.data.AppSettings
 import com.whj.reader.data.BookEncodingStore
 import com.whj.reader.data.BookFileType
+import com.whj.reader.data.BookLocalDataCleaner
 import com.whj.reader.data.BookshelfStore
 import com.whj.reader.data.FolderImporter
 import com.whj.reader.data.LinkedTreeCacheStore
@@ -281,8 +282,14 @@ class MainActivity : AppCompatActivity() {
             pendingViewName = null
             ingestAndOpenExternal(pending, name)
         }
-        if (locateOnNextResume) {
-            locateOnNextResume = false
+        // 从阅读页返回：丢掉大小缓存，强制重绑进度/上次阅读
+        if (::adapter.isInitialized) {
+            adapter.clearSizeCache()
+        }
+        // 内存 flag 或 prefs（进程被杀后）任一成立 → 恢复历史/文件夹定位
+        val needRestore = locateOnNextResume || AppSettings.consumeShelfFocusNeedRestore(this)
+        locateOnNextResume = false
+        if (needRestore) {
             restoreShelfFocus()
         } else {
             refreshShelf()
@@ -301,6 +308,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveShelfFocusForOpen(uri: String) {
+        // 始终记下「从哪进的阅读」：历史 / 虚拟书架 / 绑定路径 / 根目录
+        // 从阅读历史进入时 folderId = ReadingHistoryStore.FOLDER_ID，退出后才能回到历史
         val browsing = currentFolderId != null || linkedPathStack.isNotEmpty()
         if (browsing) {
             AppSettings.saveShelfFocus(
@@ -312,20 +321,31 @@ class MainActivity : AppCompatActivity() {
             )
             return
         }
-        // 根目录打开（含冷启动自动恢复）：优先保留同 URI 的绑定路径 / 书架 folderId
+        // 根目录打开：优先保留同 URI 已有的绑定路径；否则记书架 folderId
         val existing = AppSettings.lastShelfFocus(this)
         if (existing != null &&
             existing.uri == uri &&
-            (existing.folderId != null || existing.linkedPathRaw.isNotBlank())
+            (
+                ReadingHistoryStore.isHistoryFolderId(existing.folderId) ||
+                    existing.folderId != null ||
+                    existing.linkedPathRaw.isNotBlank()
+                )
         ) {
+            // 更新 uri 时间戳式再写一次，folder 保持原定位
+            AppSettings.saveShelfFocus(
+                this,
+                uri = uri,
+                folderId = existing.folderId,
+                linkedDocIds = AppSettings.parseLinkedPath(existing.linkedPathRaw).map { it.first },
+                linkedNames = AppSettings.parseLinkedPath(existing.linkedPathRaw).map { it.second },
+            )
             return
         }
         val shelfBook = BookshelfStore.findBookByUri(this, uri)
-        val folderId = shelfBook?.folderId
         AppSettings.saveShelfFocus(
             this,
             uri = uri,
-            folderId = folderId,
+            folderId = shelfBook?.folderId,
             linkedDocIds = emptyList(),
             linkedNames = emptyList(),
         )
@@ -335,7 +355,6 @@ class MainActivity : AppCompatActivity() {
         var focus = AppSettings.lastShelfFocus(this)
         val uri = focus?.uri ?: pendingFocusUri
         pendingFocusUri = null
-        // 补全虚拟书架 folderId
         if (!uri.isNullOrBlank()) {
             val shelfBook = BookshelfStore.findBookByUri(this, uri)
             if (focus == null) {
@@ -344,7 +363,10 @@ class MainActivity : AppCompatActivity() {
                     folderId = shelfBook?.folderId,
                     linkedPathRaw = "",
                 )
-            } else if (focus.folderId == null &&
+            } else if (
+                // 历史定位不可被书架 folder 覆盖
+                !ReadingHistoryStore.isHistoryFolderId(focus.folderId) &&
+                focus.folderId == null &&
                 focus.linkedPathRaw.isBlank() &&
                 shelfBook?.folderId != null
             ) {
@@ -1492,7 +1514,8 @@ class MainActivity : AppCompatActivity() {
             popup.menu.add(0, 2, 2, R.string.history_delete_record)
         } else {
             popup.menu.add(0, 1, 1, R.string.move_book)
-            popup.menu.add(0, 2, 2, R.string.delete_book)
+            popup.menu.add(0, 3, 2, R.string.clear_book_record)
+            popup.menu.add(0, 2, 3, R.string.delete_book)
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -1520,6 +1543,10 @@ class MainActivity : AppCompatActivity() {
                     showMoveBookDialog(book)
                     true
                 }
+                3 -> {
+                    confirmClearBookRecord(book.uri)
+                    true
+                }
                 2 -> {
                     confirmDeleteBook(book)
                     true
@@ -1530,10 +1557,11 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
-    /** 绑定文件夹内文件长按：详情 */
+    /** 绑定文件夹内文件长按：详情 / 清除记录 */
     private fun showLinkedFilePopupMenu(entry: LinkedFileEntry, anchor: android.view.View) {
         val popup = PopupMenu(this, anchor)
         popup.menu.add(0, 0, 0, R.string.file_details)
+        popup.menu.add(0, 3, 1, R.string.clear_book_record)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 0 -> {
@@ -1546,10 +1574,37 @@ class MainActivity : AppCompatActivity() {
                     )
                     true
                 }
+                3 -> {
+                    confirmClearBookRecord(entry.uri)
+                    true
+                }
                 else -> false
             }
         }
         popup.show()
+    }
+
+    /** 清除进度 / OCR / 切边等本地缓存，保留书架条目与源文件 */
+    private fun confirmClearBookRecord(uri: String) {
+        if (uri.isBlank()) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.clear_book_record_title)
+            .setMessage(R.string.clear_book_record_msg)
+            .setPositiveButton(R.string.clear_book_record) { _, _ ->
+                // 后台清大缓存，主线程立即刷新书架状态
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) {
+                        BookLocalDataCleaner.clear(this@MainActivity, uri)
+                    }
+                    if (::adapter.isInitialized) {
+                        adapter.clearSizeCache()
+                    }
+                    refreshShelf()
+                    Toasts.show(this@MainActivity, R.string.clear_book_record_done)
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun showFileDetailsDialog(

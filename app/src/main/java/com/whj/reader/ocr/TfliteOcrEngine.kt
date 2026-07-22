@@ -242,9 +242,17 @@ class TfliteOcrEngine(
         r.run(zeros(rin), allocOut(r.getOutputTensor(0).shape()))
     }
 
-    fun recognize(bitmap: Bitmap): OcrResult {
+    /**
+     * @param detThr 检测阈值，默认 0.3；暗色/浅灰字可略降
+     * @param autoInvert 无字且画面偏暗时自动反色再识（夜间截图）
+     */
+    fun recognize(
+        bitmap: Bitmap,
+        detThr: Float = 0.3f,
+        autoInvert: Boolean = true,
+    ): OcrResult {
         logBuf.clear()
-        line("image ${bitmap.width}x${bitmap.height} config=${bitmap.config}")
+        line("image ${bitmap.width}x${bitmap.height} config=${bitmap.config} thr=$detThr")
         val argb = if (bitmap.config == Bitmap.Config.ARGB_8888) {
             bitmap
         } else {
@@ -252,6 +260,86 @@ class TfliteOcrEngine(
         }
 
         val totalStart = System.currentTimeMillis()
+        val mean = sampleMeanLuma(argb)
+        line("meanLuma=${String.format(java.util.Locale.US, "%.1f", mean)}")
+
+        // 浅灰底浅灰字：先做对比度拉伸，再 det
+        val enhanced = enhanceContrast(argb, mean)
+        var work = enhanced ?: argb
+        var result = recognizeArgb(work, detThr)
+        line("pass0 lines=${result.lines.size}")
+
+        // 夜间/仍空：反色 + 低阈值
+        if (autoInvert && result.lines.isEmpty()) {
+            val invSrc = work
+            val inv = invertArgb(invSrc)
+            try {
+                line("retry invert thr=$detThr")
+                val r2 = recognizeArgb(inv, detThr)
+                if (r2.lines.size > result.lines.size) {
+                    result = r2
+                    line("invert better lines=${r2.lines.size}")
+                }
+                if (result.lines.isEmpty()) {
+                    line("retry invert thr=0.12")
+                    val r3 = recognizeArgb(inv, 0.12f)
+                    if (r3.lines.isNotEmpty()) {
+                        result = r3
+                        line("invert+lowThr lines=${r3.lines.size}")
+                    }
+                }
+            } finally {
+                if (inv !== invSrc && !inv.isRecycled) inv.recycle()
+            }
+            if (result.lines.isEmpty()) {
+                line("retry enhance thr=0.12")
+                val r4 = recognizeArgb(work, 0.12f)
+                if (r4.lines.isNotEmpty()) result = r4
+            }
+        }
+
+        if (enhanced != null && enhanced !== argb && !enhanced.isRecycled) {
+            enhanced.recycle()
+        }
+        if (argb !== bitmap && !argb.isRecycled) argb.recycle()
+        val totalMs = System.currentTimeMillis() - totalStart
+        line("total ${totalMs}ms finalLines=${result.lines.size}")
+        return result.copy(totalMs = totalMs, log = logBuf.toString())
+    }
+
+    /** 对比度拉伸：浅字/浅底时提高 det 响应 */
+    private fun enhanceContrast(src: Bitmap, meanLuma: Float): Bitmap? {
+        // 均值已较正常且对比够时跳过
+        if (meanLuma in 90f..170f) return null
+        val w = src.width
+        val h = src.height
+        val out = src.copy(Bitmap.Config.ARGB_8888, true) ?: return null
+        val px = IntArray(w * h)
+        out.getPixels(px, 0, w, 0, 0, w, h)
+        // 用固定因子把灰度拉开
+        val factor = when {
+            meanLuma > 200f -> 2.2f // 很浅
+            meanLuma > 170f -> 1.8f
+            meanLuma < 80f -> 1.6f // 偏暗
+            else -> 1.4f
+        }
+        val mid = meanLuma
+        for (i in px.indices) {
+            val c = px[i]
+            val a = c and 0xFF000000.toInt()
+            var r = ((c shr 16) and 0xFF).toFloat()
+            var g = ((c shr 8) and 0xFF).toFloat()
+            var b = (c and 0xFF).toFloat()
+            r = ((r - mid) * factor + mid).coerceIn(0f, 255f)
+            g = ((g - mid) * factor + mid).coerceIn(0f, 255f)
+            b = ((b - mid) * factor + mid).coerceIn(0f, 255f)
+            px[i] = a or (r.toInt() shl 16) or (g.toInt() shl 8) or b.toInt()
+        }
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    private fun recognizeArgb(argb: Bitmap, detThr: Float): OcrResult {
         var detMs = 0L
         var recMs = 0L
         val boxes: List<FloatArray>
@@ -261,16 +349,15 @@ class TfliteOcrEngine(
             val packed = prepareDet(argb, detInH, detInW)
             scale = packed.scale
             val map = runDetMap(packed.buffer)
-            boxes = boxesFromMap(map, scale, thr = 0.3f, minArea = 16f)
+            boxes = boxesFromMap(map, scale, thr = detThr.coerceIn(0.08f, 0.6f), minArea = 12f)
         }
-        line("det boxes=${boxes.size} ${detMs}ms scale=$scale")
+        line("det boxes=${boxes.size} ${detMs}ms thr=$detThr scale=$scale")
 
         val lines = ArrayList<LineResult>()
         recMs = measureTimeMillis {
             for (box in boxes) {
                 val crop = cropBox(argb, box) ?: continue
                 var work = crop
-                // cls: 0=0°, 1=180°
                 val clsBuf = prepareClsOrRec(work, clsInH, clsInW)
                 val clsOut = Array(1) { FloatArray(2) }
                 cls.run(clsBuf, clsOut)
@@ -279,7 +366,7 @@ class TfliteOcrEngine(
                     if (work !== crop) crop.recycle()
                 }
                 val recBuf = prepareClsOrRec(work, recInH, recInW)
-                val recOutShape = rec.getOutputTensor(0).shape() // [1,T,C]
+                val recOutShape = rec.getOutputTensor(0).shape()
                 val tLen = recOutShape[1]
                 val nCls = recOutShape[2]
                 val recOut = Array(1) { Array(tLen) { FloatArray(nCls) } }
@@ -293,18 +380,58 @@ class TfliteOcrEngine(
             }
         }
         line("cls+rec ${recMs}ms lines=${lines.size}")
-
-        if (argb !== bitmap) argb.recycle()
-        val totalMs = System.currentTimeMillis() - totalStart
-        line("total ${totalMs}ms")
         return OcrResult(
             lines = lines,
             backend = backendName,
             detMs = detMs,
             recMs = recMs,
-            totalMs = totalMs,
-            log = logBuf.toString(),
+            totalMs = detMs + recMs,
+            log = "",
         )
+    }
+
+    private fun sampleMeanLuma(bmp: Bitmap): Float {
+        val w = bmp.width
+        val h = bmp.height
+        if (w < 2 || h < 2) return 255f
+        val stepX = max(1, w / 32)
+        val stepY = max(1, h / 32)
+        var sum = 0L
+        var n = 0
+        var y = 0
+        while (y < h) {
+            var x = 0
+            while (x < w) {
+                val c = bmp.getPixel(x, y)
+                val r = (c shr 16) and 0xFF
+                val g = (c shr 8) and 0xFF
+                val b = c and 0xFF
+                sum += (r * 3 + g * 6 + b) / 10
+                n++
+                x += stepX
+            }
+            y += stepY
+        }
+        return if (n > 0) sum.toFloat() / n else 255f
+    }
+
+    private fun invertArgb(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val out = src.copy(Bitmap.Config.ARGB_8888, true)
+            ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val px = IntArray(w * h)
+        out.getPixels(px, 0, w, 0, 0, w, h)
+        for (i in px.indices) {
+            val c = px[i]
+            val a = c and 0xFF000000.toInt()
+            val r = 255 - ((c shr 16) and 0xFF)
+            val g = 255 - ((c shr 8) and 0xFF)
+            val b = 255 - (c and 0xFF)
+            px[i] = a or (r shl 16) or (g shl 8) or b
+        }
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
     }
 
     override fun close() {

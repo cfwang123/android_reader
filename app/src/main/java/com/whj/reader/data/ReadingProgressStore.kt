@@ -60,7 +60,8 @@ object ReadingProgressStore {
 
     fun remove(ctx: Context, uri: String) {
         if (uri.isBlank()) return
-        prefs(ctx).edit().remove(key(uri)).apply()
+        // commit：清除记录后书架立即读到最新状态
+        prefs(ctx).edit().remove(key(uri)).commit()
     }
 
     fun saveTxt(
@@ -85,6 +86,7 @@ object ReadingProgressStore {
                 kind = Kind.TXT,
                 fileExt = ext,
             ),
+            sync = true,
         )
     }
 
@@ -105,10 +107,11 @@ object ReadingProgressStore {
                 kind = Kind.PDF,
                 fileExt = prev?.fileExt?.takeIf { it.isNotBlank() } ?: ".pdf",
             ),
+            sync = true,
         )
     }
 
-    private fun write(ctx: Context, uri: String, p: Progress) {
+    private fun write(ctx: Context, uri: String, p: Progress, sync: Boolean = false) {
         val o = JSONObject()
             .put("lastOpened", p.lastOpened)
             .put("position", p.position)
@@ -116,7 +119,9 @@ object ReadingProgressStore {
             .put("kind", p.kind.name)
             .put("uri", uri)
             .put("fileExt", p.fileExt)
-        prefs(ctx).edit().putString(key(uri), o.toString()).apply()
+        val ed = prefs(ctx).edit().putString(key(uri), o.toString())
+        // 退出阅读回书架：commit 保证立刻读到最新进度
+        if (sync) ed.commit() else ed.apply()
     }
 
     /**

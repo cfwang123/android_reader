@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -30,6 +31,9 @@ import androidx.appcompat.app.AlertDialog
 import com.whj.reader.ui.AppTheme
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -84,6 +88,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.util.Log
+import kotlin.math.abs
 
 class ReadingActivity : AppCompatActivity() {
 
@@ -93,6 +99,10 @@ class ReadingActivity : AppCompatActivity() {
         const val EXTRA_TITLE = "title"
         /** 指定文本编码；空/不传 = 自动判断 */
         const val EXTRA_ENCODING = "encoding"
+        /** adb logcat -s MangaZoom */
+        private const val TAG_MANGA_ZOOM = "MangaZoom"
+        /** 连续图图间间隔（px） */
+        private const val MANGA_PAGE_GAP_PX = 10
     }
 
     private lateinit var binding: ActivityReadingBinding
@@ -147,11 +157,30 @@ class ReadingActivity : AppCompatActivity() {
     }
     private lateinit var keepScreen: KeepScreenController
 
-    /** MOBI 漫画模式：忽略正文，一次一张图 */
+    /** MOBI 漫画模式：忽略正文，一次一张图（竖屏）；横屏为连续图流 */
     private var mangaMode = false
     private var mangaPaths: List<String> = emptyList()
     private var mangaIndex = 0
     private var mangaLoadJob: Job? = null
+    private var mangaContinuousSetup = false
+    private var mangaContinuousAdapter: MangaContinuousAdapter? = null
+    /**
+     * 待恢复的缩放/平移（相对 fit）。
+     * 单图位图异步解码完成后再应用；关闭时会写入 [AppSettings.MangaViewState]。
+     */
+    private var pendingMangaTransform: Triple<Float, Float, Float>? = null
+    /** 进入漫画恢复期间禁止把 1x 写回 prefs，避免冲掉上次缩放 */
+    private var suppressMangaViewSave = false
+    private var mangaGapDecoration: RecyclerView.ItemDecoration? = null
+    /** 当前是否连续图布局（与 [AppSettings.mobiViewMode] 同步） */
+    private var mangaContinuousPref = false
+    /**
+     * 连续图待恢复滚动：首可见项索引 + 项顶相对 RV 顶偏移 + 绝对 scrollY。
+     * index&lt;0 表示无待恢复滚动。
+     */
+    private var pendingMangaScrollIndex: Int = -1
+    private var pendingMangaScrollOffset: Int = 0
+    private var pendingMangaScrollY: Int = 0
     private val mangaBitmapCache = object : LruCache<String, Bitmap>(
         (Runtime.getRuntime().maxMemory() / 8).toInt().coerceIn(8 * 1024 * 1024, 48 * 1024 * 1024),
     ) {
@@ -274,12 +303,13 @@ class ReadingActivity : AppCompatActivity() {
                 !binding.settingsPanelContainer.isVisible -> {
                     when (zone) {
                         0 -> {
+                            // 菜单打开时只关菜单，不翻页
                             if (chromeVisible) hideChrome()
-                            pageTurn(forward = false)
+                            else pageTurn(forward = false)
                         }
                         2 -> {
                             if (chromeVisible) hideChrome()
-                            pageTurn(forward = true)
+                            else pageTurn(forward = true)
                         }
                         else -> toggleChrome()
                     }
@@ -290,8 +320,10 @@ class ReadingActivity : AppCompatActivity() {
         reader.onHorizontalSwipe = { forward ->
             if (binding.settingsPanelContainer.isVisible) {
                 binding.settingsPanelContainer.isVisible = false
+            } else if (chromeVisible) {
+                // 菜单打开时只关菜单，不翻页
+                hideChrome()
             } else {
-                if (chromeVisible) hideChrome()
                 pageTurn(forward = forward)
             }
         }
@@ -334,12 +366,15 @@ class ReadingActivity : AppCompatActivity() {
             handleEdgeAdjust(isLeft, direction)
         }
         applyEdgeSwipeFlags()
-        applyOrientationMode(AppSettings.orientationMode(this), toast = false)
+        // onCreate 显式允许传感器，避免 AUTO 被误锁竖屏 → 横放 letterbox
+        applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = true)
 
         tts = TtsManager(this)
         tts.listener = ttsListener
         tts.setSpeechRate(AppSettings.ttsRate(this))
         tts.setPitch(AppSettings.ttsPitch(this))
+        // TXT/MOBI/EPUB：不同段落（回车）间隔 0.3 秒
+        tts.setParagraphGapMs(300L)
         // 引擎/发音人在 TtsManager 构造与 onInit 中从 prefs 恢复，勿在 init 前 apply
         tts.init()
 
@@ -352,6 +387,7 @@ class ReadingActivity : AppCompatActivity() {
         setupBackPress()
         applyStyleToUi()
         hideChrome()
+        applyLandscapeFullscreenUi()
         updateClock()
         updateProgressLabel()
 
@@ -419,21 +455,43 @@ class ReadingActivity : AppCompatActivity() {
         applyEdgeSwipeFlags()
         startClockAndBattery()
         if (::keepScreen.isInitialized) keepScreen.onResume()
-        // 前台才允许「自动」使用方向传感器
-        applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = true)
+        // 仅在方向偏好与当前不一致时纠正（同方向不重设，避免闪）
+        applyOrientationMode(AppSettings.orientationMode(this), toast = false, force = false)
     }
 
     override fun onPause() {
         super.onPause()
         stopClockAndBattery()
         if (::keepScreen.isInitialized) keepScreen.onPause()
-        // 后台关闭方向传感器（自动模式锁到当前方向）
-        applyOrientationMode(AppSettings.orientationMode(this), toast = false, allowSensor = false)
         // 锁屏/切后台不暂停 TTS，由前台服务继续播放
         if (mangaMode) {
-            saveProgress(mangaIndex)
+            flushMangaViewStateBeforeLeave()
+            if (allowProgressSave) saveProgress(mangaIndex)
         } else if (::reader.isInitialized) {
             saveProgress(reader.firstVisibleParagraph())
+        }
+    }
+
+    override fun onStop() {
+        // 再保险：离开前台时同步写入缩放/平移
+        if (mangaMode) flushMangaViewStateBeforeLeave()
+        super.onStop()
+    }
+
+    /** 取消节流回调并立刻写入漫画索引+缩放+平移 */
+    private fun flushMangaViewStateBeforeLeave() {
+        if (!::binding.isInitialized) return
+        binding.root.removeCallbacks(saveMangaViewRunnable)
+        if (mangaMode && mangaPaths.isNotEmpty() && fileKey.isNotEmpty()) {
+            val best = bestMangaTransformForSave()
+            Log.i(
+                TAG_MANGA_ZOOM,
+                "flushLeave best=$best live=${readLiveMangaTransform()} " +
+                    "pending=$pendingMangaTransform suppress=$suppressMangaViewSave " +
+                    "cont=${isMangaContinuousLayout()} idx=$mangaIndex",
+            )
+            // 离开时始终写入「最佳」状态（不因 suppress 跳过）
+            writeMangaViewState(best)
         }
     }
 
@@ -521,6 +579,7 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (mangaMode) flushMangaViewStateBeforeLeave()
         streamerJob?.cancel()
         mangaLoadJob?.cancel()
         bookStreamer?.cancel()
@@ -536,8 +595,11 @@ class ReadingActivity : AppCompatActivity() {
             tts.shutdown()
         }
         if (::binding.isInitialized) {
+            binding.root.removeCallbacks(saveMangaViewRunnable)
             binding.mangaImageView.setImageBitmap(null)
+            binding.mangaRecycler.adapter = null
         }
+        mangaContinuousAdapter = null
         mangaBitmapCache.evictAll()
         super.onDestroy()
     }
@@ -742,7 +804,11 @@ class ReadingActivity : AppCompatActivity() {
     private var streamComplete: Boolean = false
 
     private fun setupTopBar() {
-        binding.btnBack.setOnClickListener { finish() }
+        binding.btnBack.setOnClickListener {
+            // 返回前立刻落盘漫画缩放/平移（勿等 onPause 里可能被冲掉）
+            flushMangaViewStateBeforeLeave()
+            finish()
+        }
         binding.btnSearch.setOnClickListener {
             if (fileKey.isBlank()) return@setOnClickListener
             searchLauncher.launch(
@@ -1082,9 +1148,8 @@ class ReadingActivity : AppCompatActivity() {
         val iv = readMenu.menuOrient.getChildAt(0) as? android.widget.ImageView ?: return
         iv.setImageResource(OrientationHelper.menuIconRes(mode))
         val label = when (mode) {
-            OrientationMode.PORTRAIT -> getString(R.string.orient_portrait)
             OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
-            OrientationMode.AUTO -> getString(R.string.orient_auto)
+            else -> getString(R.string.orient_portrait)
         }
         (readMenu.menuOrient.getChildAt(1) as? android.widget.TextView)?.text = label
     }
@@ -1112,15 +1177,15 @@ class ReadingActivity : AppCompatActivity() {
             hideChrome()
             showTocSheet()
         }
-        // 视角：竖屏 → 横屏 → 自动旋转
+        // 视角：竖屏 ↔ 横屏（已去掉自动旋转）
         readMenu.menuOrient.setOnClickListener {
             val next = when (AppSettings.orientationMode(this)) {
-                OrientationMode.PORTRAIT -> OrientationMode.LANDSCAPE
-                OrientationMode.LANDSCAPE -> OrientationMode.AUTO
-                OrientationMode.AUTO -> OrientationMode.PORTRAIT
+                OrientationMode.LANDSCAPE -> OrientationMode.PORTRAIT
+                else -> OrientationMode.LANDSCAPE
             }
             AppSettings.setOrientationMode(this, next)
-            applyOrientationMode(next, toast = true)
+            // 旋转不保留菜单：横屏菜单高度残留会把状态栏顶到中间
+            applyOrientationMode(next, toast = true, force = false, keepMenu = false)
             updateOrientMenuIcon()
         }
         // 全屏显示（沉浸）
@@ -1846,8 +1911,15 @@ class ReadingActivity : AppCompatActivity() {
             persistAndApplyStyle(keepAnchor = true)
         }
 
-        settingsPanel.btnMobiModeText.setOnClickListener { setMobiMangaMode(false) }
-        settingsPanel.btnMobiModeManga.setOnClickListener { setMobiMangaMode(true) }
+        settingsPanel.btnMobiModeText.setOnClickListener {
+            setMobiViewMode(AppSettings.MobiViewMode.TEXT)
+        }
+        settingsPanel.btnMobiModeManga.setOnClickListener {
+            setMobiViewMode(AppSettings.MobiViewMode.MANGA)
+        }
+        settingsPanel.btnMobiModeContinuous.setOnClickListener {
+            setMobiViewMode(AppSettings.MobiViewMode.CONTINUOUS)
+        }
         updateMobiModeButtons()
     }
 
@@ -1885,12 +1957,20 @@ class ReadingActivity : AppCompatActivity() {
         }
     }
 
+    private fun currentMobiViewMode(): AppSettings.MobiViewMode {
+        return when {
+            !mangaMode -> AppSettings.MobiViewMode.TEXT
+            mangaContinuousPref -> AppSettings.MobiViewMode.CONTINUOUS
+            else -> AppSettings.MobiViewMode.MANGA
+        }
+    }
+
     private fun updateMobiModeButtons() {
         if (!::settingsPanel.isInitialized) return
         val show = isMobiBook()
         settingsPanel.rowMobiViewMode.isVisible = show
         if (!show) return
-        val manga = mangaMode
+        val mode = currentMobiViewMode()
         val primary = AppTheme.primary(this)
         val density = resources.displayMetrics.density
         val stroke = (1.5f * density).toInt().coerceAtLeast(2)
@@ -1914,56 +1994,347 @@ class ReadingActivity : AppCompatActivity() {
                     android.content.res.ColorStateList.valueOf(0xFFCCCCCC.toInt())
             }
         }
-        styleToggle(settingsPanel.btnMobiModeText, !manga, R.string.mobi_mode_text)
-        styleToggle(settingsPanel.btnMobiModeManga, manga, R.string.mobi_mode_manga)
-        val modeLabel = getString(if (manga) R.string.mobi_mode_manga else R.string.mobi_mode_text)
+        styleToggle(
+            settingsPanel.btnMobiModeText,
+            mode == AppSettings.MobiViewMode.TEXT,
+            R.string.mobi_mode_text,
+        )
+        styleToggle(
+            settingsPanel.btnMobiModeManga,
+            mode == AppSettings.MobiViewMode.MANGA,
+            R.string.mobi_mode_manga,
+        )
+        styleToggle(
+            settingsPanel.btnMobiModeContinuous,
+            mode == AppSettings.MobiViewMode.CONTINUOUS,
+            R.string.mobi_mode_continuous,
+        )
+        val modeLabel = getString(
+            when (mode) {
+                AppSettings.MobiViewMode.TEXT -> R.string.mobi_mode_text
+                AppSettings.MobiViewMode.MANGA -> R.string.mobi_mode_manga
+                AppSettings.MobiViewMode.CONTINUOUS -> R.string.mobi_mode_continuous
+            },
+        )
         settingsPanel.tvMobiModeCurrent.text = getString(R.string.mobi_mode_current, modeLabel)
     }
 
-    private fun setMobiMangaMode(enabled: Boolean) {
+    private fun setMobiViewMode(mode: AppSettings.MobiViewMode) {
         if (!isMobiBook()) return
-        if (enabled == mangaMode) {
-            // 已是该模式：仅刷新按钮高亮，不关面板
+        if (mode == currentMobiViewMode()) {
             updateMobiModeButtons()
             return
         }
-        if (enabled) {
-            val paths = mangaPaths.ifEmpty { book?.imagePaths.orEmpty() }
-                .filter { File(it).isFile }
-            if (paths.isEmpty()) {
-                Toasts.show(this, R.string.mobi_manga_no_images)
-                updateMobiModeButtons()
-                return
+        when (mode) {
+            AppSettings.MobiViewMode.TEXT -> {
+                AppSettings.setMobiViewMode(this, mode)
+                if (mangaMode) exitMangaMode()
+                mangaContinuousPref = false
             }
-            mangaPaths = paths
-            AppSettings.setMobiMangaMode(this, true)
-            enterMangaMode(restoreIndex = true)
-        } else {
-            AppSettings.setMobiMangaMode(this, false)
-            exitMangaMode()
+            AppSettings.MobiViewMode.MANGA,
+            AppSettings.MobiViewMode.CONTINUOUS,
+            -> {
+                val paths = mangaPaths.ifEmpty { book?.imagePaths.orEmpty() }
+                    .filter { File(it).isFile }
+                if (paths.isEmpty()) {
+                    Toasts.show(this, R.string.mobi_manga_no_images)
+                    updateMobiModeButtons()
+                    return
+                }
+                mangaPaths = paths
+                val wantContinuous = mode == AppSettings.MobiViewMode.CONTINUOUS
+                AppSettings.setMobiViewMode(this, mode)
+                if (mangaMode) {
+                    // 已在图模式：只切换布局，保留索引与缩放
+                    flushMangaViewStateBeforeLeave()
+                    mangaContinuousPref = wantContinuous
+                    updateMangaLayoutForOrientation()
+                    binding.mangaHost.post {
+                        if (mangaMode) restoreMangaZoomFromStore()
+                    }
+                } else {
+                    mangaContinuousPref = wantContinuous
+                    enterMangaMode(restoreIndex = true)
+                }
+            }
         }
-        // 保持风格面板打开，便于看到选中态变化
         updateMobiModeButtons()
     }
 
     private fun setupMangaHost() {
-        binding.mangaImageView.onSideTap = { zone ->
-            when (zone) {
-                0 -> {
-                    if (chromeVisible) hideChrome()
-                    mangaGo(-1)
-                }
-                2 -> {
-                    if (chromeVisible) hideChrome()
-                    mangaGo(+1)
+        val iv = binding.mangaImageView
+        iv.minZoomFactor = 0.5f
+        iv.maxZoomFactor = 5f
+        iv.keepRelativeZoomOnBitmapChange = true
+        iv.onSideTap = { zone ->
+            // 菜单打开时只关菜单，不翻页
+            if (chromeVisible) {
+                hideChrome()
+            } else {
+                when (zone) {
+                    0 -> mangaGo(-1)
+                    2 -> mangaGo(+1)
                 }
             }
         }
-        binding.mangaImageView.onSwipePage = { forward ->
-            if (chromeVisible) hideChrome()
-            mangaGo(if (forward) +1 else -1)
+        iv.onSwipePage = { forward ->
+            if (chromeVisible) {
+                hideChrome()
+            } else {
+                mangaGo(if (forward) +1 else -1)
+            }
         }
-        binding.mangaImageView.onCenterTap = { toggleChrome() }
+        iv.onCenterTap = { toggleChrome() }
+        iv.onZoomChanged = {
+            if (chromeVisible && iv.isScaled()) hideChrome()
+            scheduleSaveMangaViewState()
+        }
+        iv.onTransformChanged = {
+            if (chromeVisible && iv.isScaled()) hideChrome()
+            scheduleSaveMangaViewState()
+        }
+    }
+
+    /** 当前是否使用连续图流（由用户选择，横竖屏均可） */
+    private fun isMangaContinuousLayout(): Boolean =
+        mangaMode && mangaContinuousPref && mangaPaths.isNotEmpty()
+
+    /**
+     * 漫画：单图 [mangaImageView]；连续图：[mangaContinuousHost]（横竖屏均可）。
+     */
+    private fun updateMangaLayoutForOrientation() {
+        if (!mangaMode || !::binding.isInitialized) return
+        if (mangaPaths.isEmpty()) return
+        // 切换布局前先记下当前缩放，切完再恢复
+        val (keepZoom, keepPanX, keepPanY) = currentMangaTransform()
+        pendingMangaTransform = Triple(keepZoom, keepPanX, keepPanY)
+        val continuous = isMangaContinuousLayout()
+        if (continuous) {
+            // 离开单图前，索引已由 mangaIndex 维护
+            binding.mangaImageView.isVisible = false
+            binding.mangaImageView.setImageBitmap(null)
+            binding.mangaContinuousHost.isVisible = true
+            ensureMangaContinuousSetup()
+            mangaContinuousAdapter?.submit(mangaPaths)
+            binding.mangaRecycler.post {
+                if (!isMangaContinuousLayout()) return@post
+                restoreMangaContinuousScrollOrIndex()
+                applyMangaZoom(keepZoom, keepPanX, keepPanY)
+            }
+        } else {
+            if (binding.mangaContinuousHost.isVisible) {
+                syncMangaIndexFromContinuous()
+            }
+            binding.mangaContinuousHost.isVisible = false
+            binding.mangaContinuousHost.resetZoom(notify = false)
+            binding.mangaImageView.isVisible = true
+            showMangaIndex(mangaIndex)
+            binding.mangaImageView.post {
+                if (mangaMode && !isMangaContinuousLayout()) {
+                    tryApplyPendingMangaTransform()
+                }
+            }
+        }
+        updateProgressLabel()
+    }
+
+    private fun ensureMangaContinuousSetup() {
+        if (mangaContinuousSetup) return
+        mangaContinuousSetup = true
+        val zoom = binding.mangaContinuousHost
+        val rv = binding.mangaRecycler
+        zoom.minZoom = 0.5f
+        zoom.maxZoom = 3.5f
+        zoom.continuousScrollWhenZoomed = true
+        zoom.zoomTarget = rv
+        zoom.resetZoom(notify = false)
+
+        val adapter = MangaContinuousAdapter()
+        mangaContinuousAdapter = adapter
+        rv.layoutManager = LinearLayoutManager(this, RecyclerView.VERTICAL, false)
+        rv.adapter = adapter
+        rv.itemAnimator = null
+        rv.setHasFixedSize(false)
+        // 图间 5px 由适配器内 divider 控制（黑条可见）
+        mangaGapDecoration?.let { rv.removeItemDecoration(it) }
+        mangaGapDecoration = null
+        rv.setBackgroundColor(0xFF000000.toInt())
+        rv.addOnScrollListener(
+            object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    if (!isMangaContinuousLayout()) return
+                    if (chromeVisible && dy != 0) hideChrome()
+                    syncMangaIndexFromContinuous()
+                    updateProgressLabel()
+                }
+
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    if (!isMangaContinuousLayout()) return
+                    // 停稳后写入竖直位置
+                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        syncMangaIndexFromContinuous()
+                        scheduleSaveMangaViewState()
+                    }
+                }
+            },
+        )
+
+        zoom.onSingleTap = { _, _ -> toggleChrome() }
+        // 连续流：侧点/水平滑跳到相邻图（未缩放且非双指手势时）
+        zoom.onSideTapImmediate = { zone, _, _ ->
+            // 菜单打开时只关菜单，不翻页
+            if (chromeVisible) {
+                hideChrome()
+            } else {
+                mangaGo(if (zone == 2) +1 else -1)
+            }
+        }
+        zoom.onHorizontalSwipe = { forward ->
+            if (chromeVisible) {
+                hideChrome()
+            } else {
+                mangaGo(if (forward) +1 else -1)
+            }
+        }
+        zoom.onPanOverscroll = overscroll@{ _, overY ->
+            if (!isMangaContinuousLayout()) return@overscroll
+            if (chromeVisible) hideChrome()
+            val z = zoom.contentZoom.coerceAtLeast(0.01f)
+            val scrollDy = (-overY / z).toInt()
+            if (scrollDy != 0) {
+                rv.scrollBy(0, scrollDy)
+                syncMangaIndexFromContinuous()
+                scheduleSaveMangaViewState()
+            }
+        }
+        zoom.onFlingScroll = fling@{ _, velocityY ->
+            if (!isMangaContinuousLayout()) return@fling
+            val z = zoom.contentZoom.coerceAtLeast(0.01f)
+            val vy = (-velocityY / z).toInt()
+            if (vy != 0) rv.fling(0, vy)
+        }
+        zoom.onStopScroll = { rv.stopScroll() }
+        zoom.onZoomChanged = {
+            if (chromeVisible && zoom.isScaled()) hideChrome()
+            scheduleSaveMangaViewState()
+        }
+        zoom.onTransformChanged = {
+            if (chromeVisible &&
+                (zoom.isScaled() || zoom.getPanX() != 0f || zoom.getPanY() != 0f)
+            ) {
+                hideChrome()
+            }
+            scheduleSaveMangaViewState()
+        }
+    }
+
+    private fun scrollMangaContinuousTo(index: Int, smooth: Boolean) {
+        val rv = binding.mangaRecycler
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return
+        val i = index.coerceIn(0, (mangaPaths.size - 1).coerceAtLeast(0))
+        if (smooth) {
+            rv.smoothScrollToPosition(i)
+        } else {
+            lm.scrollToPositionWithOffset(i, 0)
+        }
+        mangaIndex = i
+    }
+
+    /**
+     * 连续图：读取首可见项 + 项顶偏移 + 绝对 scrollY。
+     * @return Triple(index, itemOffset, scrollY)
+     */
+    private fun captureMangaContinuousScroll(): Triple<Int, Int, Int> {
+        if (!isMangaContinuousLayout() || !::binding.isInitialized) {
+            return Triple(mangaIndex, 0, 0)
+        }
+        val rv = binding.mangaRecycler
+        val lm = rv.layoutManager as? LinearLayoutManager
+            ?: return Triple(mangaIndex, 0, 0)
+        val first = lm.findFirstVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION) {
+            return Triple(mangaIndex, 0, rv.computeVerticalScrollOffset().coerceAtLeast(0))
+        }
+        val child = lm.findViewByPosition(first)
+        val itemOffset = child?.top ?: 0
+        val scrollY = rv.computeVerticalScrollOffset().coerceAtLeast(0)
+        return Triple(first, itemOffset, scrollY)
+    }
+
+    /**
+     * 恢复连续图竖直位置：优先 index+itemOffset，再用 scrollY 微调。
+     * 图高异步加载后会再试几次。
+     */
+    private fun restoreMangaContinuousScrollOrIndex() {
+        if (!isMangaContinuousLayout()) return
+        val rv = binding.mangaRecycler
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return
+        val idx = if (pendingMangaScrollIndex >= 0) {
+            pendingMangaScrollIndex.coerceIn(0, mangaPaths.lastIndex)
+        } else {
+            mangaIndex.coerceIn(0, mangaPaths.lastIndex)
+        }
+        val itemOff = pendingMangaScrollOffset
+        val targetScrollY = pendingMangaScrollY.coerceAtLeast(0)
+        mangaIndex = idx
+        lm.scrollToPositionWithOffset(idx, itemOff)
+        Log.i(
+            TAG_MANGA_ZOOM,
+            "restoreScroll idx=$idx itemOff=$itemOff targetScrollY=$targetScrollY",
+        )
+        // 图高就位后再对齐绝对 scrollY（多帧重试）
+        if (targetScrollY > 0) {
+            val delays = intArrayOf(0, 50, 150, 400, 800)
+            for (d in delays) {
+                rv.postDelayed({
+                    if (!mangaMode || !isMangaContinuousLayout() || isFinishing || isDestroyed) {
+                        return@postDelayed
+                    }
+                    val cur = rv.computeVerticalScrollOffset()
+                    val delta = targetScrollY - cur
+                    if (abs(delta) > 2) {
+                        rv.scrollBy(0, delta)
+                        Log.i(
+                            TAG_MANGA_ZOOM,
+                            "restoreScrollY tick d=${d}ms cur=$cur → target=$targetScrollY delta=$delta " +
+                                "now=${rv.computeVerticalScrollOffset()}",
+                        )
+                    }
+                    // 同时再钉一次 index+offset（图高变化可能冲掉）
+                    if (d <= 150) {
+                        lm.scrollToPositionWithOffset(idx, itemOff)
+                        if (targetScrollY > 0) {
+                            val c2 = rv.computeVerticalScrollOffset()
+                            val d2 = targetScrollY - c2
+                            if (abs(d2) > 2) rv.scrollBy(0, d2)
+                        }
+                    }
+                    syncMangaIndexFromContinuous()
+                    updateProgressLabel()
+                }, d.toLong())
+            }
+        }
+    }
+
+    private fun syncMangaIndexFromContinuous() {
+        if (!binding.mangaContinuousHost.isVisible) return
+        val lm = binding.mangaRecycler.layoutManager as? LinearLayoutManager ?: return
+        val first = lm.findFirstVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION) return
+        // 优先取占视口较多的项
+        val firstView = lm.findViewByPosition(first)
+        val second = lm.findFirstCompletelyVisibleItemPosition()
+        val pick = when {
+            second != RecyclerView.NO_POSITION -> second
+            firstView != null && firstView.bottom < binding.mangaRecycler.height / 3 ->
+                (first + 1).coerceAtMost(mangaPaths.lastIndex)
+            else -> first
+        }
+        if (pick in mangaPaths.indices && pick != mangaIndex) {
+            mangaIndex = pick
+            if (allowProgressSave) saveProgress(mangaIndex)
+            preloadMangaNeighbors(mangaIndex)
+        }
     }
 
     private fun enterMangaMode(restoreIndex: Boolean) {
@@ -1978,35 +2349,298 @@ class ReadingActivity : AppCompatActivity() {
         // 切到漫画前若在朗读则停止
         if (::tts.isInitialized) tts.stop()
         mangaMode = true
+        // 与全局偏好对齐（连续图 / 单图漫画）
+        val pref = AppSettings.mobiViewMode(this)
+        mangaContinuousPref = pref == AppSettings.MobiViewMode.CONTINUOUS
         binding.mangaHost.isVisible = true
         reader.visibility = View.GONE
+        // 先读出上次缩放/平移，再布局；禁止 save 用 1x 覆盖 prefs
+        suppressMangaViewSave = true
         if (restoreIndex) {
-            val saved = ReadingProgressStore.get(this, fileKey)
-            // 仅当 total 看起来是图片数时才按图片进度恢复
-            mangaIndex = when {
-                saved != null && saved.total == mangaPaths.size ->
-                    saved.position.coerceIn(0, mangaPaths.lastIndex)
-                saved != null && saved.total > 0 && saved.total <= mangaPaths.size * 2 &&
-                    saved.position < mangaPaths.size ->
-                    saved.position.coerceIn(0, mangaPaths.lastIndex)
-                else -> 0
-            }
+            mangaIndex = resolveMangaRestoreIndex()
+            loadPendingMangaTransformFromStore()
         } else {
             mangaIndex = mangaIndex.coerceIn(0, mangaPaths.lastIndex)
+            if (pendingMangaTransform == null) {
+                loadPendingMangaTransformFromStore()
+            }
         }
-        showMangaIndex(mangaIndex)
+        updateMangaLayoutForOrientation()
         allowProgressSave = true
+        // 只写进度索引，不写缩放（suppress 中）
         saveProgress(mangaIndex)
+        // 布局 + 位图就绪后反复应用缩放
+        scheduleRestoreMangaZoom()
         updateProgressLabel()
         binding.tvChapterTitle.text = ""
         updateMobiModeButtons()
         hideLoadOverlay()
     }
 
+    private fun loadPendingMangaTransformFromStore() {
+        if (fileKey.isEmpty()) {
+            Log.w(TAG_MANGA_ZOOM, "loadPending skip empty fileKey")
+            return
+        }
+        val state = AppSettings.loadMangaViewState(this, fileKey)
+        val zoom = state.zoom.coerceIn(0.5f, 5f)
+        val panX = state.panX
+        val panY = state.panY
+        // 连续图竖直位置：始终记下（即使 zoom 为 1）
+        pendingMangaScrollIndex = state.index
+        pendingMangaScrollOffset = state.itemOffset
+        pendingMangaScrollY = state.scrollY.coerceAtLeast(0)
+        Log.i(
+            TAG_MANGA_ZOOM,
+            "loadPending raw zoom=$zoom pan=($panX,$panY) idx=${state.index} " +
+                "itemOff=${state.itemOffset} scrollY=${state.scrollY} " +
+                "cont=$mangaContinuousPref fileKeyLen=${fileKey.length}",
+        )
+        if (abs(zoom - 1f) < 0.02f && abs(panX) < 0.5f && abs(panY) < 0.5f) {
+            Log.i(TAG_MANGA_ZOOM, "loadPending zoom identity; scroll pending kept")
+            return
+        }
+        pendingMangaTransform = Triple(zoom, panX, panY)
+        Log.i(TAG_MANGA_ZOOM, "loadPending set pending=$pendingMangaTransform")
+    }
+
+    private fun scheduleRestoreMangaZoom() {
+        val attempts = intArrayOf(0, 16, 48, 120, 280, 500, 900, 1500)
+        Log.i(
+            TAG_MANGA_ZOOM,
+            "scheduleRestore pending=$pendingMangaTransform cont=${isMangaContinuousLayout()} " +
+                "suppress=$suppressMangaViewSave",
+        )
+        for (delay in attempts) {
+            binding.mangaHost.postDelayed({
+                if (!mangaMode || isFinishing || isDestroyed) return@postDelayed
+                val before = readLiveMangaTransform()
+                tryApplyPendingMangaTransform()
+                val after = readLiveMangaTransform()
+                val applied = isPendingMangaTransformAppliedOnView()
+                Log.i(
+                    TAG_MANGA_ZOOM,
+                    "restore tick delay=${delay}ms applied=$applied " +
+                        "before=$before after=$after pending=$pendingMangaTransform " +
+                        "cont=${isMangaContinuousLayout()} " +
+                        "ivW=${binding.mangaImageView.width} hasBmp=${binding.mangaImageView.hasBitmap()} " +
+                        "hostW=${binding.mangaContinuousHost.width}",
+                )
+                if (applied) {
+                    suppressMangaViewSave = false
+                    // 不在此处 save：避免把刚恢复的值再经 live 误判冲掉
+                } else if (delay >= attempts.last()) {
+                    Log.w(TAG_MANGA_ZOOM, "restore FAILED after all retries")
+                    suppressMangaViewSave = false
+                }
+            }, delay.toLong())
+        }
+    }
+
+    /**
+     * 用控件实读判断 pending 是否已应用。
+     * 切勿用 [currentMangaTransform]（会回落 pending 造成「假成功」）。
+     */
+    private fun isPendingMangaTransformAppliedOnView(): Boolean {
+        val t = pendingMangaTransform ?: return true
+        val live = readLiveMangaTransform() ?: return false
+        val ok = abs(live.first - t.first) < 0.05f &&
+            abs(live.second - t.second) < 12f &&
+            abs(live.third - t.third) < 12f
+        return ok
+    }
+
+    /** 优先专用漫画进度，再回退 ReadingProgressStore（兼容旧数据） */
+    private fun resolveMangaRestoreIndex(): Int {
+        if (mangaPaths.isEmpty()) return 0
+        val last = mangaPaths.lastIndex
+        val view = AppSettings.loadMangaViewState(this, fileKey)
+        if (view.index in 0..last) {
+            return view.index
+        }
+        val saved = ReadingProgressStore.get(this, fileKey) ?: return 0
+        return when {
+            saved.position !in 0..last -> 0
+            saved.total == mangaPaths.size -> saved.position
+            saved.total > 0 && saved.total <= mangaPaths.size * 2 -> saved.position
+            // 旧记录 total 可能是段数；位置仍在图片范围内则采用
+            saved.position <= last && saved.total == 0 -> saved.position
+            else -> 0
+        }
+    }
+
+    private val saveMangaViewRunnable = Runnable {
+        if (!isFinishing && !isDestroyed && mangaMode && allowProgressSave) {
+            saveMangaViewStateNow()
+        }
+    }
+
+    private fun scheduleSaveMangaViewState() {
+        if (!mangaMode || !allowProgressSave || fileKey.isEmpty()) return
+        if (suppressMangaViewSave) {
+            Log.i(TAG_MANGA_ZOOM, "scheduleSave skipped suppress=true")
+            return
+        }
+        binding.root.removeCallbacks(saveMangaViewRunnable)
+        binding.root.postDelayed(saveMangaViewRunnable, 120L)
+    }
+
+    private fun saveMangaViewStateNow() {
+        // 恢复过程中控件可能仍是 1x：跳过节流保存，避免冲掉 prefs
+        if (suppressMangaViewSave) {
+            Log.i(TAG_MANGA_ZOOM, "saveNow skipped suppress=true pending=$pendingMangaTransform")
+            return
+        }
+        if (fileKey.isEmpty() || !mangaMode || mangaPaths.isEmpty()) return
+        if (!::binding.isInitialized) return
+        val best = bestMangaTransformForSave()
+        Log.i(
+            TAG_MANGA_ZOOM,
+            "saveNow best=$best live=${readLiveMangaTransform()} pending=$pendingMangaTransform " +
+                "cont=${isMangaContinuousLayout()} idx=$mangaIndex",
+        )
+        writeMangaViewState(best)
+    }
+
+    private fun writeMangaViewState(t: Triple<Float, Float, Float>) {
+        val (zoom, panX, panY) = t
+        pendingMangaTransform = Triple(zoom, panX, panY)
+        val (scrollIdx, itemOff, scrollY) = if (isMangaContinuousLayout()) {
+            captureMangaContinuousScroll()
+        } else {
+            Triple(mangaIndex.coerceIn(0, mangaPaths.lastIndex), 0, 0)
+        }
+        // 连续图以滚动首项为准写索引；单图用 mangaIndex
+        val idx = if (isMangaContinuousLayout()) {
+            scrollIdx.coerceIn(0, mangaPaths.lastIndex)
+        } else {
+            mangaIndex.coerceIn(0, mangaPaths.lastIndex)
+        }
+        mangaIndex = idx
+        // 同步 pending 滚动，避免恢复中误写 0
+        pendingMangaScrollIndex = idx
+        pendingMangaScrollOffset = itemOff
+        pendingMangaScrollY = scrollY
+        Log.i(
+            TAG_MANGA_ZOOM,
+            "writeState z=$zoom pan=($panX,$panY) idx=$idx itemOff=$itemOff scrollY=$scrollY " +
+                "cont=${isMangaContinuousLayout()} fileKey=${fileKey.take(100)} " +
+                "suppress=$suppressMangaViewSave",
+        )
+        AppSettings.saveMangaViewState(
+            this,
+            fileKey,
+            AppSettings.MangaViewState(
+                index = idx,
+                zoom = zoom.coerceIn(0.5f, 5f),
+                panX = panX,
+                panY = panY,
+                itemOffset = itemOff,
+                scrollY = scrollY,
+            ),
+        )
+    }
+
+    /** 控件实读；未就绪返回 null */
+    private fun readLiveMangaTransform(): Triple<Float, Float, Float>? {
+        if (!::binding.isInitialized) return null
+        if (isMangaContinuousLayout()) {
+            val z = binding.mangaContinuousHost
+            if (z.width <= 0) return null
+            return Triple(z.contentZoom.coerceIn(0.5f, 3.5f), z.getPanX(), z.getPanY())
+        }
+        val iv = binding.mangaImageView
+        if (iv.width <= 0 || !iv.hasBitmap()) return null
+        return Triple(iv.getRelativeZoom().coerceIn(0.5f, 5f), iv.getPanX(), iv.getPanY())
+    }
+
+    private fun isIdentityTransform(t: Triple<Float, Float, Float>): Boolean =
+        abs(t.first - 1f) < 0.02f && abs(t.second) < 0.5f && abs(t.third) < 0.5f
+
+    private fun isUsefulTransform(t: Triple<Float, Float, Float>): Boolean =
+        !isIdentityTransform(t)
+
+    /**
+     * 保存用：控件若仍是 1x 而 pending 有缩放，优先 pending（防止恢复中误写）。
+     */
+    private fun bestMangaTransformForSave(): Triple<Float, Float, Float> {
+        val pending = pendingMangaTransform
+        val live = readLiveMangaTransform()
+        if (live != null) {
+            if (isIdentityTransform(live) && pending != null && isUsefulTransform(pending)) {
+                return pending
+            }
+            return live
+        }
+        return pending ?: Triple(1f, 0f, 0f)
+    }
+
+    private fun currentMangaTransform(): Triple<Float, Float, Float> =
+        bestMangaTransformForSave()
+
+    private fun restoreMangaZoomFromStore() {
+        if (!mangaMode || fileKey.isEmpty()) return
+        loadPendingMangaTransformFromStore()
+        tryApplyPendingMangaTransform()
+        scheduleRestoreMangaZoom()
+    }
+
+    private fun applyMangaZoom(zoom: Float, panX: Float, panY: Float) {
+        pendingMangaTransform = Triple(zoom, panX, panY)
+        tryApplyPendingMangaTransform()
+    }
+
+    private fun tryApplyPendingMangaTransform() {
+        val t = pendingMangaTransform
+        if (t == null) {
+            Log.d(TAG_MANGA_ZOOM, "tryApply no pending")
+            return
+        }
+        val (zoom, panX, panY) = t
+        if (isMangaContinuousLayout()) {
+            val host = binding.mangaContinuousHost
+            if (host.width <= 0 || host.height <= 0) {
+                Log.d(TAG_MANGA_ZOOM, "tryApply cont host not laid out w=${host.width} h=${host.height}")
+                return
+            }
+            host.setTransform(zoom.coerceIn(0.5f, 3.5f), panX, panY, notify = false)
+            Log.i(
+                TAG_MANGA_ZOOM,
+                "tryApply cont set z=$zoom pan=($panX,$panY) → live=${readLiveMangaTransform()}",
+            )
+        } else {
+            val iv = binding.mangaImageView
+            if (iv.width <= 0 || iv.height <= 0 || !iv.hasBitmap()) {
+                Log.d(
+                    TAG_MANGA_ZOOM,
+                    "tryApply single not ready w=${iv.width} h=${iv.height} bmp=${iv.hasBitmap()}",
+                )
+                return
+            }
+            iv.setTransform(zoom.coerceIn(0.5f, 5f), panX, panY, notify = false)
+            Log.i(
+                TAG_MANGA_ZOOM,
+                "tryApply single set z=$zoom pan=($panX,$panY) rel=${iv.getRelativeZoom()} " +
+                    "live=${readLiveMangaTransform()}",
+            )
+        }
+    }
+
     private fun exitMangaMode() {
+        // 切回正文前先记下漫画缩放，便于下次再进漫画
+        if (allowProgressSave && mangaPaths.isNotEmpty()) {
+            flushMangaViewStateBeforeLeave()
+        }
         mangaMode = false
         mangaLoadJob?.cancel()
+        pendingMangaTransform = null
+        pendingMangaScrollIndex = -1
+        pendingMangaScrollOffset = 0
+        pendingMangaScrollY = 0
         binding.mangaHost.isVisible = false
+        binding.mangaContinuousHost.isVisible = false
+        binding.mangaContinuousHost.resetZoom(notify = false)
+        binding.mangaImageView.isVisible = true
         binding.mangaImageView.setImageBitmap(null)
         reader.visibility = View.VISIBLE
         updateProgressLabel()
@@ -2027,7 +2661,12 @@ class ReadingActivity : AppCompatActivity() {
             )
             return
         }
-        showMangaIndex(next)
+        mangaIndex = next
+        if (isMangaContinuousLayout()) {
+            scrollMangaContinuousTo(next, smooth = true)
+        } else {
+            showMangaIndex(next)
+        }
         if (allowProgressSave) saveProgress(next)
         updateProgressLabel()
     }
@@ -2035,10 +2674,18 @@ class ReadingActivity : AppCompatActivity() {
     private fun showMangaIndex(i: Int) {
         if (mangaPaths.isEmpty()) return
         mangaIndex = i.coerceIn(0, mangaPaths.lastIndex)
+        // 横屏连续流由列表负责显示
+        if (isMangaContinuousLayout()) {
+            scrollMangaContinuousTo(mangaIndex, smooth = false)
+            binding.mangaProgress.isVisible = false
+            preloadMangaNeighbors(mangaIndex)
+            return
+        }
         val path = mangaPaths[mangaIndex]
         val cached = mangaBitmapCache.get(path)
         if (cached != null && !cached.isRecycled) {
             binding.mangaImageView.setImageBitmap(cached)
+            afterMangaBitmapReady()
             binding.mangaProgress.isVisible = false
             preloadMangaNeighbors(mangaIndex)
             return
@@ -2053,7 +2700,7 @@ class ReadingActivity : AppCompatActivity() {
                 bmp?.recycle()
                 return@launch
             }
-            if (mangaIndex != i) {
+            if (mangaIndex != i || isMangaContinuousLayout()) {
                 if (bmp != null) mangaBitmapCache.put(path, bmp)
                 return@launch
             }
@@ -2065,19 +2712,189 @@ class ReadingActivity : AppCompatActivity() {
             }
             mangaBitmapCache.put(path, bmp)
             binding.mangaImageView.setImageBitmap(bmp)
+            afterMangaBitmapReady()
             binding.mangaProgress.isVisible = false
             preloadMangaNeighbors(mangaIndex)
         }
     }
 
+    /**
+     * 位图就绪后：优先应用 pending（打开时恢复）；
+     * 若 keepRelativeZoom 已保留会话缩放，则同步 pending 为当前值。
+     */
+    private fun afterMangaBitmapReady() {
+        val iv = binding.mangaImageView
+        val t = pendingMangaTransform
+        val pendingUseful = t != null && isUsefulTransform(t)
+        val viewScaled = iv.isScaled() ||
+            abs(iv.getRelativeZoom() - 1f) > 0.02f ||
+            abs(iv.getPanX()) > 1f ||
+            abs(iv.getPanY()) > 1f
+        Log.i(
+            TAG_MANGA_ZOOM,
+            "afterBitmapReady pendingUseful=$pendingUseful viewScaled=$viewScaled " +
+                "suppress=$suppressMangaViewSave rel=${iv.getRelativeZoom()} " +
+                "pan=(${iv.getPanX()},${iv.getPanY()}) pending=$t",
+        )
+        if (pendingUseful && (!viewScaled || suppressMangaViewSave)) {
+            tryApplyPendingMangaTransform()
+            if (isPendingMangaTransformAppliedOnView()) {
+                suppressMangaViewSave = false
+                Log.i(TAG_MANGA_ZOOM, "afterBitmapReady applied OK suppress=false")
+            }
+            return
+        }
+        if (viewScaled && !suppressMangaViewSave) {
+            pendingMangaTransform = Triple(
+                iv.getRelativeZoom().coerceIn(0.5f, 5f),
+                iv.getPanX(),
+                iv.getPanY(),
+            )
+        }
+    }
+
     private fun preloadMangaNeighbors(i: Int) {
-        val targets = listOf(i - 1, i + 1, i + 2).filter { it in mangaPaths.indices }
+        val targets = listOf(i - 1, i + 1, i + 2, i + 3, i - 2)
+            .filter { it in mangaPaths.indices }
+            .distinct()
         lifecycleScope.launch(Dispatchers.IO) {
             for (ti in targets) {
                 val p = mangaPaths[ti]
                 if (mangaBitmapCache.get(p) != null) continue
                 val bmp = decodeMangaSampled(p, mangaMaxSide()) ?: continue
                 mangaBitmapCache.put(p, bmp)
+            }
+        }
+    }
+
+    /**
+     * 连续图列表：每项一图 + 底部分隔条 [MANGA_PAGE_GAP_PX]。
+     */
+    private inner class MangaContinuousAdapter :
+        RecyclerView.Adapter<MangaContinuousAdapter.VH>() {
+
+        private var paths: List<String> = emptyList()
+
+        fun submit(newPaths: List<String>) {
+            paths = newPaths
+            notifyDataSetChanged()
+        }
+
+        override fun getItemCount(): Int = paths.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+            val ctx = parent.context
+            val root = android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                setBackgroundColor(0xFF000000.toInt())
+            }
+            val iv = android.widget.ImageView(ctx).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                adjustViewBounds = true
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                setBackgroundColor(0xFF000000.toInt())
+            }
+            val gap = View(ctx).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    MANGA_PAGE_GAP_PX,
+                )
+                setBackgroundColor(0xFF000000.toInt())
+            }
+            root.addView(iv)
+            root.addView(gap)
+            return VH(root, iv, gap)
+        }
+
+        override fun onBindViewHolder(holder: VH, position: Int) {
+            val path = paths.getOrNull(position) ?: return
+            holder.gap.visibility =
+                if (position < paths.lastIndex) View.VISIBLE else View.GONE
+            holder.bind(path, position)
+        }
+
+        override fun onViewRecycled(holder: VH) {
+            holder.unbind()
+            super.onViewRecycled(holder)
+        }
+
+        inner class VH(
+            root: View,
+            val imageView: android.widget.ImageView,
+            val gap: View,
+        ) : RecyclerView.ViewHolder(root) {
+            private var boundPath: String? = null
+            private var loadToken = 0
+
+            fun bind(path: String, position: Int) {
+                boundPath = path
+                val token = ++loadToken
+                val cached = mangaBitmapCache.get(path)
+                if (cached != null && !cached.isRecycled) {
+                    applyBitmap(cached)
+                    return
+                }
+                imageView.setImageBitmap(null)
+                // 先占位：按常见漫画竖向比例，避免高度塌缩
+                val w = (imageView.parent as? View)?.width?.takeIf { it > 0 }
+                    ?: binding.mangaRecycler.width.takeIf { it > 0 }
+                    ?: resources.displayMetrics.widthPixels
+                imageView.layoutParams = imageView.layoutParams.apply {
+                    height = (w * 1.4f).toInt().coerceAtLeast(1)
+                }
+                lifecycleScope.launch {
+                    val bmp = withContext(Dispatchers.IO) {
+                        decodeMangaSampled(path, mangaMaxSide())
+                    }
+                    if (token != loadToken || boundPath != path) {
+                        // 过期结果仍可入缓存
+                        if (bmp != null) mangaBitmapCache.put(path, bmp)
+                        return@launch
+                    }
+                    if (bmp == null) {
+                        imageView.setImageBitmap(null)
+                        return@launch
+                    }
+                    mangaBitmapCache.put(path, bmp)
+                    applyBitmap(bmp)
+                    // 邻近预载
+                    if (position == mangaIndex ||
+                        position == mangaIndex + 1 ||
+                        position == mangaIndex - 1
+                    ) {
+                        preloadMangaNeighbors(position)
+                    }
+                }
+            }
+
+            private fun applyBitmap(bmp: Bitmap) {
+                val parentW = (imageView.parent as? View)?.width?.takeIf { it > 0 }
+                    ?: binding.mangaRecycler.width.takeIf { it > 0 }
+                    ?: resources.displayMetrics.widthPixels
+                val h = if (bmp.width > 0) {
+                    (parentW.toLong() * bmp.height / bmp.width).toInt().coerceAtLeast(1)
+                } else {
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                }
+                val lp = imageView.layoutParams
+                if (lp.height != h) {
+                    lp.height = h
+                    imageView.layoutParams = lp
+                }
+                imageView.setImageBitmap(bmp)
+            }
+
+            fun unbind() {
+                loadToken++
+                boundPath = null
+                imageView.setImageBitmap(null)
             }
         }
     }
@@ -2662,39 +3479,133 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     /**
-     * 全屏：隐藏导航栏，**保留系统状态栏**（打孔屏仍显示时间/信号/电量）。
+     * 全屏开关：竖屏隐藏导航栏、保留系统状态栏；横屏始终全屏（见 [applyLandscapeFullscreenUi]）。
      */
     private fun applyImmersive() {
-        @Suppress("DEPRECATION")
-        if (immersive) {
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                )
-            applyStyleToUi()
-        } else {
-            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
-            applyStyleToUi()
-        }
+        applyLandscapeFullscreenUi()
+        applyStyleToUi()
     }
+
+    /** 合并同帧内多次方向重铺，避免闪烁 */
+    private var pendingOrientRelayout: Runnable? = null
+    private var orientRelayoutKeepMenu = false
 
     private fun applyOrientationMode(
         mode: OrientationMode,
         toast: Boolean,
-        allowSensor: Boolean = !isFinishing && hasWindowFocus(),
+        allowSensor: Boolean = true,
+        force: Boolean = false,
+        keepMenu: Boolean = false,
     ) {
-        // 仅「自动」且前台时监听传感器；竖/横屏锁定不启用传感器
-        OrientationHelper.apply(this, mode, allowSensor = allowSensor && mode == OrientationMode.AUTO)
+        val fixed = if (mode == OrientationMode.AUTO) OrientationMode.PORTRAIT else mode
+        val changed = OrientationHelper.apply(
+            this,
+            fixed,
+            allowSensor = false,
+            force = force,
+        )
+        // 只排一次重铺：系统转屏时由 onConfigurationChanged 取消并立刻执行；
+        // 若系统忽略方向请求，用短延迟兜底一帧（勿二次 setOrientation）
+        if (keepMenu) orientRelayoutKeepMenu = true
+        scheduleOrientRelayout(debounceMs = if (changed) 48L else 0L)
         if (toast) {
-            val label = when (mode) {
-                OrientationMode.PORTRAIT -> getString(R.string.orient_portrait)
+            val label = when (fixed) {
                 OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
-                OrientationMode.AUTO -> getString(R.string.orient_auto)
+                else -> getString(R.string.orient_portrait)
             }
             Toasts.show(this, getString(R.string.orient_switched, label))
         }
+    }
+
+    /** 单次合并重铺（方向/菜单/漫画布局），去掉多次 post 连环闪 */
+    private fun scheduleOrientRelayout(debounceMs: Long = 0L) {
+        if (!::binding.isInitialized) return
+        pendingOrientRelayout?.let { binding.root.removeCallbacks(it) }
+        val r = Runnable {
+            pendingOrientRelayout = null
+            if (isFinishing || isDestroyed) return@Runnable
+            // 旋转后强制收起底栏菜单：横屏量过的菜单高度会残留，
+            // 把 readStatusBar 顶到画面中部（见 bottomChrome 残留 ~500px）
+            orientRelayoutKeepMenu = false
+            chromeVisible = false
+            exportPanelOpen = false
+            collapseBottomChromeHard()
+            applyPortraitColumnLayout()
+            applyChromeVisibility()
+            // 连续图：旧 pan/zoom 在换向后无效，归零后再滚回索引
+            if (mangaMode && isMangaContinuousLayout()) {
+                binding.mangaContinuousHost.resetZoom(notify = false)
+                pendingMangaTransform = Triple(1f, 0f, 0f)
+            }
+            if (mangaMode) {
+                updateMangaLayoutForOrientation()
+                // 布局后再钉一次索引，避免大黑块空页
+                binding.mangaHost.post {
+                    if (!mangaMode || isFinishing || isDestroyed) return@post
+                    if (isMangaContinuousLayout()) {
+                        scrollMangaContinuousTo(mangaIndex, smooth = false)
+                    } else {
+                        showMangaIndex(mangaIndex)
+                    }
+                }
+            }
+            if (::reader.isInitialized) {
+                reader.requestLayout()
+                syncReaderBottomObscured()
+            }
+            binding.root.requestLayout()
+            // 等新尺寸落稳再收一次底栏，防止 measure 残留
+            binding.root.post {
+                if (isFinishing || isDestroyed) return@post
+                collapseBottomChromeHard()
+                applyChromeVisibility()
+                applyPortraitColumnLayout()
+                binding.root.requestLayout()
+            }
+        }
+        pendingOrientRelayout = r
+        if (debounceMs <= 0L) {
+            binding.root.post(r)
+        } else {
+            binding.root.postDelayed(r, debounceMs)
+        }
+    }
+
+    /**
+     * 强制收起 bottomChrome 内所有子面板，高度归 WRAP，避免旋转后
+     * 状态栏被顶到屏幕中间。
+     */
+    private fun collapseBottomChromeHard() {
+        if (!::binding.isInitialized) return
+        chromeVisible = false
+        binding.readMenuHost.visibility = View.GONE
+        binding.ttsExportHost.visibility = View.GONE
+        if (!ttsBarOpen) {
+            binding.ttsBar.visibility = View.GONE
+        }
+        binding.readMenuHost.layoutParams = binding.readMenuHost.layoutParams.apply {
+            width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+        }
+        binding.bottomChrome.translationY = 0f
+        binding.readStatusBar.translationY = 0f
+        binding.bottomChrome.minimumHeight = 0
+        val lp = binding.bottomChrome.layoutParams
+        lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+        if (lp is androidx.constraintlayout.widget.ConstraintLayout.LayoutParams) {
+            lp.bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+            lp.topToTop = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.UNSET
+        }
+        binding.bottomChrome.layoutParams = lp
+        // 状态栏钉在底栏上方、父布局底部链路
+        val slp = binding.readStatusBar.layoutParams
+        if (slp is androidx.constraintlayout.widget.ConstraintLayout.LayoutParams) {
+            slp.bottomToTop = binding.bottomChrome.id
+            slp.topToTop = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.UNSET
+            binding.readStatusBar.layoutParams = slp
+        }
+        binding.bottomChrome.requestLayout()
+        binding.readStatusBar.requestLayout()
     }
 
     private fun applyEdgeSwipeFlags() {
@@ -2830,16 +3741,45 @@ class ReadingActivity : AppCompatActivity() {
             allowProgressSave = false
             // 用户偏好漫画，或无文字纯图 MOBI → 自动漫画模式
             val imageOnly = isImageOnlyMobi(loaded)
+            val viewMode = AppSettings.mobiViewMode(this)
             val wantManga = isMobiBook() &&
                 mangaPaths.isNotEmpty() &&
-                (AppSettings.mobiMangaMode(this) || imageOnly)
+                (viewMode != AppSettings.MobiViewMode.TEXT || imageOnly)
+            if (wantManga) {
+                // 纯图 MOBI 无偏好时默认单图漫画
+                mangaContinuousPref = when {
+                    viewMode == AppSettings.MobiViewMode.CONTINUOUS -> true
+                    viewMode == AppSettings.MobiViewMode.MANGA -> false
+                    imageOnly -> false
+                    else -> false
+                }
+                if (imageOnly && viewMode == AppSettings.MobiViewMode.TEXT) {
+                    AppSettings.setMobiViewMode(this, AppSettings.MobiViewMode.MANGA)
+                }
+            }
             val saved = AppSettings.progressFor(this, loaded.uri)
             val shelfPara = BookshelfStore.findBookByUri(this, loaded.uri)?.lastParagraph ?: 0
+            val mangaView = if (wantManga) {
+                AppSettings.loadMangaViewState(this, loaded.uri)
+            } else {
+                null
+            }
             pendingRestorePara = if (wantManga) {
                 // 漫画进度在 enterMangaMode 里按图片索引恢复
                 -1
             } else {
                 maxOf(saved, shelfPara)
+            }
+            // 书架进度：漫画用图片索引，避免打开时把进度冲成 0
+            val shelfProgressHint = if (wantManga) {
+                val rp = ReadingProgressStore.get(this, loaded.uri)
+                when {
+                    mangaView != null && mangaView.index >= 0 -> mangaView.index
+                    rp != null && rp.position >= 0 -> rp.position
+                    else -> shelfPara
+                }
+            } else {
+                pendingRestorePara.coerceAtLeast(0)
             }
 
             // 恢复完成前隐藏正文 + 保持加载遮罩，避免闪首页 1 秒
@@ -2864,7 +3804,7 @@ class ReadingActivity : AppCompatActivity() {
                 this,
                 uri = loaded.uri,
                 displayName = loaded.title,
-                lastParagraph = pendingRestorePara.coerceAtLeast(0),
+                lastParagraph = shelfProgressHint,
             )
             if (!wantManga) {
                 ReadingProgressStore.saveTxt(
@@ -3282,6 +4222,8 @@ class ReadingActivity : AppCompatActivity() {
         if (mangaMode && mangaPaths.isNotEmpty()) {
             pos = mangaIndex.coerceIn(0, mangaPaths.lastIndex)
             total = mangaPaths.size
+            // 专用漫画索引 + 缩放（与正文段落进度隔离）
+            saveMangaViewStateNow()
         } else {
             pos = paragraphIndex
             total = book?.paragraphs?.size ?: 0
@@ -3325,6 +4267,78 @@ class ReadingActivity : AppCompatActivity() {
         return cutout.boundingRects.isNotEmpty()
     }
 
+    /** 内容排版是否横屏（跟视角模式） */
+    private fun isLandscape(): Boolean {
+        val mode = AppSettings.orientationMode(this)
+        val root = if (::binding.isInitialized) binding.root else null
+        return OrientationHelper.isEffectiveLandscape(this, mode, root)
+    }
+
+    private fun isWindowLandscape(): Boolean {
+        val root = if (::binding.isInitialized) binding.root else null
+        return OrientationHelper.isWindowLandscape(this, root)
+    }
+
+    /** 大屏竖屏：正文/漫画收成居中竖栏 */
+    /** 横竖模式均占满窗口，清除历史上的「中间竖栏」左右 padding */
+    private fun applyPortraitColumnLayout() {
+        if (!::binding.isInitialized) return
+        if (binding.readerView.paddingLeft != 0 || binding.readerView.paddingRight != 0) {
+            binding.readerView.setPadding(0, 0, 0, 0)
+        }
+        if (binding.mangaHost.paddingLeft != 0 || binding.mangaHost.paddingRight != 0) {
+            binding.mangaHost.setPadding(0, 0, 0, 0)
+        }
+    }
+
+    private fun sanitizeBottomChrome() {
+        if (!::binding.isInitialized) return
+        if (!chromeVisible) {
+            collapseBottomChromeHard()
+            return
+        }
+        if (!exportPanelOpen) {
+            binding.ttsExportHost.visibility = View.GONE
+        }
+        if (!ttsBarOpen) {
+            binding.ttsBar.visibility = View.GONE
+        }
+        binding.bottomChrome.translationY = 0f
+        binding.readStatusBar.translationY = 0f
+        binding.bottomChrome.minimumHeight = 0
+        val lp = binding.bottomChrome.layoutParams
+        lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+        binding.bottomChrome.layoutParams = lp
+        binding.bottomChrome.requestLayout()
+    }
+
+    /**
+     * 横屏模式：全屏沉浸 + 藏标题/底状态栏；竖屏模式：恢复。
+     * 大屏以用户选择的模式为准（[isLandscape]），不跟系统 letterbox 窗口误判。
+     */
+    private fun applyLandscapeFullscreenUi() {
+        if (!::binding.isInitialized) return
+        val landUi = isLandscape()
+        binding.readTitleBar.isVisible = !landUi
+        binding.readStatusBar.isVisible = !landUi
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (landUi) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else if (immersive) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.navigationBars())
+            controller.show(WindowInsetsCompat.Type.statusBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     /**
      * 菜单（顶栏+图标）/ 合成面板 / TTS 条互斥：
      * - 有菜单 → 隐藏 TTS 与合成面板
@@ -3332,6 +4346,7 @@ class ReadingActivity : AppCompatActivity() {
      * - 无菜单且已打开朗读 → 显示 TTS 条
      */
     private fun applyChromeVisibility() {
+        applyLandscapeFullscreenUi()
         binding.topBar.isVisible = chromeVisible && !exportPanelOpen
         binding.ttsBar.isVisible = !chromeVisible && !exportPanelOpen && ttsBarOpen
         val menuHost = binding.readMenuHost
@@ -3341,7 +4356,7 @@ class ReadingActivity : AppCompatActivity() {
             exportHost.visibility = View.VISIBLE
             exportPanel.root.visibility = View.VISIBLE
             exportHost.bringToFront()
-            binding.readStatusBar.bringToFront()
+            if (binding.readStatusBar.isVisible) binding.readStatusBar.bringToFront()
             binding.bottomChrome.bringToFront()
         } else if (chromeVisible) {
             exportHost.visibility = View.GONE
@@ -3352,7 +4367,7 @@ class ReadingActivity : AppCompatActivity() {
             lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
             menuHost.layoutParams = lp
             menuHost.bringToFront()
-            binding.readStatusBar.bringToFront()
+            if (binding.readStatusBar.isVisible) binding.readStatusBar.bringToFront()
             binding.bottomChrome.bringToFront()
             binding.topBar.bringToFront()
             menuHost.post { if (chromeVisible && !exportPanelOpen) forceMenuLayout() }
@@ -3362,6 +4377,13 @@ class ReadingActivity : AppCompatActivity() {
         }
         // TTS/底栏高度变化后同步给阅读区（跟读可见判定）
         binding.bottomChrome.post { syncReaderBottomObscured() }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 只重铺一次，禁止再次 setRequestedOrientation；不保留菜单
+        orientRelayoutKeepMenu = false
+        scheduleOrientRelayout(debounceMs = 0L)
     }
 
     /** TTS 条 + 底栏可见高度 → VirtualReaderView.bottomObscuredPx */
@@ -3418,28 +4440,47 @@ class ReadingActivity : AppCompatActivity() {
         )
     }
 
-    private fun forceMenuLayout() {
+    /**
+     * 底部菜单：两屏分页，第 1 屏固定 **2 行 × 4 列**。
+     * 旋转后按新屏宽重设每页宽度，保持 2×4，不关菜单时可 [preservePage]。
+     */
+    private fun forceMenuLayout(preservePage: Boolean = false) {
+        if (!::binding.isInitialized || !::readMenu.isInitialized) return
         val host = binding.readMenuHost
-        val parentW = binding.bottomChrome.width.takeIf { it > 0 }
+        val screenW = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        val laidOutW = binding.bottomChrome.width.takeIf { it > 0 }
             ?: binding.root.width.takeIf { it > 0 }
-            ?: resources.displayMetrics.widthPixels
+        val parentW = when {
+            laidOutW == null -> screenW
+            kotlin.math.abs(laidOutW - screenW) > screenW * 0.15f -> screenW
+            else -> laidOutW
+        }
         if (parentW <= 0) return
-        // 两页各占满一屏宽度
-        val pageW = parentW
+        val prevPage = if (preservePage) {
+            val pw = readMenu.menuPager.width.coerceAtLeast(1)
+            ((readMenu.menuPager.scrollX + pw / 2f) / pw).toInt().coerceIn(0, 1)
+        } else {
+            0
+        }
         for (page in listOf(readMenu.menuPage0, readMenu.menuPage1)) {
             val lp = page.layoutParams
-            lp.width = pageW
+            lp.width = parentW
             page.layoutParams = lp
         }
+        val content = readMenu.menuPagerContent
+        val contentLp = content.layoutParams
+        contentLp.width = parentW * 2
+        content.layoutParams = contentLp
         val wSpec = View.MeasureSpec.makeMeasureSpec(parentW, View.MeasureSpec.EXACTLY)
         val hSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         readMenu.root.measure(wSpec, hSpec)
         host.measure(wSpec, hSpec)
         host.requestLayout()
+        readMenu.menuPager.requestLayout()
+        content.requestLayout()
         binding.bottomChrome.requestLayout()
-        // 打开菜单时回到第 1 屏
-        readMenu.menuPager.settleToPage(0, smooth = false)
-        updateMenuPageDots(0)
+        readMenu.menuPager.settleToPage(prevPage, smooth = false)
+        updateMenuPageDots(prevPage)
     }
 
     private fun jumpChapter(delta: Int) {

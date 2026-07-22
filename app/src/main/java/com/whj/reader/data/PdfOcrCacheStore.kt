@@ -44,6 +44,16 @@ object PdfOcrCacheStore {
         return loadIndex(ctx, fileKey).keys
     }
 
+    /**
+     * 可跳过的「已识别」页：必须有实际文字。
+     * chars=0 的空结果（如长图旧版 OCR 失败）不算完成，允许重新识别。
+     */
+    fun listRecognizedWithText(ctx: Context, fileKey: String): Set<Int> {
+        return loadIndex(ctx, fileKey)
+            .filterValues { it.charCount > 0 }
+            .keys
+    }
+
     fun loadIndex(ctx: Context, fileKey: String): Map<Int, PageIndex> {
         val f = File(bookDir(ctx, fileKey), INDEX)
         if (!f.isFile) return emptyMap()
@@ -92,13 +102,15 @@ object PdfOcrCacheStore {
         fileKey: String,
         pageIndex: Int,
         chars: List<PdfTextExtractor.PdfChar>,
+        pageWidth: Float = 0f,
+        pageHeight: Float = 0f,
     ) {
         val arr = JSONArray()
-        var pw = 1f
-        var ph = 1f
+        var pw = pageWidth.coerceAtLeast(0f)
+        var ph = pageHeight.coerceAtLeast(0f)
         for (c in chars) {
-            pw = c.pageWidth
-            ph = c.pageHeight
+            if (pw < 1f) pw = c.pageWidth
+            if (ph < 1f) ph = c.pageHeight
             arr.put(
                 JSONObject()
                     .put("c", c.char.toString())
@@ -108,6 +120,8 @@ object PdfOcrCacheStore {
                     .put("b", c.bottom.toDouble()),
             )
         }
+        if (pw < 1f) pw = 1f
+        if (ph < 1f) ph = 1f
         val o = JSONObject()
             .put("v", VERSION)
             .put("page", pageIndex)
@@ -166,11 +180,14 @@ object PdfOcrCacheStore {
         }
     }
 
+    /** 清除某页 OCR 缓存（含空结果） */
     fun removePage(ctx: Context, fileKey: String, pageIndex: Int) {
-        pageFile(ctx, fileKey, pageIndex).delete()
+        if (fileKey.isBlank()) return
+        runCatching { pageFile(ctx, fileKey, pageIndex).delete() }
         val idx = loadIndex(ctx, fileKey).toMutableMap()
-        idx.remove(pageIndex)
-        saveIndex(ctx, fileKey, idx)
+        if (idx.remove(pageIndex) != null) {
+            saveIndex(ctx, fileKey, idx)
+        }
     }
 
     /** 删除某 PDF 的全部 OCR 缓存目录 */

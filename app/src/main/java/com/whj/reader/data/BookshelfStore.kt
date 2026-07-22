@@ -541,6 +541,7 @@ object BookshelfStore {
                     .put("sortOrder", b.sortOrder),
             )
         }
-        prefs(ctx).edit().putString(KEY_BOOKS, arr.toString()).apply()
+        // commit：清除记录等路径立即对 UI 可见
+        prefs(ctx).edit().putString(KEY_BOOKS, arr.toString()).commit()
     }
 }

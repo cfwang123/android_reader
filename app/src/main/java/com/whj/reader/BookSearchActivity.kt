@@ -156,6 +156,7 @@ class BookSearchActivity : AppCompatActivity() {
                                 marginsForPage = { page ->
                                     AppSettings.pdfCropMarginsForPage(
                                         this@BookSearchActivity,
+                                        uriStr,
                                         page,
                                     )
                                 },

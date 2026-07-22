@@ -9,6 +9,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.whj.reader.R
+import com.whj.reader.data.AppSettings
 import com.whj.reader.data.BookChineseModeStore
 import com.whj.reader.data.BookEncodingStore
 import com.whj.reader.data.BookshelfStore
@@ -167,6 +168,7 @@ object OpenFailGuide {
         if (zh != ChineseConvert.Mode.OFF) {
             BookChineseModeStore.set(context, newUri, zh)
         }
+        AppSettings.migratePdfCrop(context, oldUri, newUri)
         val id = bookId?.takeIf { !it.startsWith("hist_") }
             ?: BookshelfStore.findBookByUri(context, oldUri)?.id
         if (id != null) {

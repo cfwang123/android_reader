@@ -45,4 +45,12 @@ object ShelfFileMetaStore {
         if (uri.isBlank() || pageCount <= 0) return
         prefs(ctx).edit().putInt(pagesKey(uri), pageCount).apply()
     }
+
+    fun remove(ctx: Context, uri: String) {
+        if (uri.isBlank()) return
+        prefs(ctx).edit()
+            .remove(sizeKey(uri))
+            .remove(pagesKey(uri))
+            .commit()
+    }
 }

@@ -122,7 +122,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/readTitleBar" />
 
-    <!-- MOBI 漫画模式：单图全屏缩放 + 侧边/滑动翻页 -->
+    <!-- MOBI 图模式：漫画（单图翻页）/ 连续图（列表滚动），横竖屏均可 -->
     <FrameLayout
         android:id="@+id/mangaHost"
         android:layout_width="0dp"
@@ -134,10 +134,26 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/readTitleBar">
 
+        <!-- 竖屏：单图缩放 + 侧边/滑动翻页 -->
         <com.whj.reader.ui.ZoomableImageView
             android:id="@+id/mangaImageView"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <!-- 横屏：连续图片流，可双指缩放（最低 50%） -->
+        <com.whj.reader.ui.ZoomableFrameLayout
+            android:id="@+id/mangaContinuousHost"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/mangaRecycler"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:overScrollMode="never" />
+        </com.whj.reader.ui.ZoomableFrameLayout>
 
         <ProgressBar
             android:id="@+id/mangaProgress"

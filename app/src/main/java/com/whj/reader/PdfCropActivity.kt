@@ -47,6 +47,7 @@ class PdfCropActivity : AppCompatActivity() {
     private var fullBitmap: Bitmap? = null
     private val renderLock = Any()
 
+    private var fileKey: String = ""
     private var cropL = 0f
     private var cropT = 0f
     private var cropR = 0f
@@ -63,11 +64,13 @@ class PdfCropActivity : AppCompatActivity() {
             finish()
             return
         }
+        fileKey = uriStr
         pageIndex = intent.getIntExtra(EXTRA_PAGE, 0).coerceAtLeast(0)
 
-        val m = AppSettings.pdfCropMargins(this)
+        // 仅加载本书自己的切边，不与其他 PDF 共通
+        val m = AppSettings.pdfCropMargins(this, fileKey)
         cropL = m[0]; cropT = m[1]; cropR = m[2]; cropB = m[3]
-        binding.switchMirror.isChecked = AppSettings.pdfCropMirrorOddEven(this)
+        binding.switchMirror.isChecked = AppSettings.pdfCropMirrorOddEven(this, fileKey)
         binding.cropOverlay.setCrop(cropL, cropT, cropR, cropB)
 
         binding.btnBack.setOnClickListener { finish() }
@@ -78,8 +81,8 @@ class PdfCropActivity : AppCompatActivity() {
             cropL = 0f; cropT = 0f; cropR = 0f; cropB = 0f
             binding.cropOverlay.setCrop(0f, 0f, 0f, 0f)
             val mirror = binding.switchMirror.isChecked
-            AppSettings.setPdfCropMargins(this, 0f, 0f, 0f, 0f)
-            AppSettings.setPdfCropMirrorOddEven(this, mirror)
+            AppSettings.setPdfCropMargins(this, fileKey, 0f, 0f, 0f, 0f)
+            AppSettings.setPdfCropMirrorOddEven(this, fileKey, mirror)
             setResult(
                 RESULT_APPLIED,
                 Intent()
@@ -132,8 +135,11 @@ class PdfCropActivity : AppCompatActivity() {
                 return@launch
             }
             loadPage()
-            // 进入切边：自动采样，矩形包住内容
-            runAutoDetect(fromEntry = true)
+            // 进入切边：本书尚未保存过切边时自动采样；已有则保留本书自己的设置
+            val noCrop = cropL == 0f && cropT == 0f && cropR == 0f && cropB == 0f
+            if (noCrop) {
+                runAutoDetect(fromEntry = true)
+            }
         }
     }
 
@@ -298,8 +304,8 @@ class PdfCropActivity : AppCompatActivity() {
         val arr = binding.cropOverlay.cropArray()
         cropL = arr[0]; cropT = arr[1]; cropR = arr[2]; cropB = arr[3]
         val mirror = binding.switchMirror.isChecked
-        AppSettings.setPdfCropMargins(this, cropL, cropT, cropR, cropB)
-        AppSettings.setPdfCropMirrorOddEven(this, mirror)
+        AppSettings.setPdfCropMargins(this, fileKey, cropL, cropT, cropR, cropB)
+        AppSettings.setPdfCropMirrorOddEven(this, fileKey, mirror)
         setResult(
             RESULT_APPLIED,
             Intent()

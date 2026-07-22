@@ -89,6 +89,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private var fingerMoved = false
     /** 本手势已处理过中部/侧边点按，防止 GestureDetector 再触发一次（开关两次=菜单不亮） */
     private var tapConsumed = false
+    /**
+     * 双指缩放 / 多指手势期间禁止边缘翻页与水平滑翻页。
+     * 锁到整段手势结束；下一次单指 DOWN 时按是否放大重新设定。
+     */
+    private var pageTurnLocked = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     /** 点按判定略宽于系统 slop，避免轻微抖动被当成滑动 */
     private val tapSlop =
@@ -110,6 +115,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
                 pinching = true
+                pageTurnLocked = true
                 selecting = false
                 abortPanFling()
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -120,13 +126,19 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 val f = detector.scaleFactor
                 if (f.isNaN() || f.isInfinite() || f <= 0f) return false
                 applyScale(f.coerceIn(0.85f, 1.15f), detector.focusX, detector.focusY)
+                pageTurnLocked = true
                 return true
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector) {
                 pinching = false
+                pageTurnLocked = true
                 clampPan()
                 applyTransform()
+                android.util.Log.i(
+                    "MangaZoom",
+                    "FrameLayout onScaleEnd zoom=$contentZoom pan=($panX,$panY)",
+                )
                 onZoomChanged?.invoke(contentZoom)
             }
         },
@@ -253,6 +265,10 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         setTransform(1f, 0f, 0f, notify)
     }
 
+    /**
+     * 重新应用当前 transform（不改 zoom/pan）。
+     * 若需恢复 1x，请用 [resetZoom]。
+     */
     fun resetVisualScale() {
         applyTransform()
     }
@@ -444,6 +460,27 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        // 旋转后旧的 continuous 加高 layout 可能残留，先清再按新 vh 应用
+        if (abs(contentZoom - 1f) < 0.01f) {
+            contentZoom = 1f
+            panX = 0f
+            panY = 0f
+            val t = target()
+            if (t != null) {
+                val lp = t.layoutParams
+                if (lp != null &&
+                    (lp.width != LayoutParams.MATCH_PARENT || lp.height != LayoutParams.MATCH_PARENT)
+                ) {
+                    lp.width = LayoutParams.MATCH_PARENT
+                    lp.height = LayoutParams.MATCH_PARENT
+                    t.layoutParams = lp
+                }
+                t.scaleX = 1f
+                t.scaleY = 1f
+                t.translationX = 0f
+                t.translationY = 0f
+            }
+        }
         clampPan()
         applyTransform()
     }
@@ -478,9 +515,14 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         // 捏合必须先喂 scaleDetector，否则第二指落下时丢失 DOWN 序列
         scaleDetector.onTouchEvent(ev)
         val multi = ev.pointerCount >= 2 || pinching || scaleDetector.isInProgress
+        if (multi || pinching) {
+            pageTurnLocked = true
+            fingerMoved = true
+        }
 
         // 连续模式未缩放：单指路径尽量短，把滚动交给 RecyclerView（对齐 Office 丝滑）
-        if (continuousScrollWhenZoomed && !isZoomed() && !multi && !selecting) {
+        // 本手势若曾双指缩放，pageTurnLocked 期间不走「侧边翻页」捷径
+        if (continuousScrollWhenZoomed && !isZoomed() && !multi && !selecting && !pageTurnLocked) {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = ev.x
@@ -490,6 +532,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                     panning = false
                     fingerMoved = false
                     tapConsumed = false
+                    pageTurnLocked = false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dist = max(abs(ev.x - downX), abs(ev.y - downY))
@@ -554,6 +597,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         if (multi) {
             parent?.requestDisallowInterceptTouchEvent(true)
             panning = false
+            pageTurnLocked = true
             when (ev.actionMasked) {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (pinching) {
@@ -562,6 +606,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         applyTransform()
                         onZoomChanged?.invoke(contentZoom)
                     }
+                    // 多指手势整段结束：禁止本 UP 再走侧边翻页；锁保留到下次 DOWN
                     recycleTracker()
                 }
                 MotionEvent.ACTION_POINTER_UP -> {
@@ -571,6 +616,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         applyTransform()
                         onZoomChanged?.invoke(contentZoom)
                     }
+                    pageTurnLocked = true
                 }
             }
             return true
@@ -586,6 +632,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 selecting = false
                 fingerMoved = false
                 tapConsumed = false
+                // 新单指：仅放大态继续锁水平边缘翻页；1x 允许侧点/滑翻
+                pageTurnLocked = isZoomed()
             }
             MotionEvent.ACTION_MOVE -> {
                 if (selecting) {
@@ -645,8 +693,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                             vt.computeCurrentVelocity(1000, maxFlingVelocity.toFloat())
                             val vx = vt.xVelocity
                             val vy = vt.yVelocity
-                            // 已缩放时：若水平顶到边缘再 fling，可翻页
+                            // 已缩放且非双指手势：水平顶边 fling 可翻页
                             if (isZoomed() &&
+                                !pageTurnLocked &&
                                 onHorizontalSwipe != null &&
                                 trySwipePageTurn(vx, vy, ev.x - downX, ev.y - downY, edgeFling = true)
                             ) {
@@ -664,7 +713,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                     recycleTracker()
                     return true
                 }
-                if (ev.actionMasked == MotionEvent.ACTION_UP && !pinching) {
+                if (ev.actionMasked == MotionEvent.ACTION_UP && !pinching && !pageTurnLocked) {
                     val dx = ev.x - downX
                     val dy = ev.y - downY
                     val total = max(abs(dx), abs(dy))
@@ -683,8 +732,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         recycleTracker()
                         return true
                     }
-                    // 2) 侧边轻点：立即翻页
-                    if (onSideTapImmediate != null && total <= touchSlop) {
+                    // 2) 侧边轻点：立即翻页（双指缩放手势中禁止）
+                    if (onSideTapImmediate != null && total <= touchSlop && !isZoomed()) {
                         val w = width.toFloat().coerceAtLeast(1f)
                         when {
                             ev.x < w / 3f -> {

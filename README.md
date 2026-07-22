@@ -8,13 +8,13 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 
 | Area | Capabilities |
 |------|----------------|
-| **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history |
+| **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history; long-press clear local records |
 | **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then keep loading on demand |
 | **MOBI manga** | One image at a time (ignore text), pinch-zoom, side-tap / swipe; image-only books open in manga mode automatically |
-| **PDF** | Continuous/single page, zoom, crop, fast scroll, TOC, in-book links, TTS, scan OCR, page-range audio export |
+| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, TTS, tall-page tiled OCR, page-range audio export |
 | **TTS / export** | System speech, sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
-| **OCR** | Gallery or camera; runs fully on device; scanned PDFs can be recognized |
-| **Other** | UI color themes (16); portrait / landscape / auto; fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
+| **OCR** | Gallery or camera; on-device; scanned PDFs (long pages split into strips) |
+| **Other** | UI color themes (16); portrait / landscape / auto (menu can stay open); fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
 
 ### Bookshelf
 
@@ -24,6 +24,8 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **Reading history** with correct format labels (TXT / PDF / EPUB / MOBI…)
 - Progress and bookmarks are remembered
 - Long-press → **Details** (name, path, format, size, progress, last read, …)
+- Long-press → **Clear records**: progress, bookmarks, EPUB/MOBI caches, PDF crop/OCR, etc. (shelf entry and source file kept)
+- Returning from the reader **refreshes progress** on the shelf
 - **Backup / import** shelves and progress (local only)
 - Settings → **Check for updates** (download install from the release page)
 - Settings → **Appearance → Color theme** (16 skins for chrome UI; reading page colors stay separate)
@@ -45,13 +47,14 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 
 ### PDF reading
 
-- Continuous or single page; pinch-zoom; margin crop
+- Continuous or single page; pinch-zoom; **crop margins per file**
+- **Progress %** = scroll position / total content height (updates while scrolling inside tall pages)
 - **Fast scroll**: right-edge thumb in continuous mode (drag to jump; shows while scrolling, hides ~1s after stop)
 - **TOC** prepared in the background after open
 - **Links**: page jump; external links need confirm; back / forward
-- Select text when available; **OCR scanned pages** (page range, cancelable)
-- **TTS / export** after text or OCR; continuous mode highlight follows scroll; export by page range
-- Side-tap page turn; center-tap opens the menu
+- Select text when available; **OCR scanned pages** (tall pages tiled; page range, cancelable)
+- **TTS / export** after text or OCR; highlight follows scroll and stays above the TTS bar; export by page range
+- Side-tap page turn; center-tap opens the menu; **orientation change can keep the 2×4 menu open**
 
 ### TTS & export
 

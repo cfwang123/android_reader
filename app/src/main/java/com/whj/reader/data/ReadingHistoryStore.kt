@@ -169,6 +169,7 @@ object ReadingHistoryStore {
         PdfOcrCacheStore.removeBook(ctx, uri)
         PdfOutlineCache.remove(ctx, uri)
         AppSettings.clearPdfViewState(ctx, uri)
+        AppSettings.clearMangaViewState(ctx, uri)
         if (AppSettings.lastBookUri(ctx) == uri) {
             // 清空上次打开记录
             AppSettings.setLastBook(ctx, "", "")

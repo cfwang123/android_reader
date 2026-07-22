@@ -127,10 +127,11 @@
     <string name="pdf_mode_single">单页模式</string>
     <string name="pdf_mode_hint">连续滚动时页间显示细黑线分隔；单页模式左右点按翻页。双指缩放后仍可滚动。</string>
     <string name="mobi_view_mode">浏览模式</string>
-    <string name="mobi_mode_text">正文模式</string>
-    <string name="mobi_mode_manga">漫画模式</string>
+    <string name="mobi_mode_text">正文</string>
+    <string name="mobi_mode_manga">漫画</string>
+    <string name="mobi_mode_continuous">连续图</string>
     <string name="mobi_mode_current">当前：%1$s</string>
-    <string name="mobi_mode_hint">漫画模式忽略正文，一次显示一张图，可双指缩放，左右点按或滑动翻页。进度为第几张/总图片数。选中项为主色填充。</string>
+    <string name="mobi_mode_hint">正文：读文字。漫画：一次一张图，左右点按/滑动翻页。连续图：上下连续滚动看图。横竖屏均可切换。可双指缩放，关闭时记住缩放与位置。</string>
     <string name="mobi_manga_progress">第 %1$d/%2$d 张</string>
     <string name="mobi_manga_no_images">本书没有可显示的图片</string>
     <string name="mobi_manga_first">已是第一张</string>
@@ -236,9 +237,10 @@
     <string name="pdf_ocr_range">页码范围（从 1 起）</string>
     <string name="pdf_ocr_from">起始页</string>
     <string name="pdf_ocr_to">结束页</string>
-    <string name="pdf_ocr_skip_done">跳过已识别页</string>
+    <string name="pdf_ocr_skip_done">跳过已有文字的页（空结果会重新识别）</string>
     <string name="pdf_ocr_recognized_none">尚无已识别页</string>
     <string name="pdf_ocr_recognized_list">已识别：%1$s</string>
+    <string name="pdf_ocr_empty_result_list">空结果可重识：%1$s</string>
     <string name="pdf_ocr_start">开始识别</string>
     <string name="pdf_ocr_cancel">取消</string>
     <string name="pdf_ocr_progress">识别中 %1$d / %2$d（第 %3$d 页）…</string>
@@ -274,6 +276,10 @@
     <string name="shelf_type_linked">文件夹</string>
     <string name="delete_book">从书架删除</string>
     <string name="delete_book_msg">仅从书架移除，不会删除源文件</string>
+    <string name="clear_book_record">清除记录</string>
+    <string name="clear_book_record_title">清除本书记录？</string>
+    <string name="clear_book_record_msg">将清除阅读进度、书签、EPUB/MOBI 章节与解析缓存、PDF 切边/缩放/OCR、编码等全部本地记录。书架条目与源文件保留。</string>
+    <string name="clear_book_record_done">已清除记录</string>
     <string name="move_book">移动到…</string>
     <string name="move_to_root">顶层</string>
     <string name="moved">已移动</string>

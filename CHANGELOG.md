@@ -1,30 +1,48 @@
 # Changelog / 更新日志
 
-## 1.0.4 — 2026-07-21
+## 1.0.4 — 2026-07-22
 
 ### English
 
-**Fonts**
-- Default reading font = system default; **removed bundled commercial typeface** (former FZ Zhengxian embed)
+**PDF**
+- **Per-file crop margins** (not shared across books); odd/even mirror per file
+- Crop panel: keep existing crop when re-opening; auto-sample only if unset
+- **Tall-page OCR**: split into screen-sized strips with overlap, merge lines; CPU backend for multi-strip stability; contrast / invert retries; debug log tag `PdfOcrDbg`
+- **TTS**: next sentence scrolls above the TTS bar (viewport accounts for chrome height)
+- **Progress %** = scroll position / total content height (page-height table; works inside long pages)
+- Layout (排版) panel: higher elevation, nav-bar insets, scrollable — not clipped by bottom chrome
+- Orientation change: **keep bottom menu open**; reflow **2×4** icon grid for new width
 
-**TXT**
-- Reading progress always shows **full-document percentage** (chapter TOC does not switch the bottom progress to “Ch. n/m”)
+**Bookshelf**
+- Long-press → **Clear records**: progress, bookmarks, EPUB/MOBI chapter/parse caches, PDF crop/zoom/OCR, encoding, covers/meta — shelf entry kept
+- After clear / return from reading: list **refreshes progress** (no stale “1/N · x%” for unread; prefs committed synchronously)
+- Return from reader: always refresh reading status on shelf
 
-**App**
-- Settings → About → **License** button (MIT + third-party notice, scrollable)
-- License files / README clarify MIT covers original source only
+**Fonts / TXT / App** (also in this train)
+- Default font = system; removed bundled commercial typeface
+- TXT progress always full-document %
+- Settings → About → License; MIT covers original source only
 
 ### 中文
 
-**字体**
-- 默认阅读字体 = 系统默认；**移除内嵌商业字体**（原方正正纤黑）
+**PDF**
+- **切边按文件独立保存**（多书不共用）；奇偶对称按书记忆
+- 切边页：已有切边则保留，未设置才自动采样
+- **超长页 OCR**：按屏高分块 + 交叠合并；多条带用 CPU 更稳；对比度/反色重试；调试日志 `PdfOcrDbg`
+- **朗读**：下一句会滚出 TTS 控制栏遮挡区
+- **进度 %** = 滚动位置 / 全书内容总高度（页高表；长页内滚动也会变）
+- 排版面板：抬高层级、导航条留白、可滚动，避免被底栏裁切
+- 横竖屏切换：**保持底部菜单打开**，按新宽度重铺 **2×4** 图标
 
-**TXT**
-- 阅读进度始终显示**全文百分比**（有目录时底栏进度也不改为「第 n/m 章」）
+**书架**
+- 长按 → **清除记录**：进度、书签、EPUB/MOBI 章节/解析缓存、PDF 切边/缩放/OCR、编码、封面与元数据；书架条目与源文件保留
+- 清除后 / 读完返回：列表**刷新进度**（未读不再误显示「1/N · x%」；关键 prefs 同步写出）
+- 退出阅读回书架：始终刷新阅读状态
 
-**应用**
-- 设置 → 关于 → **许可证**按钮（MIT + 第三方说明，可滚动）
-- 许可证文件 / README 明确 MIT 仅覆盖自有源码
+**字体 / TXT / 应用**（同期）
+- 默认系统字体；移除内嵌商业字体
+- TXT 进度始终全文百分比
+- 设置 → 关于 → 许可证；MIT 仅覆盖自有源码
 
 ---
 
@@ -101,7 +119,7 @@
 - 可安装自定义 TTF/OTF；长按芯片卸载
 
 **朗读**
-- 朗读初始化/未就绪不再连弹 Toast（状态只在 TTS 栏）
+- 朗读初始化/未就绪不再连弹 Toast（状态仅在 TTS 栏）
 - 语音导出：进度对话框显示分段/字数、已用时、预计剩余；合成中实时刷新
 - 全屏看图：取消双击缩放（双指缩放仍可用）
 

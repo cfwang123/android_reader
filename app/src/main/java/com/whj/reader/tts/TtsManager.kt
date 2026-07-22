@@ -112,6 +112,11 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
      */
     private var sentenceGapMs: Long = 0L
     /**
+     * 跨段落（回车换段）额外间隔（ms）。默认 300。
+     * 同段内句间仍预排；跨段不预排，由 [advanceAndSpeak] 插入 delay。
+     */
+    private var paragraphGapMs: Long = 300L
+    /**
      * 已提交给引擎、尚未 onDone 的 utterance（队首=当前/即将播）。
      * 深度加大：锁屏后 onDone 可能延迟/丢失，多预排可多撑几句。
      */
@@ -126,6 +131,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private var sessionTitle: String = ""
     /** 当前句超时强制推进的 Runnable（可单独 remove） */
     private var utteranceTimeoutRunnable: Runnable? = null
+    /** 跨段落间隔后继续朗读的 Runnable */
+    private var paragraphGapRunnable: Runnable? = null
 
     private val stallWatchdog = object : Runnable {
         override fun run() {
@@ -1029,7 +1036,13 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private fun clearQueueState() {
         pipeline.clear()
         cancelUtteranceTimeout()
+        cancelParagraphGap()
         // 勿 removeCallbacksAndMessages(null)：会干掉看门狗与句超时，锁屏后续读失效
+    }
+
+    private fun cancelParagraphGap() {
+        paragraphGapRunnable?.let { mainHandler.removeCallbacks(it) }
+        paragraphGapRunnable = null
     }
 
     private fun cancelUtteranceTimeout() {
@@ -1176,6 +1189,11 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         sentenceGapMs = ms.coerceAtLeast(0L)
     }
 
+    /** 跨段落间隔毫秒（回车换段）；默认 300。 */
+    fun setParagraphGapMs(ms: Long) {
+        paragraphGapMs = ms.coerceAtLeast(0L)
+    }
+
     private fun onUtteranceStart(utteranceId: String?) {
         if (utteranceId.isNullOrEmpty()) return
         val utt = pipeline.firstOrNull { it.id == utteranceId } ?: return
@@ -1260,6 +1278,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private fun advanceAndSpeak() {
         val sents = sentences.getOrNull(paraIndex).orEmpty()
         if (sentIndex < sents.lastIndex) {
+            // 同段下一句：无段落间隔
             sentIndex++
             speakCurrent(flush = false)
             return
@@ -1277,7 +1296,18 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 finishPlayback()
                 return
             }
-            speakCurrent(flush = false)
+            // 跨段落（回车）：插入间隔后再读下一段
+            cancelParagraphGap()
+            if (paragraphGapMs > 0L) {
+                val go = Runnable {
+                    paragraphGapRunnable = null
+                    if (state == State.SPEAKING) speakCurrent(flush = false)
+                }
+                paragraphGapRunnable = go
+                mainHandler.postDelayed(go, paragraphGapMs)
+            } else {
+                speakCurrent(flush = false)
+            }
             return
         }
         if (requestMoreContentOrEnd()) return
@@ -1368,7 +1398,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         notifyState()
     }
 
-    /** 用 QUEUE_ADD 预排下一句，保持管道深度为 2 */
+    /** 用 QUEUE_ADD 预排下一句，保持管道深度为 2；跨段不预排以便插入段落间隔 */
     private fun fillPipeline() {
         if (sentenceGapMs > 0L) return
         val engine = tts ?: return
@@ -1376,9 +1406,12 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         while (pipeline.size < PIPELINE_DEPTH) {
             val last = pipeline.lastOrNull() ?: break
             val nextPos = nextSentencePos(last.para, last.sent) ?: break
+            // 跨段落：不预排，等本段结束后由 advanceAndSpeak 插入 paragraphGap
+            if (nextPos.first != last.para && paragraphGapMs > 0L) break
             val unit = buildSentenceUnit(nextPos.first, nextPos.second, applyOffset = false) ?: break
             if (unit.text.isBlank()) {
                 val skip = nextSentencePos(unit.para, unit.sent) ?: break
+                if (skip.first != last.para && paragraphGapMs > 0L) break
                 val retry = buildSentenceUnit(skip.first, skip.second, applyOffset = false) ?: break
                 if (retry.text.isBlank()) break
                 val r = engine.speak(retry.text, TextToSpeech.QUEUE_ADD, buildSpeakParams(), retry.id)

@@ -1,89 +1,101 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- 可滚动 + 底部留白，避免被系统导航条裁切 -->
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@color/white"
+    android:clipToPadding="false"
     android:elevation="8dp"
-    android:orientation="vertical"
-    android:padding="16dp">
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingBottom="8dp"
-        android:text="@string/pdf_page_mode"
-        android:textColor="@color/text_primary"
-        android:textSize="14sp"
-        android:textStyle="bold" />
+    android:fillViewport="false"
+    android:overScrollMode="ifContentScrolls"
+    android:scrollbars="vertical">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="28dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="8dp"
+            android:text="@string/pdf_page_mode"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnModeContinuous"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/pdf_mode_continuous"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnModeSingle"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/pdf_mode_single"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/pdf_mode_hint"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:paddingBottom="4dp"
+            android:text="@string/pdf_crop"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvCropSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnModeContinuous"
+            android:id="@+id/btnOpenCrop"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="40dp"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="@string/pdf_mode_continuous"
+            android:layout_marginTop="6dp"
+            android:text="@string/pdf_crop_open"
             android:textSize="13sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnModeSingle"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="@string/pdf_mode_single"
-            android:textSize="13sp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/pdf_crop_hint"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
     </LinearLayout>
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="@string/pdf_mode_hint"
-        android:textColor="@color/text_secondary"
-        android:textSize="12sp" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="18dp"
-        android:paddingBottom="4dp"
-        android:text="@string/pdf_crop"
-        android:textColor="@color/text_primary"
-        android:textSize="14sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/tvCropSummary"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textColor="@color/text_secondary"
-        android:textSize="12sp" />
-
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnOpenCrop"
-        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-        android:layout_width="match_parent"
-        android:layout_height="40dp"
-        android:layout_marginTop="6dp"
-        android:text="@string/pdf_crop_open"
-        android:textSize="13sp" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="@string/pdf_crop_hint"
-        android:textColor="@color/text_secondary"
-        android:textSize="12sp" />
-</LinearLayout>
+</androidx.core.widget.NestedScrollView>

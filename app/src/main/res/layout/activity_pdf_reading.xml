@@ -106,7 +106,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:contentDescription="@string/pdf_page"
-            android:scaleType="fitCenter"
+            android:scaleType="matrix"
             android:visibility="gone" />
 
         <!-- 连续滚动 -->
@@ -336,10 +336,12 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- elevation 须高于 bottomChrome(10)，否则排版面板底部会被底栏/导航条垫高区域盖住 -->
     <FrameLayout
         android:id="@+id/settingsPanelContainer"
         android:layout_width="0dp"
         android:layout_height="0dp"
+        android:elevation="24dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"

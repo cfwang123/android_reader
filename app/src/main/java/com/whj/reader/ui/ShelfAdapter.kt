@@ -53,6 +53,11 @@ class ShelfAdapter(
         notifyDataSetChanged()
     }
 
+    /** 清除记录后丢掉大小缓存，强制副标题重算 */
+    fun clearSizeCache() {
+        sizeCache.clear()
+    }
+
     fun currentItems(): List<ShelfItem> = items
 
     fun setItemsSilently(list: List<ShelfItem>) {
@@ -476,6 +481,8 @@ class ShelfAdapter(
                 shelfFallback != null && shelfFallback.lastOpened > 0 -> shelfFallback.lastOpened
                 else -> 0L
             }
+            // 清除记录后：无进度 store 且 lastOpened=0 → 视为未读，不显示「1/N · x%」
+            val hasReadingRecord = store != null || lastOpened > 0L
 
             val cachedPages = if (isPdf) {
                 when {
@@ -485,9 +492,11 @@ class ShelfAdapter(
             } else {
                 store?.total ?: 0
             }
-            val position = store?.position
-                ?: shelfFallback?.lastParagraph
-                ?: 0
+            val position = when {
+                store != null -> store.position
+                hasReadingRecord -> shelfFallback?.lastParagraph ?: 0
+                else -> 0
+            }
 
             val sizeBytes = resolveSizeBytes(uri, knownSizeBytes)
             val sizeText = if (sizeBytes >= 0) {
@@ -496,11 +505,18 @@ class ShelfAdapter(
                 ""
             }
             var pct = 0
-            val progressText = if (isPdf) {
+            val progressText = if (!hasReadingRecord) {
+                ""
+            } else if (isPdf) {
                 val total = cachedPages
                 if (total > 0) {
                     val page = (position + 1).coerceIn(1, total)
-                    pct = ((page * 100f) / total).toInt().coerceIn(0, 100)
+                    // 未读位置 0 显示第 1 页，% 用「已读到页/总页」
+                    pct = if (position <= 0 && lastOpened <= 0 && store == null) {
+                        0
+                    } else {
+                        (((position + 1).toFloat() / total) * 100f).toInt().coerceIn(0, 100)
+                    }
                     ctx.getString(R.string.shelf_progress_pdf_pct, page, total, pct)
                 } else if (position > 0) {
                     ctx.getString(R.string.shelf_progress_pdf, position + 1, 0)
