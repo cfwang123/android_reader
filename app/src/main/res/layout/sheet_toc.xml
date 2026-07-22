@@ -15,6 +15,16 @@
         app:tabSelectedTextColor="?attr/colorToolbarAccent"
         app:tabTextColor="@color/text_secondary" />
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnCustomTocScan"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:layout_marginEnd="8dp"
+        android:text="@string/custom_toc_scan"
+        android:visibility="gone" />
+
     <androidx.viewpager2.widget.ViewPager2
         android:id="@+id/vpToc"
         android:layout_width="match_parent"

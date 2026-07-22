@@ -651,13 +651,10 @@ class ZoomableImageView @JvmOverloads constructor(
                     !pinching &&
                     totalMove <= touchSlop
 
-                // 轻点优先：放大态中心点也可开菜单（勿被微小平移吞掉）
+                // 轻点优先：侧边立即翻页（含放大态）；中心开菜单
                 if (isTap) {
                     if (isSideZone(event.x)) {
-                        if (!isEnlarged() && !pageSwipeLocked) {
-                            fireSideTap(event.x)
-                        }
-                        // 放大时侧点不翻页，仅结束手势
+                        fireSideTap(event.x)
                     } else {
                         onCenterTap?.invoke()
                     }

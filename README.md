@@ -9,12 +9,12 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 | Area | Capabilities |
 |------|----------------|
 | **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history; long-press clear local records |
-| **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then keep loading on demand |
-| **MOBI manga** | One image at a time (ignore text), pinch-zoom, side-tap / swipe; image-only books open in manga mode automatically |
-| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, TTS, tall-page tiled OCR, page-range audio export |
+| **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then **prefetch the rest in the background** |
+| **MOBI** | Text body; **view modes**: text / single image / continuous strip; image-only books auto-enter image mode; improved UTF-8 Chinese MOBI |
+| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
 | **TTS / export** | System speech, sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
 | **OCR** | Gallery or camera; on-device; scanned PDFs (long pages split into strips) |
-| **Other** | UI color themes (16); portrait / landscape / auto (menu can stay open); fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
+| **Other** | UI color themes (16); **portrait / landscape lock** (menu can stay open); fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
 
 ### Bookshelf
 
@@ -33,15 +33,17 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 
 ### E-book reading (TXT / EPUB / MOBI)
 
-- **Open**: large books paint the first screen first, then load more on demand (near end / jump); restore position without flashing page 1
+- **Open**: large books paint the first screen first, then **prefetch in the background** (EPUB/MOBI); restore position without flashing page 1
 - **Progress**: EPUB/MOBI show **chapter n/m + within-chapter %**; TXT shows percentage
+- **TOC**: auto-detect chapter titles; if empty or wrong, **Custom TOC scan** with wildcards (`*`, `x`, `xxx`, `xxxx`) — e.g. `第x章 *`, `卷第x *`, `Chapter x`; saved per book
 - **Reading style**: background textures / solid color / imported image; text color presets + custom HSV; size and spacing; install custom fonts (long-press to remove); system default font (no bundled commercial typeface)
 - **TXT**: auto or manual encoding; simplified↔traditional Chinese
 - **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; long-press image → gallery
-- **MOBI manga mode** (Style → View mode): ignore body text, one image at a time, pinch-zoom, side-tap or swipe; progress **image n / total**; **image-only MOBI auto-enters manga mode**
-- **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter
+- **MOBI view modes** (Style → View mode): **Text** (normal reading); **Single image** (one picture at a time, pinch-zoom, side-tap / swipe); **Continuous strip** (vertical image stream). Image-only MOBI auto-enters image mode; progress **image n / total** in image modes. **Portrait ↔ landscape** keeps zoom and horizontal pan ratio in continuous strip
+- **Text selection**: long-press to select; **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / read-from-here menu
+- **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter; vertical list scroll does not steal horizontal tab swipe
 - **In-book search**: live results, tap to jump
-- **Gestures**: side-tap page turn, scroll; **volume keys** page turn (default on); back can stop TTS only
+- **Gestures**: side-tap page turn, scroll; **volume keys** page turn (default on); **left/right screen edge** (10px) adjusts font size in 0.5sp steps; back can stop TTS only
 - **TTS**: sentence highlight; lock-screen / background continue (below); sleep timer
 - **Export speech**: full book or line range; MP3 / M4A / WAV + bitrate
 
@@ -52,9 +54,9 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **Fast scroll**: right-edge thumb in continuous mode (drag to jump; shows while scrolling, hides ~1s after stop)
 - **TOC** prepared in the background after open
 - **Links**: page jump; external links need confirm; back / forward
-- Select text when available; **OCR scanned pages** (tall pages tiled; page range, cancelable)
+- Select text when available; **handles** to adjust the range; **OCR scanned pages** (tall pages tiled; **partial results re-scanned** in strips; page range, cancelable)
 - **TTS / export** after text or OCR; highlight follows scroll and stays above the TTS bar; export by page range
-- Side-tap page turn; center-tap opens the menu; **orientation change can keep the 2×4 menu open**
+- Side-tap page turn; center-tap opens the menu; **orientation change can keep the 2×4 menu open**; **continuous mode** keeps zoom and horizontal pan ratio when rotating
 
 ### TTS & export
 
@@ -173,15 +175,27 @@ Auto-detect common encodings, or set encoding in the reader.
 
 ### EPUB / MOBI slow or incomplete styling
 
-Large books show the first screen first, then load more on demand. Only common styling is supported; complex layouts/tables may not match the desktop reader. DRM books will not open.
+Large books show the first screen first, then **prefetch in the background**. Only common styling is supported; complex layouts/tables may not match the desktop reader. DRM books will not open.
+
+### MOBI garbled Chinese text
+
+Recent builds fix UTF-8 Chinese MOBI (e.g. mislabeled encoding or damaged PalmDOC HTML). Reopen the book or clear local records if an old parse cache persists.
+
+### No chapter list / wrong chapters
+
+Open **TOC → Custom TOC scan**, pick a preset or enter a wildcard pattern (`第x章 *`, `001.` style `xxx. *`, etc.), tap **Apply**. Pattern is remembered for that book.
 
 ### MOBI is only images / comic
 
-Use **Style → Manga mode**, or open an image-only MOBI (auto manga). Progress is image n / total.
+Use **Style → View mode → Single image** or **Continuous strip**, or open an image-only MOBI (auto image mode). Progress is image n / total.
 
 ### Scanned PDF has no text
 
-Use **OCR scanned PDF pages**; TTS/export need recognized text.
+Use **OCR scanned PDF pages**; tall pages are split into strips. If only the top was recognized before, OCR again with “skip done” — partial pages are re-scanned. TTS/export need recognized text.
+
+### Select and copy text
+
+Long-press a word (English expands to the whole word). Drag to extend, or use the **handles** after release. Drag a handle to the screen edge to scroll and extend. PDF needs extractable or OCR text.
 
 ### PDF blank or squashed pages
 

@@ -22,9 +22,13 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.SeekBar
+import android.widget.Spinner
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputEditText
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -42,12 +46,14 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.tabs.TabLayoutMediator
 import com.whj.reader.R
 import com.whj.reader.data.AppSettings
+import com.whj.reader.data.BookChapterPatternStore
 import com.whj.reader.data.BookChineseModeStore
 import com.whj.reader.data.BookEncodingStore
 import com.whj.reader.data.BookFileType
 import com.whj.reader.data.BookmarkStore
 import com.whj.reader.data.BookshelfStore
 import com.whj.reader.data.ChineseConvert
+import com.whj.reader.data.CustomChapterScanner
 import com.whj.reader.data.CustomFontStore
 import com.whj.reader.data.ReadingProgressStore
 import com.whj.reader.data.BookLoader
@@ -67,6 +73,7 @@ import com.whj.reader.tts.TtsExportHelper
 import com.whj.reader.tts.TtsManager
 import com.whj.reader.ui.ParagraphAdapter
 import com.whj.reader.ui.TocAdapter
+import com.whj.reader.ui.TocVpScrollHelper
 import com.whj.reader.ui.TocItem
 import com.whj.reader.ui.HsvColorPickerDialog
 import com.whj.reader.ui.TtsExportProgressDialog
@@ -85,6 +92,7 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -720,18 +728,22 @@ class ReadingActivity : AppCompatActivity() {
             return
         }
         val b = book
-        // TXT 始终全文百分比；仅 EPUB/MOBI 用「第 n/m 章」
+        // TXT 全文 %、EPUB/MOBI 章节进度：按屏幕底部 y 计算
         if (b != null && isChapterProgressBook(b)) {
             val chapters = b.chapters
             if (chapters.isNotEmpty()) {
-                val para = reader.firstVisibleParagraph()
+                val para = reader.bottomScreenParagraph()
                     .coerceIn(0, b.paragraphs.lastIndex.coerceAtLeast(0))
                 val (n, m, pct) = chapterProgressOf(para, chapters, b.paragraphs.size)
                 binding.tvProgress.text = getString(R.string.chapter_progress, n, m, pct)
                 return
             }
         }
-        binding.tvProgress.text = String.format(Locale.US, "%.0f%%", reader.progressPercent())
+        binding.tvProgress.text = String.format(
+            Locale.US,
+            "%.0f%%",
+            reader.progressPercentAtBottom(),
+        )
     }
 
     /** EPUB/MOBI：进度用「第 n/m 章 xx%」；TXT 明确排除，始终全文 % */
@@ -772,11 +784,12 @@ class ReadingActivity : AppCompatActivity() {
         return Triple(idx + 1, chapters.size, within)
     }
 
-    /** 滑近已加载内容末尾，或恢复/跳转目标尚未载入时，再解析下一批 */
+    /** 滑近已加载内容末尾，或恢复/跳转目标尚未载入时，再解析下一批（全书后台预载时通常已在续载） */
     private fun maybeRequestMoreContent(firstVisiblePara: Int = -1) {
         if (bookStreamer == null) return
         val b = book ?: return
         if (b.isComplete) return
+        if (prefetchesFullBookInBackground(b) && streamerLoading) return
         val last = b.paragraphs.lastIndex.coerceAtLeast(0)
         val needForRestore = pendingRestorePara > last
         val nearEnd = if (firstVisiblePara >= 0) {
@@ -788,25 +801,48 @@ class ReadingActivity : AppCompatActivity() {
         requestStreamBatch()
     }
 
+    private fun isEpubBook(b: LoadedBook): Boolean {
+        return BookFileType.isEpub(b.uri) || BookFileType.isEpub(displayTitle) ||
+            BookFileType.isEpub(fileKey)
+    }
+
+    /** EPUB/MOBI：打开后后台持续预载全书并写磁盘缓存，不必等用户滚到末尾 */
+    private fun prefetchesFullBookInBackground(b: LoadedBook): Boolean {
+        return isEpubBook(b) || BookFileType.isMobi(b.uri) ||
+            BookFileType.isMobi(displayTitle) || BookFileType.isMobi(fileKey)
+    }
+
     private fun requestStreamBatch() {
         val streamer = bookStreamer ?: return
-        if (streamerLoading) return
+        val needSeek = pendingRestorePara > streamLastIdx
+        if (streamerLoading) {
+            if (!needSeek) return
+            streamerJob?.cancel()
+        }
         streamerLoading = true
         streamerJob?.cancel()
         streamerJob = lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val target = pendingRestorePara
-                if (target > streamLastIdx) {
-                    // 恢复/跳转：一口气加载到目标段（中间少刷 UI；EPUB 优先读 spine 磁盘缓存）
-                    var guard = 0
-                    while (isActive && bookStreamer != null && !streamComplete && guard < 8) {
-                        guard++
+                val prefetchAll = book?.let { prefetchesFullBookInBackground(it) } == true
+                while (isActive && bookStreamer != null && !streamComplete) {
+                    val target = pendingRestorePara
+                    if (target > streamLastIdx) {
+                        // 恢复/跳转：优先加载到目标段（EPUB 优先读 spine 磁盘缓存）
                         val hasMore = streamer.loadUntilParagraphBlocking(target)
-                        if (!hasMore || streamLastIdx >= target || streamComplete) break
+                        if (!hasMore || streamComplete || streamLastIdx >= target) {
+                            if (!prefetchAll) break
+                            continue
+                        }
+                        continue
                     }
-                } else {
-                    // 普通触底：只多载一批
-                    streamer.loadNextBatchBlocking()
+                    if (!prefetchAll) {
+                        streamer.loadNextBatchBlocking()
+                        break
+                    }
+                    // EPUB/MOBI：后台慢慢预载全书，不必等用户滚到末尾
+                    val hasMore = streamer.loadNextBatchBlocking()
+                    if (!hasMore || streamComplete) break
+                    delay(60)
                 }
             } finally {
                 streamerLoading = false
@@ -863,7 +899,7 @@ class ReadingActivity : AppCompatActivity() {
                 }
             },
         )
-        // 首屏后再预取一批；若有恢复进度则连续多批
+        // EPUB/MOBI 首屏后后台慢慢预载全书并写缓存
         requestStreamBatch()
     }
 
@@ -2943,7 +2979,8 @@ class ReadingActivity : AppCompatActivity() {
         }
         mangaIndex = next
         if (isMangaContinuousLayout()) {
-            scrollMangaContinuousTo(next, smooth = true)
+            binding.mangaRecycler.stopScroll()
+            scrollMangaContinuousTo(next, smooth = false)
         } else {
             showMangaIndex(next)
         }
@@ -3831,30 +3868,36 @@ class ReadingActivity : AppCompatActivity() {
             if (keepMenu && chromeVisible) {
                 forceMenuLayout(preservePage = true)
             }
-            // 换向后：旧 pan/zoom/绝对 scrollY 全部作废；连续图必须按新宽度重绑 item
+            // 换向后：连续图保持 zoom/pan 比例；单图重置变换
             if (mangaMode) {
-                pendingMangaTransform = Triple(1f, 0f, 0f)
-                pendingMangaScrollOffset = 0
-                pendingMangaScrollY = 0
-                pendingMangaScrollIndex = mangaIndex
-                if (isMangaContinuousLayout()) {
-                    binding.mangaContinuousHost.resetZoom(notify = false)
+                val contSnap = if (isMangaContinuousLayout()) {
+                    binding.mangaContinuousHost.snapshotContinuousTransform()
+                } else {
+                    null
                 }
+                binding.mangaContinuousHost.scheduleContinuousTransformRestore(contSnap)
+                if (!isMangaContinuousLayout()) {
+                    pendingMangaTransform = Triple(1f, 0f, 0f)
+                    pendingMangaScrollOffset = 0
+                    pendingMangaScrollY = 0
+                }
+                pendingMangaScrollIndex = mangaIndex
                 updateMangaLayoutForOrientation()
                 binding.mangaHost.post {
                     if (!mangaMode || isFinishing || isDestroyed) return@post
                     if (isMangaContinuousLayout()) {
-                        binding.mangaContinuousHost.resetZoom(notify = false)
-                        // 强制按新列表宽重算高度（修竖→横半宽图）
                         mangaContinuousAdapter?.notifyDataSetChanged()
                         binding.mangaRecycler.post {
                             if (!mangaMode || !isMangaContinuousLayout()) return@post
                             scrollMangaContinuousTo(mangaIndex, smooth = false)
-                            // 再刷一次：确保 layout 后 width 正确
+                            contSnap?.let { binding.mangaContinuousHost.restoreContinuousTransform(it) }
                             mangaContinuousAdapter?.notifyDataSetChanged()
                             binding.mangaRecycler.post {
                                 if (mangaMode && isMangaContinuousLayout()) {
                                     scrollMangaContinuousTo(mangaIndex, smooth = false)
+                                    contSnap?.let {
+                                        binding.mangaContinuousHost.restoreContinuousTransform(it)
+                                    }
                                 }
                             }
                         }
@@ -4054,38 +4097,34 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     private fun applyLoadedBook(loaded: LoadedBook, isInitial: Boolean) {
-        book = loaded
-        fileKey = loaded.uri
-        displayTitle = loaded.title
-        updateStreamTitle(loaded)
-        if (loaded.imagePaths.isNotEmpty()) {
-            mangaPaths = loaded.imagePaths.filter { File(it).isFile }
+        val resolved = applyCustomChapterPatternIfSaved(loaded)
+        book = resolved
+        fileKey = resolved.uri
+        displayTitle = resolved.title
+        updateStreamTitle(resolved)
+        if (resolved.imagePaths.isNotEmpty()) {
+            mangaPaths = resolved.imagePaths.filter { File(it).isFile }
         }
         updateMobiModeButtons()
 
         if (isInitial) {
-            val usedEnc = loaded.encoding
+            val usedEnc = resolved.encoding
             if (!usedEnc.equals("UTF-8", ignoreCase = true)) {
                 if (BookEncodingStore.get(this, loaded.uri) == null) {
                     BookEncodingStore.set(this, loaded.uri, usedEnc)
                 }
             }
             allowProgressSave = false
-            // 用户偏好漫画，或无文字纯图 MOBI → 自动漫画模式
-            val imageOnly = isImageOnlyMobi(loaded)
+            // 仅无正文纯图 MOBI 自动进漫画；有正文的 MOBI 打开时默认正文模式
+            val imageOnly = isImageOnlyMobi(resolved)
             val viewMode = AppSettings.mobiViewMode(this)
             val wantManga = isMobiBook() &&
                 mangaPaths.isNotEmpty() &&
-                (viewMode != AppSettings.MobiViewMode.TEXT || imageOnly)
+                imageOnly &&
+                viewMode != AppSettings.MobiViewMode.TEXT
             if (wantManga) {
-                // 纯图 MOBI 无偏好时默认单图漫画
-                mangaContinuousPref = when {
-                    viewMode == AppSettings.MobiViewMode.CONTINUOUS -> true
-                    viewMode == AppSettings.MobiViewMode.MANGA -> false
-                    imageOnly -> false
-                    else -> false
-                }
-                if (imageOnly && viewMode == AppSettings.MobiViewMode.TEXT) {
+                mangaContinuousPref = viewMode == AppSettings.MobiViewMode.CONTINUOUS
+                if (viewMode == AppSettings.MobiViewMode.TEXT) {
                     AppSettings.setMobiViewMode(this, AppSettings.MobiViewMode.MANGA)
                 }
             }
@@ -4123,31 +4162,31 @@ class ReadingActivity : AppCompatActivity() {
                     0,
                 )
             }
-            reader.setContent(loaded.paragraphs)
+            reader.setContent(resolved.paragraphs)
             applyStyleToUi(keepAnchor = false)
             tts.setDocument(
-                loaded.paragraphs,
+                resolved.paragraphs,
                 TextLoader.SentenceLineBreakMode.NEWLINE,
             )
-            tts.setSessionTitle(displayTitle.ifBlank { loaded.title })
+            tts.setSessionTitle(displayTitle.ifBlank { resolved.title })
             applyChromeVisibility()
 
             BookshelfStore.updateIfExists(
                 this,
-                uri = loaded.uri,
-                displayName = loaded.title,
+                uri = resolved.uri,
+                displayName = resolved.title,
                 lastParagraph = shelfProgressHint,
             )
             if (!wantManga) {
                 ReadingProgressStore.saveTxt(
                     this,
-                    loaded.uri,
-                    pendingRestorePara.coerceIn(0, loaded.paragraphs.lastIndex.coerceAtLeast(0)),
-                    loaded.paragraphs.size,
+                    resolved.uri,
+                    pendingRestorePara.coerceIn(0, resolved.paragraphs.lastIndex.coerceAtLeast(0)),
+                    resolved.paragraphs.size,
                     fileExt = progressFileExt(),
                 )
             }
-            AppSettings.setLastBook(this, loaded.uri, loaded.title)
+            AppSettings.setLastBook(this, resolved.uri, resolved.title)
 
             // 布局后再尝试定位；未到目标前不 reveal
             reader.post {
@@ -4155,7 +4194,7 @@ class ReadingActivity : AppCompatActivity() {
                 if (wantManga) {
                     enterMangaMode(restoreIndex = true)
                 } else {
-                    tryRestoreProgress(loaded)
+                    tryRestoreProgress(resolved)
                     maybeRevealReaderAfterRestore()
                 }
             }
@@ -4165,22 +4204,22 @@ class ReadingActivity : AppCompatActivity() {
                 updateProgressLabel()
                 return
             }
-            reader.updateContent(loaded.paragraphs, keepScroll = true)
+            reader.updateContent(resolved.paragraphs, keepScroll = true)
             if (::tts.isInitialized) {
                 tts.updateDocumentKeepPosition(
-                    loaded.paragraphs,
+                    resolved.paragraphs,
                     TextLoader.SentenceLineBreakMode.NEWLINE,
                 )
             }
-            tryRestoreProgress(loaded)
+            tryRestoreProgress(resolved)
             maybeRevealReaderAfterRestore()
             updateProgressLabel()
             // 总段数变化时刷新进度存储的 total
             ReadingProgressStore.saveTxt(
                 this,
-                loaded.uri,
+                resolved.uri,
                 reader.firstVisibleParagraph(),
-                loaded.paragraphs.size,
+                resolved.paragraphs.size,
                 fileExt = progressFileExt(),
             )
         }
@@ -4336,6 +4375,11 @@ class ReadingActivity : AppCompatActivity() {
         h = runCatching {
             java.net.URLDecoder.decode(h, Charsets.UTF_8.name())
         }.getOrDefault(h)
+        if (h.startsWith("mobi:filepos:", ignoreCase = true)) {
+            map[h]?.let { return it }
+            map[h.lowercase(Locale.ROOT)]?.let { return it }
+            return -1
+        }
         h = h.replace('\\', '/').trim()
         // 去掉开头 ./
         while (h.startsWith("./")) h = h.removePrefix("./")
@@ -5021,6 +5065,94 @@ class ReadingActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyCustomChapterPatternIfSaved(loaded: LoadedBook): LoadedBook {
+        val pattern = BookChapterPatternStore.get(this, loaded.uri) ?: return loaded
+        val ignoreCase = BookChapterPatternStore.getIgnoreCase(this, loaded.uri)
+        return runCatching {
+            CustomChapterScanner.apply(loaded, pattern, ignoreCase)
+        }.getOrElse { loaded }
+    }
+
+    private fun applyCustomChapterPattern(
+        pattern: String,
+        ignoreCase: Boolean,
+    ): LoadedBook? {
+        val b = book ?: return null
+        val updated = runCatching {
+            CustomChapterScanner.apply(b, pattern, ignoreCase)
+        }.getOrElse { e ->
+            val msg = when (e) {
+                is IllegalStateException -> getString(R.string.custom_toc_no_match)
+                else -> getString(R.string.custom_toc_invalid, e.message ?: e.toString())
+            }
+            Toasts.show(this, msg)
+            return null
+        }
+        BookChapterPatternStore.set(this, b.uri, pattern, ignoreCase)
+        applyLoadedBook(updated, isInitial = false)
+        updateChapterTitleBar(reader.firstVisibleParagraph())
+        val toast = getString(R.string.custom_toc_applied, updated.chapters.size)
+        if (!updated.isComplete) {
+            Toasts.show(
+                this,
+                "$toast\n${getString(R.string.custom_toc_incomplete, updated.paragraphs.size)}",
+            )
+        } else {
+            Toasts.show(this, toast)
+        }
+        return updated
+    }
+
+    private fun showCustomChapterPatternDialog(onApplied: (LoadedBook) -> Unit = {}) {
+        val b = book ?: return
+        val uri = b.uri
+        val dlgView = layoutInflater.inflate(R.layout.dialog_custom_chapter_pattern, null)
+        val spPreset = dlgView.findViewById<Spinner>(R.id.spPreset)
+        val etPattern = dlgView.findViewById<TextInputEditText>(R.id.etPattern)
+        val cbIgnoreCase = dlgView.findViewById<CheckBox>(R.id.cbIgnoreCase)
+        val presets = CustomChapterScanner.PRESETS
+        spPreset.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            presets.map { it.label },
+        )
+        spPreset.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: android.widget.AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long,
+            ) {
+                if (position in presets.indices) {
+                    etPattern.setText(presets[position].pattern)
+                }
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+        BookChapterPatternStore.get(this, uri)?.let { etPattern.setText(it) }
+            ?: run { etPattern.setText(presets.first().pattern) }
+        cbIgnoreCase.isChecked = BookChapterPatternStore.getIgnoreCase(this, uri)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.custom_toc_title)
+            .setView(dlgView)
+            .setPositiveButton(R.string.apply) { _, _ ->
+                val pattern = etPattern.text?.toString()?.trim().orEmpty()
+                if (pattern.isEmpty()) {
+                    Toasts.show(this, R.string.custom_toc_no_match)
+                    return@setPositiveButton
+                }
+                applyCustomChapterPattern(pattern, cbIgnoreCase.isChecked)?.let(onApplied)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(R.string.custom_toc_clear) { _, _ ->
+                BookChapterPatternStore.clear(this, uri)
+                Toasts.show(this, R.string.custom_toc_cleared)
+            }
+            .show()
+    }
+
     private fun showTocSheet() {
         val b = book ?: return
         val dialog = BottomSheetDialog(this)
@@ -5087,6 +5219,17 @@ class ReadingActivity : AppCompatActivity() {
             totalParas,
         )
 
+        sheet.btnCustomTocScan.isVisible = true
+        sheet.btnCustomTocScan.setOnClickListener {
+            showCustomChapterPatternDialog { updated ->
+                chapterAdapter.submit(
+                    updated.chapters.map { TocItem.ChapterItem(it) },
+                    bookmarkAnchorParagraph(),
+                    updated.paragraphs.size,
+                )
+            }
+        }
+
         val titles = listOf(getString(R.string.toc), getString(R.string.bookmark))
         val adapters = listOf(chapterAdapter, bookmarkAdapter)
         val emptyMsgs = listOf(R.string.toc_empty, R.string.bookmark_empty)
@@ -5108,6 +5251,7 @@ class ReadingActivity : AppCompatActivity() {
                 if (rv.layoutManager == null) {
                     rv.layoutManager = LinearLayoutManager(this@ReadingActivity)
                 }
+                TocVpScrollHelper.attachVerticalList(rv, sheet.vpToc)
                 if (rv.adapter !== ad) {
                     rv.adapter = ad
                 }
@@ -5145,6 +5289,13 @@ class ReadingActivity : AppCompatActivity() {
         TabLayoutMediator(sheet.tabLayout, sheet.vpToc) { tab, pos ->
             tab.text = titles[pos]
         }.attach()
+        sheet.btnCustomTocScan.isVisible = sheet.vpToc.currentItem == 0
+        sheet.vpToc.registerOnPageChangeCallback(object :
+            androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                sheet.btnCustomTocScan.isVisible = position == 0
+            }
+        })
 
         // 打开即为最大高度，不要先半屏再上拉两段
         dialog.setOnShowListener {

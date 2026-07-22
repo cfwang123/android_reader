@@ -18,10 +18,25 @@ object PdfOcrCacheStore {
     private const val INDEX = "index.json"
     private const val VERSION = 1
 
+    /** 竖长页宽高比阈值：超过则要求纵向覆盖率达标才算识别完成 */
+    private const val TALL_PAGE_ASPECT = 1.25f
+    /** 竖长页字符纵向覆盖低于此比例视为「仅识别了上部」，需分块重跑 */
+    private const val MIN_COVER_FRAC = 0.48f
+
+    enum class OcrQuality {
+        NOT_RECOGNIZED,
+        EMPTY,
+        COMPLETE,
+        /** 有字但长图只覆盖上部（旧版整页 OCR 常见） */
+        PARTIAL,
+    }
+
     data class PageIndex(
         val pageIndex: Int,
         val charCount: Int,
         val updatedAt: Long,
+        /** 字符框在页高上的覆盖比例 0..1；长图跳过判定用 */
+        val coverFrac: Float = 0f,
     )
 
     private fun rootDir(ctx: Context): File =
@@ -44,15 +59,67 @@ object PdfOcrCacheStore {
         return loadIndex(ctx, fileKey).keys
     }
 
+    fun isTallPage(pageW: Float, pageH: Float): Boolean =
+        pageH / pageW.coerceAtLeast(1f) >= TALL_PAGE_ASPECT
+
+    fun computeCoverFrac(chars: List<PdfTextExtractor.PdfChar>, pageH: Float): Float {
+        if (chars.isEmpty() || pageH < 1f) return 0f
+        val yMin = chars.minOf { it.top }
+        val yMax = chars.maxOf { it.bottom }
+        return ((yMax - yMin) / pageH).coerceIn(0f, 1f)
+    }
+
+    fun loadPageMeta(ctx: Context, fileKey: String, pageIndex: Int): Pair<Float, Float>? {
+        val f = pageFile(ctx, fileKey, pageIndex)
+        if (!f.isFile) return null
+        return runCatching {
+            val o = JSONObject(f.readText(Charsets.UTF_8))
+            val pw = o.optDouble("pw", 0.0).toFloat()
+            val ph = o.optDouble("ph", 0.0).toFloat()
+            if (pw > 0f && ph > 0f) pw to ph else null
+        }.getOrNull()
+    }
+
     /**
-     * 可跳过的「已识别」页：必须有实际文字。
-     * chars=0 的空结果（如长图旧版 OCR 失败）不算完成，允许重新识别。
+     * 可跳过的「已识别」页：有字且（非竖长页 或 纵向覆盖达标）。
+     * 长图仅上部有字（旧整页 OCR）返回 false，允许分块重跑。
      */
     fun listRecognizedWithText(ctx: Context, fileKey: String): Set<Int> {
         return loadIndex(ctx, fileKey)
-            .filterValues { it.charCount > 0 }
+            .filter { (page, _) -> ocrQuality(ctx, fileKey, page) == OcrQuality.COMPLETE }
             .keys
     }
+
+    fun ocrQuality(
+        ctx: Context,
+        fileKey: String,
+        pageIndex: Int,
+        pageW: Float? = null,
+        pageH: Float? = null,
+    ): OcrQuality {
+        val pi = loadIndex(ctx, fileKey)[pageIndex] ?: return OcrQuality.NOT_RECOGNIZED
+        if (pi.charCount <= 0) return OcrQuality.EMPTY
+        val meta = if (pageW != null && pageH != null && pageW > 0f && pageH > 0f) {
+            pageW to pageH
+        } else {
+            loadPageMeta(ctx, fileKey, pageIndex)
+        }
+        val pw = meta?.first ?: return OcrQuality.COMPLETE
+        val ph = meta?.second ?: return OcrQuality.COMPLETE
+        if (!isTallPage(pw, ph)) return OcrQuality.COMPLETE
+        val cover = pi.coverFrac.takeIf { it > 0f }
+            ?: loadPage(ctx, fileKey, pageIndex)?.let { computeCoverFrac(it, ph) }
+            ?: 0f
+        return if (cover >= MIN_COVER_FRAC) OcrQuality.COMPLETE else OcrQuality.PARTIAL
+    }
+
+    fun canSkipOcrPage(
+        ctx: Context,
+        fileKey: String,
+        pageIndex: Int,
+        pageW: Float? = null,
+        pageH: Float? = null,
+    ): Boolean = ocrQuality(ctx, fileKey, pageIndex, pageW, pageH) == OcrQuality.COMPLETE
 
     fun loadIndex(ctx: Context, fileKey: String): Map<Int, PageIndex> {
         val f = File(bookDir(ctx, fileKey), INDEX)
@@ -70,6 +137,7 @@ object PdfOcrCacheStore {
                             pageIndex = idx,
                             charCount = p.optInt("chars", 0),
                             updatedAt = p.optLong("ts", 0L),
+                            coverFrac = p.optDouble("cover", 0.0).toFloat(),
                         ),
                     )
                 }
@@ -87,7 +155,8 @@ object PdfOcrCacheStore {
                 JSONObject()
                     .put("page", pi.pageIndex)
                     .put("chars", pi.charCount)
-                    .put("ts", pi.updatedAt),
+                    .put("ts", pi.updatedAt)
+                    .put("cover", pi.coverFrac.toDouble()),
             )
         }
         val o = JSONObject()
@@ -130,9 +199,22 @@ object PdfOcrCacheStore {
             .put("chars", arr)
         pageFile(ctx, fileKey, pageIndex).writeText(o.toString(), Charsets.UTF_8)
 
+        val coverFrac = computeCoverFrac(chars, ph)
         val idx = loadIndex(ctx, fileKey).toMutableMap()
-        idx[pageIndex] = PageIndex(pageIndex, chars.size, System.currentTimeMillis())
+        idx[pageIndex] = PageIndex(
+            pageIndex,
+            chars.size,
+            System.currentTimeMillis(),
+            coverFrac,
+        )
         saveIndex(ctx, fileKey, idx)
+        if (isTallPage(pw, ph) && coverFrac < MIN_COVER_FRAC && chars.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "page $pageIndex tall OCR cover=$coverFrac < $MIN_COVER_FRAC " +
+                    "(chars=${chars.size}) — may need retile",
+            )
+        }
     }
 
     fun loadPage(ctx: Context, fileKey: String, pageIndex: Int): List<PdfTextExtractor.PdfChar>? {

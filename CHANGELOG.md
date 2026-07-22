@@ -1,76 +1,54 @@
 # Changelog / 更新日志
 
-## 1.0.4 — 2026-07-22
+## 1.0.4 — 2026-07-22 ~ 2026-07-23
 
 ### English
 
-**PDF**
-- **Per-file crop margins** (not shared across books); odd/even mirror per file
-- Crop panel: keep existing crop when re-opening; auto-sample only if unset
-- **Tall-page OCR**: split into screen-sized strips with overlap, merge lines; **GPU** primary with per-strip **CPU fallback** when det is empty on text-like ink; contrast / invert retries; debug log tag `PdfOcrDbg`
-- **TTS**: next sentence scrolls above the TTS bar (viewport accounts for chrome height)
-- **Progress %** = scroll position / total content height (page-height table; works inside long pages)
-- Layout (排版) panel: higher elevation, nav-bar insets, scrollable — not clipped by bottom chrome
-- Continuous mode page gap **5px**; zoom min **50%**, save/restore zoom+pan per file
-- Close chrome without page-turn; orientation menu: **portrait / landscape only** (no auto-rotate)
+#### New
+- **MOBI**: Text / single-image / continuous view modes
+- **Custom TOC scan** (TXT / EPUB / MOBI): wildcard patterns in the TOC sheet — `*` any text, `x` digit or Chinese numeral, `xxx` / `xxxx` for `001` / `0001`; presets like `第x章 *`, `卷第x *`, `Chapter x`; saved per book
+- **Text selection handles** (PDF / TXT / EPUB / MOBI text): two draggable handles at selection ends; drag to top/bottom edge to auto-scroll and extend selection (gradual speed ramp)
 
-**MOBI manga / continuous**
-- Three view modes: **Text / Manga (single) / Continuous** (portrait & landscape)
-- Continuous: vertical image stream, **10px** gap, min zoom **25%**, fit-center; restore **index + scroll + zoom + pan**
-- Enter continuous: locate overlay (no flash of first page)
-- Mode switch: single→continuous tops current image; continuous→single uses most-visible image; image→text scrolls to matching paragraph
-- Single image: open menu while zoomed &gt;100%; landscape fit whole image in screen
-- Portrait↔landscape: rebind list widths (no half-width pages); collapse chrome after rotate
-
-**Reading / TTS / gestures**
-- TTS (TXT/MOBI/EPUB): **0.3s gap** between paragraphs
-- Edge swipe for font size: **10px** edge only; **0.5sp** steps (decimals); **no toast**
-- Center tap while chrome open: close menu without paging
-
-**Bookshelf**
-- Long-press → **Clear records**: progress, bookmarks, EPUB/MOBI chapter/parse caches, PDF crop/zoom/OCR, encoding, covers/meta — shelf entry kept
-- After clear / return from reading: list **refreshes progress** (no stale “1/N · x%” for unread; prefs committed synchronously)
-- Return from reader: always refresh reading status on shelf
-
-**Fonts / TXT / App** (also in this train)
-- Default font = system; removed bundled commercial typeface
-- TXT progress always full-document %
-- Settings → About → License; MIT covers original source only
+#### Changed / fixed
+- **MOBI (Chinese UTF-8)**: fix mis-decoded Chinese MOBI (e.g. *Journey to the West*) — trust `encoding=65001`, repair PalmDOC HTML damage (NUL / `height` fragments); parse cache v5
+- **MOBI load**: after open, **prefetch the full book in the background** (like EPUB); top-left load % clears when done; chunk + full parse cache
+- **Custom TOC**: matching lines get chapter title styling; fix layout overflow right after scan (invalidate layout cache when `isChapter` changes)
+- **PDF / MOBI continuous images**: on portrait ↔ landscape, keep **zoom (width ratio)** and **horizontal pan ratio** (no reset to 1×)
+- **Orientation**: hard-lock **portrait / landscape** (no large-screen FULL_SENSOR-only layout, no software 90° content rotate)
+- **TOC sheet**: vertical scroll no longer steals horizontal tab swipe (目录 ↔ 书签); fix MIUI crash on TOC open
+- **Shelf long-press menu**: correct X position; white background restored
+- **Pinch release jump**: after pinch, block leftover single-finger pan/fling until the next down (manga single + PDF)
+- **Tall-page OCR** (continued): screen-height strips + overlap merge; contrast / invert retries; detect **partial** tall-page results and re-OCR in strips instead of skipping; OCR dialog lists “top strip only” pages
+- **PDF continuous long pages**: fix wrong scroll on open (prefetch page heights, height-table seek, scroll compensation when tiles grow)
+- **PDF OCR progress**: fix black bar at former bottom-menu area while the progress dialog is shown
+- **Selection handles**: dragging handles no longer triggers PDF pan; edge auto-scroll speed halved with slower ramp-up
+- **TXT selection**: handles appear right after long-press (no extra scroll needed)
+- Edge font size: **0.5sp** steps, **10px** edge
+- **PDF**: TTS clears the TTS bar; layout panel elevation / insets
 
 ### 中文
 
-**PDF**
-- **切边按文件独立保存**（多书不共用）；奇偶对称按书记忆
-- 切边页：已有切边则保留，未设置才自动采样
-- **超长页 OCR**：按屏高分块 + 交叠合并；主路径 **GPU**，文字区条带 det 空时 **CPU 回退**；对比度/反色重试；调试日志 `PdfOcrDbg`
-- **朗读**：下一句会滚出 TTS 控制栏遮挡区
-- **进度 %** = 滚动位置 / 全书内容总高度（页高表；长页内滚动也会变）
-- 排版面板：抬高层级、导航条留白、可滚动，避免被底栏裁切
-- 连续模式页间间隔 **5px**；缩放最低 **50%**，按文件记忆缩放/平移
-- 关菜单不误翻页；视角仅 **竖屏 / 横屏**（去掉自动旋转）
+#### 新增
+- **MOBI**：正文/单图/连续图模式
+- **自定义目录扫描**（TXT / EPUB / MOBI）：目录面板内通配符 — `*` 任意内容、`x` 数字或中文数字、`xxx`/`xxxx` 表 `001`/`0001`；示例 `第x章 *`、`卷第x *`、`Chapter x`；按书记忆
+- **文本选区手柄**（PDF / TXT / EPUB / MOBI 正文）：选区两端拖动手柄，拖到上下边缘自动滚屏扩选（缓加速）
 
-**MOBI 漫画 / 连续图**
-- 三种浏览模式：**正文 / 漫画（单图）/ 连续图**（横竖屏均可）
-- 连续图：纵向图流、图间 **10px**、最低缩放 **25%**、整图 fit；恢复 **索引 + 滚动 + 缩放 + 平移**
-- 进入连续图：定位遮罩，不闪首页
-- 模式切换：单图→连续顶对齐当前图；连续→单图取视口最完整图；图→正文滚到对应段落
-- 单图：放大 &gt;100% 仍可点中部开菜单；横屏整图进屏
-- 竖切横：按新宽度重绑列表（不再半宽图）；旋转后收起底栏防错位
-
-**阅读 / TTS / 手势**
-- TTS（TXT/MOBI/EPUB）：段落间 **0.3 秒** 间隔
-- 侧边滑改字号：仅贴边 **10px**；步进 **0.5sp**（支持小数）；**不弹 Toast**
-- 菜单打开时点中部：只关菜单不翻页
-
-**书架**
-- 长按 → **清除记录**：进度、书签、EPUB/MOBI 章节/解析缓存、PDF 切边/缩放/OCR、编码、封面与元数据；书架条目与源文件保留
-- 清除后 / 读完返回：列表**刷新进度**（未读不再误显示「1/N · x%」；关键 prefs 同步写出）
-- 退出阅读回书架：始终刷新阅读状态
-
-**字体 / TXT / 应用**（同期）
-- 默认系统字体；移除内嵌商业字体
-- TXT 进度始终全文百分比
-- 设置 → 关于 → 许可证；MIT 仅覆盖自有源码
+#### 修改 / 修复
+- **MOBI 中文 UTF-8**：修复部分中文 MOBI（如《西游记》）乱码 — 信任 `encoding=65001`、修补 PalmDOC 解压后 HTML 损伤（NUL、`height` 碎片）；解析缓存 v5
+- **MOBI 加载**：打开后**后台预载全书**（与 EPUB 一致）；左上角加载百分比完成后消失；分块 + 全书解析缓存
+- **自定义目录**：匹配行显示章节标题样式；扫描后立即应用时修复排版溢出（`isChapter` 变化时刷新 layout 缓存）
+- **PDF / MOBI 连续图**：竖屏 ↔ 横屏保持 **缩放（相对屏宽）** 与 **水平平移比例**（不再重置为 1×）
+- **视角**：真正锁定 **竖屏 / 横屏** 窗口方向（取消大屏仅 FULL_SENSOR、取消软件 90° 转内容）
+- **目录面板**：竖滚不再误触横滑切换（目录 ↔ 书签）；修复 MIUI 上点目录崩溃
+- **书架长按菜单**：X 坐标修正、白底恢复
+- **松手跳动**：双指结束后到下一次按下前，禁止剩余单指 pan / fling（漫画单图 + PDF）
+- **超长页 OCR**（延续）：按屏高分块 + 交叠合并；对比度/反色重试；识别 **局部覆盖** 的竖长页会分块重识而非跳过；对话框标注「长图仅上部」页
+- **PDF 连续长页**：修复打开时滚动错位（预取页高、按高度表定位、页高变化时 scroll 补偿）
+- **PDF OCR 进度框**：识别过程中原底栏区域黑条
+- **选区手柄**：拖手柄不再触发 PDF 平移；边缘自动滚动减半并缓加速
+- **TXT 选字**：长按选中后手柄立即显示（无需再滑一下）
+- 侧边字号：**0.5sp**、**10px** 边
+- **PDF**：TTS 避让控制栏；排版面板层级/留白
 
 ---
 

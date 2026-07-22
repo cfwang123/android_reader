@@ -567,7 +567,7 @@ object AppSettings {
         // commit：缩放/页码写入文件级记录，退出后立刻可恢复
         pdfPrefs(ctx).edit()
             .putInt("pdf_progress_$fileKey", state.page.coerceAtLeast(0))
-            .putFloat("pdf_zoom_$k", state.zoom.coerceIn(0.5f, 3.5f))
+            .putFloat("pdf_zoom_$k", state.zoom.coerceIn(0.25f, 3.5f))
             .putFloat("pdf_panX_$k", state.panX)
             .putFloat("pdf_panY_$k", state.panY)
             .putInt("pdf_scrollY_$k", state.scrollY.coerceAtLeast(0))
@@ -579,7 +579,7 @@ object AppSettings {
         val p = pdfPrefs(ctx)
         return PdfViewState(
             page = p.getInt("pdf_progress_$fileKey", 0).coerceAtLeast(0),
-            zoom = p.getFloat("pdf_zoom_$k", 1f).coerceIn(0.5f, 3.5f),
+            zoom = p.getFloat("pdf_zoom_$k", 1f).coerceIn(0.25f, 3.5f),
             panX = p.getFloat("pdf_panX_$k", 0f),
             panY = p.getFloat("pdf_panY_$k", 0f),
             scrollY = p.getInt("pdf_scrollY_$k", 0).coerceAtLeast(0),

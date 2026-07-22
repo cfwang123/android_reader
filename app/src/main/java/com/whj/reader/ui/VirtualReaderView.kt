@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -162,6 +163,13 @@ class VirtualReaderView @JvmOverloads constructor(
     private var selEndPara = -1
     private var selEndOff = 0
     private var selecting = false
+    /** 拖动手柄调整选区起点/终点 */
+    private var draggingHandle: TextSelectionHandles.Which? = null
+    private var selectionDragActive = false
+    private var lastSelDragX = 0f
+    private var lastSelDragY = 0f
+    private var edgeScrollLoopPosted = false
+    private val selectionEdgeScrollState = TextSelectionHandles.EdgeScrollState()
     private var actionMode: ActionMode? = null
 
     private var lastScrollNotifyMs = 0L
@@ -219,6 +227,30 @@ class VirtualReaderView @JvmOverloads constructor(
                     scheduleFill(8L)
                 }
             }
+        }
+    }
+
+    private val selectionEdgeScrollLoop = object : Runnable {
+        override fun run() {
+            val active = selecting || draggingHandle != null
+            if (!active || !selectionDragActive) {
+                edgeScrollLoopPosted = false
+                return
+            }
+            val step = TextSelectionHandles.edgeScrollStep(
+                lastSelDragY,
+                height.toFloat(),
+                lineHeight,
+                density,
+                selectionEdgeScrollState,
+            )
+            if (step != 0f) {
+                scrollYF = (scrollYF + step).coerceIn(0f, maxScrollY().toFloat())
+                updateSelectionAtFinger()
+                invalidate()
+                invalidateSelectionActionMode()
+            }
+            postOnAnimation(this)
         }
     }
 
@@ -377,16 +409,14 @@ class VirtualReaderView @JvmOverloads constructor(
             setContent(list)
             return
         }
-        // 若只是前缀相同的追加，可保留已有 layout 缓存（index 不变）
-        val oldSize = paragraphs.size
-        val prefixSame = oldSize > 0 &&
-            list.size >= oldSize &&
-            paragraphs.firstOrNull()?.text == list.firstOrNull()?.text &&
-            paragraphs.getOrNull(oldSize - 1)?.text == list.getOrNull(oldSize - 1)?.text
+        // 若只是前缀相同的追加，可保留已有 layout 缓存（index 不变且排版输入未变）
+        val oldParas = paragraphs
+        val oldSize = oldParas.size
+        val layoutReuseOk = canReuseLayoutCache(oldParas, list, oldSize)
         val oldY = scrollYF
         paragraphs = list
         imageHeavyMode = detectImageHeavy(list)
-        if (!prefixSame) {
+        if (!layoutReuseOk) {
             layoutCache.evictAll()
         }
         // 不清除 bitmap 缓存（路径仍有效）
@@ -397,6 +427,30 @@ class VirtualReaderView @JvmOverloads constructor(
         }
         invalidate()
         scheduleFill(0L)
+    }
+
+    /** 流式追加时：旧段排版输入未变才可复用 layout 缓存 */
+    private fun canReuseLayoutCache(
+        old: List<Paragraph>,
+        new: List<Paragraph>,
+        oldSize: Int,
+    ): Boolean {
+        if (oldSize <= 0 || new.size < oldSize) return false
+        for (i in 0 until oldSize) {
+            if (!sameLayoutInput(old[i], new[i])) return false
+        }
+        return true
+    }
+
+    private fun sameLayoutInput(a: Paragraph, b: Paragraph): Boolean {
+        return a.text == b.text &&
+            a.isChapter == b.isChapter &&
+            a.align == b.align &&
+            a.preformatted == b.preformatted &&
+            a.spans == b.spans &&
+            a.inlineImages == b.inlineImages &&
+            a.imagePath == b.imagePath &&
+            a.imageDisplaySize == b.imageDisplaySize
     }
 
     /** 全图/近全图（漫画 MOBI 等） */
@@ -513,6 +567,22 @@ class VirtualReaderView @JvmOverloads constructor(
         return i.coerceIn(0, paragraphs.lastIndex)
     }
 
+    /** 屏幕正文区底部（扣除底栏/TTS 遮挡）对应的段落，用于进度显示 */
+    fun bottomScreenParagraph(): Int {
+        if (paragraphs.isEmpty() || tops.isEmpty() || height <= 0) return 0
+        runCatching { ensureLayoutsForViewport() }
+        val contentY = (scrollYF + effectiveContentHeight())
+            .coerceIn(0f, (totalHeight - 1f).coerceAtLeast(0f))
+        var i = tops.binarySearch(contentY)
+        if (i < 0) {
+            i = (-i - 2).coerceAtLeast(0)
+        }
+        while (i < paragraphs.lastIndex && tops[i + 1] <= contentY + 0.5f) {
+            i++
+        }
+        return i.coerceIn(0, paragraphs.lastIndex)
+    }
+
     /** @deprecated 使用 [topScreenParagraph] */
     fun firstFullyVisibleParagraph(): Int = topScreenParagraph(0f)
 
@@ -561,6 +631,15 @@ class VirtualReaderView @JvmOverloads constructor(
         val max = maxScrollY()
         if (max <= 0) return if (paragraphs.isEmpty()) 0f else 100f
         return ((scrollYF / max) * 100f).coerceIn(0f, 100f)
+    }
+
+    /** 按屏幕底部 y（正文区下沿）计算全书进度 0~100 */
+    fun progressPercentAtBottom(): Float {
+        val eff = effectiveContentHeight()
+        val max = maxScrollY().toFloat()
+        val denom = max + eff
+        if (denom <= 0f) return if (paragraphs.isEmpty()) 0f else 100f
+        return ((scrollYF + eff) / denom * 100f).coerceIn(0f, 100f)
     }
 
     /** 按 0~100 进度跳转（支持小数），一边拖一边可调用 */
@@ -1118,45 +1197,122 @@ class VirtualReaderView @JvmOverloads constructor(
     // ─── 触摸：长按拖选；轻点取消选区/翻页 ─────────────────
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // 先给 GestureDetector（长按识别）
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            downX = event.x
+            downY = event.y
+            downTime = SystemClock.uptimeMillis()
+            moved = false
+            longPressFired = false
+            swipeHorizontal = null
+            horizontalSwipeConsumed = false
+            edgeAccum = 0f
+            val w = width.toFloat().coerceAtLeast(1f)
+            val ew = edgeWidthPx
+            edgeSide = when {
+                event.x <= ew && leftEdgeEnabled -> 1
+                event.x >= w - ew && rightEdgeEnabled -> 2
+                else -> 0
+            }
+            downZone = when {
+                event.x < w / 3f -> 0
+                event.x > w * 2f / 3f -> 2
+                else -> 1
+            }
+            draggingHandle = null
+            if (hasSelection() && !selecting) {
+                selectionHandleAnchors()?.let { (s, e) ->
+                    draggingHandle = TextSelectionHandles.hitTest(
+                        event.x,
+                        event.y,
+                        s.x,
+                        s.y,
+                        e.x,
+                        e.y,
+                        density,
+                    )
+                }
+            }
+            if (draggingHandle != null) {
+                selectionDragActive = true
+                lastSelDragX = event.x
+                lastSelDragY = event.y
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+        }
+
+        if (draggingHandle != null) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    lastSelDragX = event.x
+                    lastSelDragY = event.y
+                    updateSelectionAtFinger()
+                    ensureSelectionEdgeScrollLoop()
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    draggingHandle = null
+                    selectionDragActive = false
+                    selectionEdgeScrollState.reset()
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    invalidateSelectionActionMode()
+                }
+            }
+            return true
+        }
+
+        if (selecting) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    lastSelDragX = event.x
+                    lastSelDragY = event.y
+                    updateSelectionAtFinger()
+                    ensureSelectionEdgeScrollLoop()
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP -> {
+                    selecting = false
+                    selectionDragActive = false
+                    selectionEdgeScrollState.reset()
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (hasSelection()) {
+                        startTextActionMode()
+                        invalidate()
+                    } else {
+                        clearSelection()
+                    }
+                    edgeSide = 0
+                    edgeAccum = 0f
+                    swipeHorizontal = null
+                    horizontalSwipeConsumed = false
+                    scheduleFill(8L)
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    selecting = false
+                    selectionDragActive = false
+                    selectionEdgeScrollState.reset()
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (hasSelection()) {
+                        startTextActionMode()
+                        invalidate()
+                    }
+                    edgeSide = 0
+                    edgeAccum = 0f
+                    swipeHorizontal = null
+                    horizontalSwipeConsumed = false
+                    scheduleFill(8L)
+                }
+            }
+            return true
+        }
+
         gestureDetector.onTouchEvent(event)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                downX = event.x
-                downY = event.y
-                downTime = SystemClock.uptimeMillis()
-                moved = false
-                longPressFired = false
-                swipeHorizontal = null
-                horizontalSwipeConsumed = false
-                edgeAccum = 0f
-                val w = width.toFloat().coerceAtLeast(1f)
-                val ew = edgeWidthPx
-                edgeSide = when {
-                    event.x <= ew && leftEdgeEnabled -> 1
-                    event.x >= w - ew && rightEdgeEnabled -> 2
-                    else -> 0
-                }
-                downZone = when {
-                    event.x < w / 3f -> 0
-                    event.x > w * 2f / 3f -> 2
-                    else -> 1
-                }
+                // 已在入口处理
             }
             MotionEvent.ACTION_MOVE -> {
-                if (selecting) {
-                    // 长按后拖动：扩展选区终点（跨段块选）
-                    val hit = hitTest(event.x, event.y, allowBuild = true)
-                    if (hit != null) {
-                        selEndPara = hit.para
-                        selEndOff = hit.offset
-                        // 拖出屏幕上下边缘时自动滚一点
-                        autoScrollWhileSelecting(event.y)
-                        invalidate()
-                    }
-                    return true
-                }
                 if (!moved) {
                     if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) {
                         moved = true
@@ -1164,16 +1320,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_UP -> {
-                if (selecting) {
-                    // 结束拖选，弹出复制菜单
-                    selecting = false
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    if (hasSelection()) {
-                        startTextActionMode()
-                    } else {
-                        clearSelection()
-                    }
-                } else if (!moved && !longPressFired) {
+                if (!moved && !longPressFired) {
                     // 轻点：立刻响应，不再用长按超时卡死（避免侧边翻页像延时 0.5s）
                     if (hasSelection()) {
                         clearSelection()
@@ -1204,11 +1351,6 @@ class VirtualReaderView @JvmOverloads constructor(
                 scheduleFill(8L)
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (selecting) {
-                    selecting = false
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    if (hasSelection()) startTextActionMode()
-                }
                 edgeSide = 0
                 edgeAccum = 0f
                 swipeHorizontal = null
@@ -1236,20 +1378,104 @@ class VirtualReaderView @JvmOverloads constructor(
         return true
     }
 
-    /** 选区拖到顶/底边缘时跟手滚动 */
+    /** 选区拖到顶/底边缘时跟手滚动（MOVE 即时步进 + 边缘循环） */
     private fun autoScrollWhileSelecting(y: Float) {
-        val edge = height * 0.12f
-        val step = lineHeight * 2f
-        when {
-            y < edge -> {
-                scrollYF = (scrollYF - step).coerceAtLeast(0f)
-                scheduleFill(0L)
+        val step = TextSelectionHandles.edgeScrollStep(
+            y,
+            height.toFloat(),
+            lineHeight,
+            density,
+            selectionEdgeScrollState,
+        )
+        if (step == 0f) return
+        scrollYF = (scrollYF + step).coerceIn(0f, maxScrollY().toFloat())
+        scheduleFill(0L)
+    }
+
+    private fun ensureSelectionEdgeScrollLoop() {
+        autoScrollWhileSelecting(lastSelDragY)
+        if (!edgeScrollLoopPosted) {
+            edgeScrollLoopPosted = true
+            postOnAnimation(selectionEdgeScrollLoop)
+        }
+    }
+
+    private fun updateSelectionAtFinger() {
+        val hit = hitTest(lastSelDragX, lastSelDragY, allowBuild = true) ?: return
+        val handle = draggingHandle
+        if (handle != null) {
+            applySelectionHandleDrag(handle, hit)
+        } else if (selecting) {
+            selEndPara = hit.para
+            selEndOff = hit.offset
+        }
+    }
+
+    private fun applySelectionHandleDrag(handle: TextSelectionHandles.Which, hit: Hit) {
+        when (handle) {
+            TextSelectionHandles.Which.START -> {
+                selStartPara = hit.para
+                selStartOff = hit.offset
             }
-            y > height - edge -> {
-                scrollYF = (scrollYF + step).coerceAtMost(maxScrollY().toFloat())
-                scheduleFill(0L)
+            TextSelectionHandles.Which.END -> {
+                selEndPara = hit.para
+                selEndOff = hit.offset
             }
         }
+        normalizeSelectionOrder()
+    }
+
+    private fun normalizeSelectionOrder() {
+        val a = Hit(selStartPara, selStartOff)
+        val b = Hit(selEndPara, selEndOff)
+        if (compareHit(a, b) <= 0) return
+        selStartPara = b.para
+        selStartOff = b.offset
+        selEndPara = a.para
+        selEndOff = a.offset
+        draggingHandle = when (draggingHandle) {
+            TextSelectionHandles.Which.START -> TextSelectionHandles.Which.END
+            TextSelectionHandles.Which.END -> TextSelectionHandles.Which.START
+            null -> null
+        }
+    }
+
+    private fun selectionHandleAnchors(): Pair<PointF, PointF>? {
+        val norm = normalizedSelection() ?: return null
+        val start = charOffsetToViewPoint(norm.first.para, norm.first.offset, atEnd = false) ?: return null
+        val end = charOffsetToViewPoint(norm.second.para, norm.second.offset, atEnd = true) ?: return null
+        return start to end
+    }
+
+    private fun charOffsetToViewPoint(para: Int, offset: Int, atEnd: Boolean): PointF? {
+        if (para !in paragraphs.indices || tops.isEmpty()) return null
+        val layout = layoutCache.get(para) ?: buildAndCache(para)
+        if (layout.lines.isEmpty()) return null
+        val text = paragraphs[para].text
+        if (text.isEmpty()) return null
+        val paint = if (paragraphs[para].isChapter) chapterPaint else textPaint
+        val off = when {
+            atEnd && offset > 0 -> (offset - 1).coerceIn(0, text.length - 1)
+            else -> offset.coerceIn(0, (text.length - 1).coerceAtLeast(0))
+        }
+        val lineIdx = lineForOffset(layout, off)
+        if (lineIdx < 0 || lineIdx > layout.lines.lastIndex) return null
+        val line = layout.lines[lineIdx]
+        val x = if (atEnd) {
+            paint.measureText(text, line.start, (off + 1).coerceAtMost(text.length))
+        } else if (off <= line.start) {
+            0f
+        } else {
+            paint.measureText(text, line.start, off)
+        }
+        val lineBottom = tops[para] + line.top + lineHeight
+        return PointF(contentPaddingH + x, contentPaddingV + lineBottom - scrollYF)
+    }
+
+    private fun invalidateSelectionActionMode() {
+        if (actionMode == null || !hasSelection()) return
+        actionMode?.invalidate()
+        actionMode?.invalidateContentRect()
     }
 
     private fun beginSelectionAt(hit: Hit) {
@@ -1469,6 +1695,11 @@ class VirtualReaderView @JvmOverloads constructor(
         if (needMoreFill || hasVisibleBlank()) {
             scheduleFill(0L)
         }
+        if (hasSelection()) {
+            selectionHandleAnchors()?.let { (s, e) ->
+                TextSelectionHandles.draw(canvas, s.x, s.y, e.x, e.y, density)
+            }
+        }
     }
 
     override fun computeScroll() {
@@ -1477,13 +1708,16 @@ class VirtualReaderView @JvmOverloads constructor(
             clampScroll()
             invalidate()
             notifyScroll(force = false)
+            invalidateSelectionActionMode()
             if (scroller.isFinished) scheduleFill(0L)
         }
     }
 
     override fun onDetachedFromWindow() {
         removeCallbacks(fillBlankRunnable)
+        removeCallbacks(selectionEdgeScrollLoop)
         fillRunning = false
+        edgeScrollLoopPosted = false
         super.onDetachedFromWindow()
     }
 
@@ -1547,6 +1781,7 @@ class VirtualReaderView @JvmOverloads constructor(
         clampScroll()
         invalidate()
         notifyScroll(force = false)
+        invalidateSelectionActionMode()
         scheduleFill(8L)
     }
 
@@ -2191,7 +2426,9 @@ class VirtualReaderView @JvmOverloads constructor(
                 canvas.drawRect(xPos, lineTop, xPos + w, lineTop + lineHeight, spanBgPaint)
             }
             canvas.drawText(text, i, j, xPos, baseline, runPaint)
-            val needUl = style?.underline == true || !style?.linkHref.isNullOrBlank()
+            val href = style?.linkHref
+            val needUl = style?.underline == true ||
+                (!href.isNullOrBlank() && HtmlRichParser.isExternalLink(href))
             if (needUl) {
                 underlinePaint.color = runPaint.color
                 val uy = baseline + 2f * density
@@ -2248,9 +2485,10 @@ class VirtualReaderView @JvmOverloads constructor(
         isChapter: Boolean,
     ) {
         dest.set(base)
-        val isLink = !style?.linkHref.isNullOrBlank()
+        val href = style?.linkHref
+        val isExternal = !href.isNullOrBlank() && HtmlRichParser.isExternalLink(href)
         dest.color = style?.color
-            ?: if (isLink) HtmlRichParser.DEFAULT_LINK_COLOR else textColor
+            ?: if (isExternal) HtmlRichParser.DEFAULT_LINK_COLOR else textColor
         val bold = isChapter || style?.bold == true
         val italic = style?.italic == true
         dest.isFakeBoldText = bold
@@ -2380,6 +2618,9 @@ class VirtualReaderView @JvmOverloads constructor(
         selEndPara = -1
         selEndOff = 0
         selecting = false
+        draggingHandle = null
+        selectionDragActive = false
+        selectionEdgeScrollState.reset()
         actionMode?.finish()
         actionMode = null
         if (!silent) invalidate()
@@ -2507,7 +2748,7 @@ class VirtualReaderView @JvmOverloads constructor(
                                 selEndOff = paragraphs[p].text.length
                                 buildAndCache(p)
                                 invalidate()
-                                mode.invalidateContentRect()
+                                invalidateSelectionActionMode()
                             }
                             return true
                         }

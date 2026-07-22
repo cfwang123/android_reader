@@ -34,6 +34,7 @@ object BookLocalDataCleaner {
         AppSettings.clearMangaViewState(ctx, uri)
         BookEncodingStore.set(ctx, uri, null)
         BookChineseModeStore.set(ctx, uri, ChineseConvert.Mode.OFF)
+        BookChapterPatternStore.clear(ctx, uri)
 
         // EPUB / MOBI 解析与章节缓存（禁止整文件 readText 大 bin，防 OOM 闪退）
         clearEbookParseCaches(ctx, uri)

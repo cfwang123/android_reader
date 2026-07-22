@@ -29,6 +29,47 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
+    /** 横竖屏重铺前由外部 [scheduleContinuousTransformRestore] 注入，onSizeChanged 后恢复 */
+    private var pendingContinuousRestore: ContinuousTransformSnapshot? = null
+
+    /** 连续流：记录当前 zoom 与水平 pan 在可滑区间内的比例 */
+    data class ContinuousTransformSnapshot(
+        val zoom: Float,
+        val panRatioX: Float,
+    )
+
+    /**
+     * 连续流横竖屏切换前快照：保持 zoom（相对屏宽比例）与 panX 比例。
+     * 未缩放且水平未偏时返回 null。
+     */
+    fun snapshotContinuousTransform(): ContinuousTransformSnapshot? {
+        if (!continuousScrollWhenZoomed || width <= 0) return null
+        val z = contentZoom.coerceIn(minZoom, maxZoom)
+        if (!isScaled() && abs(panX) < 0.5f) return null
+        val b = panBounds()
+        val span = b[1] - b[0]
+        val ratio = if (span < 0.5f) 0f else ((panX - b[0]) / span).coerceIn(0f, 1f)
+        return ContinuousTransformSnapshot(z, ratio)
+    }
+
+    /** 在 layout 变更前调用；尺寸变化后自动 [restoreContinuousTransform] */
+    fun scheduleContinuousTransformRestore(snap: ContinuousTransformSnapshot?) {
+        pendingContinuousRestore = snap
+    }
+
+    /** 按快照恢复 zoom / 水平 pan（竖向仍交给列表滚动） */
+    fun restoreContinuousTransform(snap: ContinuousTransformSnapshot) {
+        if (!continuousScrollWhenZoomed) return
+        contentZoom = snap.zoom.coerceIn(minZoom, maxZoom)
+        val b = panBounds()
+        val span = b[1] - b[0]
+        panX = if (span < 0.5f) b[0] else b[0] + snap.panRatioX * span
+        panY = 0f
+        clampPan()
+        applyTransform()
+        onZoomChanged?.invoke(contentZoom)
+    }
+
     var contentZoom: Float = 1f
         private set
 
@@ -71,6 +112,12 @@ class ZoomableFrameLayout @JvmOverloads constructor(
      */
     var continuousScrollWhenZoomed: Boolean = false
 
+    /**
+     * 单页横屏长页：允许 [zoomTarget] 高度大于视口（由外部设置 layout height），
+     * 且 [applyTransform] 不强制改回 MATCH_PARENT。
+     */
+    var allowTallZoomTarget: Boolean = false
+
     var zoomTarget: View? = null
         set(value) {
             field = value
@@ -82,6 +129,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private var pinching = false
     private var panning = false
     private var selecting = false
+    /** 选区手柄拖动中：禁止本层 pan / 把竖滑交给 overlay */
+    var handleDragActive = false
     private var downX = 0f
     private var downY = 0f
     private var lastX = 0f
@@ -116,6 +165,10 @@ class ZoomableFrameLayout @JvmOverloads constructor(
      * 锁到整段手势结束；下一次单指 DOWN 时按是否放大重新设定。
      */
     private var pageTurnLocked = false
+    /** 连续模式：侧区按下，UP 时若未滑则拦截并翻页（避免 RV 吞掉轻点） */
+    private var sideTapTrack = false
+    private var sideTapDownX = 0f
+    private var sideTapDownY = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     /** 点按判定略宽于系统 slop，避免轻微抖动被当成滑动 */
     private val tapSlop =
@@ -211,11 +264,28 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         pinchStartSpan = span.coerceAtLeast(1f)
     }
 
+    /** 布局/测量尺寸；单页长页在 requestLayout 前用 layoutParams 高度算 pan 边界 */
+    private fun targetContentSize(t: View?): Pair<Float, Float> {
+        val vw = width.toFloat().coerceAtLeast(1f)
+        val vh = height.toFloat().coerceAtLeast(1f)
+        if (t == null) return vw to vh
+        var tw = if (t.width > 0) t.width.toFloat() else vw
+        var th = if (t.height > 0) t.height.toFloat() else vh
+        if (allowTallZoomTarget) {
+            val lp = t.layoutParams
+            val lpW = lp?.width ?: 0
+            val lpH = lp?.height ?: 0
+            if (lpW > vw && lpW != LayoutParams.MATCH_PARENT) tw = lpW.toFloat()
+            if (lpH > vh && lpH != LayoutParams.MATCH_PARENT) th = lpH.toFloat()
+        }
+        return tw.coerceAtLeast(1f) to th.coerceAtLeast(1f)
+    }
+
     /** 内容在给定 zoom 下是否仍应居中（≤100%） */
     private fun contentFitsAt(zoom: Float): Boolean {
         val t = target()
         val vw = width.toFloat().coerceAtLeast(1f)
-        val tw = (if (t != null && t.width > 0) t.width else width).toFloat().coerceAtLeast(1f)
+        val (tw, _) = targetContentSize(t)
         val z = zoom.coerceAtLeast(0.01f)
         // 与 UI「100%」一致：z≤1 且水平未超出
         return z <= 1.001f && tw * z <= vw + 0.5f
@@ -225,8 +295,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val t = target()
         val vw = width.toFloat().coerceAtLeast(1f)
         val vh = height.toFloat().coerceAtLeast(1f)
-        val tw = (if (t != null && t.width > 0) t.width else width).toFloat().coerceAtLeast(1f)
-        val th = (if (t != null && t.height > 0) t.height else height).toFloat().coerceAtLeast(1f)
+        val (tw, th) = targetContentSize(t)
         val z = zoom.coerceAtLeast(0.01f)
         val cx = (vw - tw * z) / 2f
         val cy = if (continuousScrollWhenZoomed) 0f else (vh - th * z) / 2f
@@ -378,9 +447,78 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         clipToPadding = true
         // 必须可点击：否则子 View（如单页 ImageView）不消费 DOWN 时，
         // dispatch 返回 false，后续 MOVE/UP 不再送达 → 侧边翻页/中部菜单全失效。
-        // 连续模式靠 RecyclerView 消费触摸所以表现正常。
         isClickable = true
         isFocusable = false
+    }
+
+    private fun isSideZoneX(x: Float): Boolean {
+        val w = width.toFloat().coerceAtLeast(1f)
+        return x < w / 3f || x > w * 2f / 3f
+    }
+
+    private fun sideTapSlop(): Float =
+        if (isZoomed() || isScaled()) tapSlop * 1.5f else tapSlop.toFloat()
+
+    /** @return 是否已触发侧边翻页 */
+    private fun tryFireSideTap(x: Float, y: Float): Boolean {
+        val cb = onSideTapImmediate ?: return false
+        if (pinching || selecting || handleDragActive) return false
+        val w = width.toFloat().coerceAtLeast(1f)
+        return when {
+            x < w / 3f -> {
+                cb.invoke(0, x, y)
+                true
+            }
+            x > w * 2f / 3f -> {
+                cb.invoke(2, x, y)
+                true
+            }
+            else -> false
+        }
+    }
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        if (onSideTapImmediate == null) return false
+        if (pinching || ev.pointerCount > 1 || scaleDetector.isInProgress) {
+            sideTapTrack = false
+            return false
+        }
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (isSideZoneX(ev.x)) {
+                    sideTapTrack = true
+                    sideTapDownX = ev.x
+                    sideTapDownY = ev.y
+                } else {
+                    sideTapTrack = false
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (sideTapTrack) {
+                    val dist = max(abs(ev.x - sideTapDownX), abs(ev.y - sideTapDownY))
+                    if (dist > sideTapSlop()) sideTapTrack = false
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (tapConsumed) {
+                    sideTapTrack = false
+                    return false
+                }
+                if (sideTapTrack) {
+                    val dist = max(abs(ev.x - sideTapDownX), abs(ev.y - sideTapDownY))
+                    if (dist <= sideTapSlop()) {
+                        onStopScroll?.invoke()
+                        tryFireSideTap(ev.x, ev.y)
+                        tapConsumed = true
+                        sideTapTrack = false
+                        return true
+                    }
+                }
+                sideTapTrack = false
+            }
+            MotionEvent.ACTION_CANCEL -> sideTapTrack = false
+        }
+        return false
     }
 
     /**
@@ -424,6 +562,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     }
 
     /** 是否放大（>1）：用于平移接管触摸。缩小（&lt;1）仍把竖滑交给列表。 */
+    fun isPinching(): Boolean = pinching
+
     fun isZoomed(): Boolean = contentZoom > 1.01f
 
     /** 内容是否超出视口（1x 横屏长页也需要 pan） */
@@ -525,8 +665,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val t = target()
         val vw = width.toFloat().coerceAtLeast(1f)
         val vh = height.toFloat().coerceAtLeast(1f)
-        val tw = (if (t != null && t.width > 0) t.width else width).toFloat().coerceAtLeast(1f)
-        val th = (if (t != null && t.height > 0) t.height else height).toFloat().coerceAtLeast(1f)
+        val (tw, th) = targetContentSize(t)
         val cw = tw * contentZoom
         val ch = th * contentZoom
         val minX: Float
@@ -584,20 +723,34 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val z = contentZoom.coerceAtLeast(0.01f)
         val lp = t.layoutParams ?: LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
 
-        // 捏合过程中固定 MATCH_PARENT，避免 z 越过 0.99 时 layout 高度突变跳动
-        if (!pinching && z < 0.99f && continuousScrollWhenZoomed) {
+        // 连续模式缩小：始终加高 RV（含捏合中），避免松手 tallRv ↔ 捏合 resetRv 来回切导致第二页黑屏
+        if (z < 0.99f && continuousScrollWhenZoomed) {
             // 布局加高：缩放后高度铺满，列表可见范围变为原来的 1/z
             val layoutH = (vh / z).toInt().coerceAtLeast(vh)
             if (lp.width != LayoutParams.MATCH_PARENT || lp.height != layoutH) {
                 lp.width = LayoutParams.MATCH_PARENT
                 lp.height = layoutH
                 t.layoutParams = lp
+                android.util.Log.i(
+                    "PdfZoom",
+                    "applyTransform tallRv z=$z pinching=$pinching layoutH=$layoutH vh=$vh " +
+                        "targetWas=${t.height}",
+                )
             }
         } else {
-            if (lp.width != LayoutParams.MATCH_PARENT || lp.height != LayoutParams.MATCH_PARENT) {
+            val keepTall = allowTallZoomTarget &&
+                lp.height > vh &&
+                lp.height != LayoutParams.MATCH_PARENT
+            val wantH = if (keepTall) lp.height else LayoutParams.MATCH_PARENT
+            if (lp.width != LayoutParams.MATCH_PARENT || lp.height != wantH) {
+                val prevH = lp.height
                 lp.width = LayoutParams.MATCH_PARENT
-                lp.height = LayoutParams.MATCH_PARENT
+                lp.height = wantH
                 t.layoutParams = lp
+                android.util.Log.i(
+                    "PdfZoom",
+                    "applyTransform resetRv z=$z pinching=$pinching wantH=$wantH prevH=$prevH vh=$vh",
+                )
             }
         }
 
@@ -672,6 +825,12 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        val pending = pendingContinuousRestore
+        if (pending != null && continuousScrollWhenZoomed && w > 0) {
+            pendingContinuousRestore = null
+            post { restoreContinuousTransform(pending) }
+            return
+        }
         // 旋转后旧的 continuous 加高 layout 可能残留，先清再按新 vh 应用
         if (abs(contentZoom - 1f) < 0.01f) {
             contentZoom = 1f
@@ -764,7 +923,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
         // 连续模式未缩放：单指路径尽量短，把滚动交给 RecyclerView（对齐 Office 丝滑）
         // 本手势若曾双指缩放，pageTurnLocked 期间不走「侧边翻页」捷径
-        if (continuousScrollWhenZoomed && !isZoomed() && !multi && !selecting && !pageTurnLocked) {
+        if (continuousScrollWhenZoomed && !isZoomed() && !multi && !selecting && !handleDragActive && !pageTurnLocked) {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = ev.x
@@ -810,10 +969,12 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                             val w = width.toFloat().coerceAtLeast(1f)
                             when {
                                 onSideTapImmediate != null && ev.x < w / 3f -> {
+                                    onStopScroll?.invoke()
                                     onSideTapImmediate?.invoke(0, ev.x, ev.y)
                                     tapConsumed = true
                                 }
                                 onSideTapImmediate != null && ev.x > w * 2f / 3f -> {
+                                    onStopScroll?.invoke()
                                     onSideTapImmediate?.invoke(2, ev.x, ev.y)
                                     tapConsumed = true
                                 }
@@ -883,14 +1044,15 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                     lastY = ev.y
                     return true
                 }
-                // 双指刚结束：禁止剩余单指 pan
-                if (blockPanAfterPinch) {
+                if (handleDragActive) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    lastX = ev.x
+                    lastY = ev.y
+                } else if (blockPanAfterPinch) {
                     lastX = ev.x
                     lastY = ev.y
                     return true
-                }
-                // 放大 或 1x 但内容高于/宽于视口（PDF 横屏 fit-width 长页）
-                if (isZoomed() || canPanContent()) {
+                } else if (isZoomed() || canPanContent()) {
                     val dx = ev.x - lastX
                     val dy = ev.y - lastY
                     if (!panning) {
@@ -982,16 +1144,18 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         recycleTracker()
                         return true
                     }
-                    // 2) 侧边轻点：立即翻页（双指缩放手势中禁止）
-                    if (onSideTapImmediate != null && total <= touchSlop && !isZoomed()) {
+                    // 2) 侧边轻点：立即翻页（双指缩放手势中禁止；放大态也允许）
+                    if (!tapConsumed && onSideTapImmediate != null && total <= touchSlop) {
                         val w = width.toFloat().coerceAtLeast(1f)
                         when {
                             ev.x < w / 3f -> {
+                                onStopScroll?.invoke()
                                 onSideTapImmediate?.invoke(0, ev.x, ev.y)
                                 recycleTracker()
                                 return true
                             }
                             ev.x > w * 2f / 3f -> {
+                                onStopScroll?.invoke()
                                 onSideTapImmediate?.invoke(2, ev.x, ev.y)
                                 recycleTracker()
                                 return true

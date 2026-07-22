@@ -16,7 +16,7 @@ data class TextSpanStyle(
     val backgroundColor: Int? = null,
     /**
      * 超链接目标（HTML href 原值，可能是 #id / 相对路径 / http…）。
-     * 非空时绘制为链接样式，点击由阅读页解析跳转。
+     * 非空时记录跳转目标；仅外部链接默认绘制为蓝字下划线。
      */
     val linkHref: String? = null,
 )

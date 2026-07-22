@@ -16,7 +16,7 @@ import java.util.Locale
  * - 表格：简单 tr/td/th → 按列对齐的多行（等宽），th 加粗
  * - pre：保留空白与换行，[ParsedBlock.preformatted]
  * - 行内：b/strong、i/em、u、font color、span style 的 color/background[-color]
- * - a href：链接样式（下划线 + 默认蓝），href 写入 [TextSpanStyle.linkHref]
+ * - a href：外部链接（http/https/mailto）为下划线 + 默认蓝；书内锚点/相对路径继承正文样式，仍可点击
  * - id/name：锚点，写入 [ParsedBlock.anchors] 供跳转
  * - img：整行图 / 行内图
  * - 颜色/背景：仅当前标签一层（栈顶），不合成多层
@@ -27,6 +27,30 @@ object HtmlRichParser {
     const val OBJ_CHAR = '\uFFFC'
     /** 默认链接色 */
     val DEFAULT_LINK_COLOR: Int = 0xFF1565C0.toInt()
+
+    /** 书内跳转（#锚点、相对路径、mobi:filepos）；非 http(s)/mailto */
+    fun isExternalLink(href: String): Boolean {
+        val h = href.trim()
+        if (h.isEmpty()) return false
+        val lower = h.lowercase(Locale.ROOT)
+        if (lower.startsWith("mobi:filepos:")) return false
+        return lower.startsWith("http://") ||
+            lower.startsWith("https://") ||
+            lower.startsWith("mailto:")
+    }
+
+    /** MOBI/KF8 的 filepos 链接键，与 [MobiLoader] 一致 */
+    fun mobiFileposHref(filepos: Int): String =
+        String.format(Locale.US, "mobi:filepos:%010d", filepos)
+
+    private fun linkHrefFromAttrs(attrs: Map<String, String>): String? {
+        val href = (attrs["href"] ?: attrs["xlink:href"]).orEmpty().trim()
+        if (href.isNotEmpty()) return href
+        val fp = attrs["filepos"].orEmpty().trim()
+        if (fp.isEmpty()) return null
+        val n = fp.toLongOrNull() ?: return null
+        return mobiFileposHref(n.toInt())
+    }
 
     data class InlineImageRef(
         val start: Int,
@@ -649,21 +673,27 @@ object HtmlRichParser {
             }
             "a" -> {
                 noteId(b, attrs)
-                val href = (attrs["href"] ?: attrs["xlink:href"]).orEmpty().trim()
                 val cur = b.currentStyle()
-                val style = attrs["style"].orEmpty()
-                val col = parseCssColor(style, "color") ?: cur.color ?: DEFAULT_LINK_COLOR
-                val bg = parseCssColor(style, "background-color")
-                    ?: parseCssColor(style, "background")
-                    ?: cur.backgroundColor
-                b.pushStyle(
-                    cur.copy(
-                        underline = true,
-                        color = col,
-                        backgroundColor = bg,
-                        linkHref = href.ifEmpty { cur.linkHref },
-                    ),
-                )
+                val resolvedHref = linkHrefFromAttrs(attrs) ?: cur.linkHref
+                if (resolvedHref != null && isExternalLink(resolvedHref)) {
+                    val style = attrs["style"].orEmpty()
+                    val col = parseCssColor(style, "color") ?: cur.color ?: DEFAULT_LINK_COLOR
+                    val bg = parseCssColor(style, "background-color")
+                        ?: parseCssColor(style, "background")
+                        ?: cur.backgroundColor
+                    b.pushStyle(
+                        cur.copy(
+                            underline = true,
+                            color = col,
+                            backgroundColor = bg,
+                            linkHref = resolvedHref,
+                        ),
+                    )
+                } else if (resolvedHref != null) {
+                    b.pushStyle(cur.copy(linkHref = resolvedHref))
+                } else {
+                    b.pushStyle(cur)
+                }
             }
             "span", "label", "sub", "sup", "small", "big", "code", "tt" -> {
                 noteId(b, attrs)

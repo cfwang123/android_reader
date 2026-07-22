@@ -11,7 +11,7 @@ import android.text.TextWatcher
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
-import android.widget.PopupMenu
+import androidx.appcompat.widget.PopupMenu
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -45,6 +45,7 @@ import com.whj.reader.ui.ShelfAdapter
 import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
+import com.whj.reader.util.showBelowTouchX
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -197,8 +198,10 @@ class MainActivity : AppCompatActivity() {
             onLinkedDirClick = { enterLinkedDir(it) },
             onLinkedFileClick = { openLinkedFile(it) },
             onFolderLongClick = { showFolderMenu(it) },
-            onBookLongPress = { book, anchor -> showBookPopupMenu(book, anchor) },
-            onLinkedFileLongPress = { entry, anchor -> showLinkedFilePopupMenu(entry, anchor) },
+            onBookLongPress = { book, anchor, touchX -> showBookPopupMenu(book, anchor, touchX) },
+            onLinkedFileLongPress = { entry, anchor, touchX ->
+                showLinkedFilePopupMenu(entry, anchor, touchX)
+            },
             onStartDrag = { vh -> bookDragHelper.startDrag(vh) },
         )
         binding.rvShelf.layoutManager = LinearLayoutManager(this)
@@ -1503,7 +1506,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 书架书长按菜单；历史内可多选 / 删除记录 */
-    private fun showBookPopupMenu(book: ShelfBook, anchor: android.view.View) {
+    private fun showBookPopupMenu(book: ShelfBook, anchor: android.view.View, touchRawX: Float) {
         val historyItem = isInsideHistory() ||
             ReadingHistoryStore.isHistoryBookId(book.id) ||
             ReadingHistoryStore.isHistoryFolderId(book.folderId)
@@ -1554,11 +1557,15 @@ class MainActivity : AppCompatActivity() {
                 else -> false
             }
         }
-        popup.show()
+        popup.showBelowTouchX(anchor, touchRawX)
     }
 
     /** 绑定文件夹内文件长按：详情 / 清除记录 */
-    private fun showLinkedFilePopupMenu(entry: LinkedFileEntry, anchor: android.view.View) {
+    private fun showLinkedFilePopupMenu(
+        entry: LinkedFileEntry,
+        anchor: android.view.View,
+        touchRawX: Float,
+    ) {
         val popup = PopupMenu(this, anchor)
         popup.menu.add(0, 0, 0, R.string.file_details)
         popup.menu.add(0, 3, 1, R.string.clear_book_record)
@@ -1581,7 +1588,7 @@ class MainActivity : AppCompatActivity() {
                 else -> false
             }
         }
-        popup.show()
+        popup.showBelowTouchX(anchor, touchRawX)
     }
 
     /** 清除进度 / OCR / 切边等本地缓存，保留书架条目与源文件 */

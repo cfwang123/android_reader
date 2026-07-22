@@ -32,10 +32,10 @@ class ShelfAdapter(
     private val onLinkedDirClick: (LinkedDirEntry) -> Unit,
     private val onLinkedFileClick: (LinkedFileEntry) -> Unit,
     private val onFolderLongClick: (ShelfFolder) -> Unit,
-    /** 长按书架书：弹出菜单（锚点 View） */
-    private val onBookLongPress: (ShelfBook, View) -> Unit,
-    /** 长按绑定目录内文件：弹出菜单（如编码） */
-    private val onLinkedFileLongPress: (LinkedFileEntry, View) -> Unit,
+    /** 长按书架书：弹出菜单（锚点 View、触点屏幕 rawX） */
+    private val onBookLongPress: (ShelfBook, View, Float) -> Unit,
+    /** 长按绑定目录内文件：弹出菜单（锚点 View、触点屏幕 rawX） */
+    private val onLinkedFileLongPress: (LinkedFileEntry, View, Float) -> Unit,
     private val onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null,
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
@@ -47,6 +47,18 @@ class ShelfAdapter(
     private var selectionMode: Boolean = false
     private var selectedIds: Set<String> = emptySet()
     private var showDragHandle: Boolean = false
+    private var lastShelfTouchRawX = 0f
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        recyclerView.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
+                    lastShelfTouchRawX = event.rawX
+            }
+            false
+        }
+    }
 
     fun submit(list: List<ShelfItem>) {
         items = list
@@ -252,11 +264,11 @@ class ShelfAdapter(
                 if (selectionMode) return@setOnLongClickListener false
                 when (val item = items[pos]) {
                     is ShelfItem.Book -> {
-                        onBookLongPress(item.book, binding.root)
+                        onBookLongPress(item.book, binding.root, lastShelfTouchRawX)
                         true
                     }
                     is ShelfItem.LinkedFile -> {
-                        onLinkedFileLongPress(item.entry, binding.root)
+                        onLinkedFileLongPress(item.entry, binding.root, lastShelfTouchRawX)
                         true
                     }
                     else -> false

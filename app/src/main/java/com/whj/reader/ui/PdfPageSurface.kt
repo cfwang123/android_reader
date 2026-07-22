@@ -436,6 +436,31 @@ class PdfPageSurface @JvmOverloads constructor(
         return RectF(px(pageRect.left), py(pageRect.top), px(pageRect.right), py(pageRect.bottom))
     }
 
+    fun installedTileCount(): Int {
+        var n = 0
+        for (i in 0 until tiles.size()) {
+            val b = tiles.valueAt(i)
+            if (b != null && !b.isRecycled) n++
+        }
+        return n
+    }
+
+    fun debugModeLabel(): String = when (mode) {
+        Mode.FULL -> "FULL"
+        Mode.TILES -> "TILES"
+        Mode.EMPTY -> "EMPTY"
+    }
+
+    private fun ancestorScaled(): Boolean {
+        var p: android.view.ViewParent? = parent
+        while (true) {
+            val v = p as? View ?: break
+            if (v.scaleX != 1f || v.scaleY != 1f) return true
+            p = v.parent
+        }
+        return false
+    }
+
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(bgColor)
         paint.colorFilter = colorFilter
@@ -444,6 +469,12 @@ class PdfPageSurface @JvmOverloads constructor(
             Mode.FULL -> {
                 val bmp = fullBitmap
                 if (bmp == null || bmp.isRecycled) {
+                    if (ancestorScaled()) {
+                        android.util.Log.w(
+                            "PdfZoom",
+                            "onDraw FULL empty page=$pageIndex scaled recycled=${bmp?.isRecycled}",
+                        )
+                    }
                     // 已被 cache 误 recycle 或尚未渲染：只留底色，等待 Activity 补渲
                     if (bmp != null && bmp.isRecycled) {
                         fullBitmap = null
@@ -459,20 +490,33 @@ class PdfPageSurface @JvmOverloads constructor(
                 val bounds = canvas.clipBounds
                 val clipTop = bounds.top
                 val clipBottom = bounds.bottom
-                // clip 异常时仍尝试画全部已有块，避免整页空白
                 val hasClip = clipBottom > clipTop
+                val parentScaled = ancestorScaled()
+                var drawn = 0
+                var clipSkipped = 0
                 for (i in 0 until tiles.size()) {
                     val idx = tiles.keyAt(i)
                     val bmp = tiles.valueAt(i) ?: continue
                     if (bmp.isRecycled) continue
                     val top = tileTop(idx)
                     val bottom = tileBottom(idx, pageH)
-                    if (hasClip && (bottom < clipTop || top > clipBottom)) continue
+                    if (!parentScaled && hasClip && (bottom < clipTop || top > clipBottom)) {
+                        clipSkipped++
+                        continue
+                    }
                     canvas.drawBitmap(
                         bmp,
                         null,
                         RectF(0f, top.toFloat(), w, bottom.toFloat()),
                         paint,
+                    )
+                    drawn++
+                }
+                if (parentScaled && clipSkipped > 0 && drawn == 0 && tiles.size() > 0) {
+                    android.util.Log.w(
+                        "PdfZoom",
+                        "onDraw page=$pageIndex scaled clipSkip=$clipSkipped tiles=${tiles.size()} " +
+                            "clip=$clipTop..$clipBottom viewH=$height",
                     )
                 }
             }
