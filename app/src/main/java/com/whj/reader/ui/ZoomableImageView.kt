@@ -90,8 +90,12 @@ class ZoomableImageView @JvmOverloads constructor(
      */
     private var pageSwipeLocked = false
     /**
-     * 双指：用 span 推绝对目标比例；矩阵用「上一帧 → 本帧」增量更新，
-     * 避免 <fit 居中 与 >fit 焦点公式硬切换造成快速捏合跳动。
+     * 漫画单图捏合（满幅度、抗跳动）：
+     * - 比例：startScale * (span/startSpan)，不限制步进
+     * - 缩放：始终 [centerAtScale] 等价于绕视口中心缩放，任意大步进都连续
+     * - >fit 时再叠加双指焦点位移做平移（缩放本身不跟侧边焦点，避免跨 fit 与 clamp 对打）
+     *
+     * adb 实测：旧「焦点缩放 + clamp」在贴边快速跨 fit 时 dPan 可达 200~450。
      */
     private var pinchStartScale = 1f
     private var pinchStartSpan = 1f
@@ -99,9 +103,16 @@ class ZoomableImageView @JvmOverloads constructor(
     private var pinchLastFocusX = 0f
     private var pinchLastFocusY = 0f
     private var pinchHasLastFocus = false
-    /** 单帧焦点位移上限（过滤抬指） */
+    /** >fit 时相对「居中 pan」的偏移，随缩放同比变化并叠双指平移 */
+    private var pinchOffX = 0f
+    private var pinchOffY = 0f
     private val maxPinchFocusJump =
-        (64f * resources.displayMetrics.density).coerceAtLeast(40f)
+        (80f * resources.displayMetrics.density).coerceAtLeast(48f)
+    /**
+     * 双指结束后到下一次 ACTION_DOWN 前禁止 pan fling。
+     * 否则最后一指抬起时 VelocityTracker 速度很大，会惯性滑一下 =「松手跳」。
+     */
+    private var blockPanFlingAfterPinch = false
 
     private val scaleDetector = ScaleGestureDetector(
         context,
@@ -110,13 +121,29 @@ class ZoomableImageView @JvmOverloads constructor(
                 pinching = true
                 pageSwipeLocked = true
                 pinchFrozen = false
+                blockPanFlingAfterPinch = true
+                abortFling() // 掐掉进行中的惯性
                 pinchStartScale = currentScale.coerceAtLeast(0.001f)
                 pinchStartSpan = detector.currentSpan.coerceAtLeast(1f)
                 pinchLastFocusX = detector.focusX
                 pinchLastFocusY = detector.focusY
-                // 首帧不吃焦点位移
                 pinchHasLastFocus = false
-                abortFling()
+                val (cx, cy) = centerPanFor(currentScale)
+                if (currentScale <= fitScale * 1.001f) {
+                    pinchOffX = 0f
+                    pinchOffY = 0f
+                    centerAtScale(currentScale)
+                    applyMatrix()
+                } else {
+                    pinchOffX = transX - cx
+                    pinchOffY = transY - cy
+                }
+                android.util.Log.i(
+                    "MangaZoom",
+                    "imgBegin sc=$currentScale fit=$fitScale span=$pinchStartSpan " +
+                        "pan=($transX,$transY) off=($pinchOffX,$pinchOffY) " +
+                        "focus=(${detector.focusX},${detector.focusY})",
+                )
                 return true
             }
 
@@ -133,15 +160,28 @@ class ZoomableImageView @JvmOverloads constructor(
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector) {
+                val beforeSc = currentScale
+                val beforeTx = transX
+                val beforeTy = transY
                 pinching = false
                 pageSwipeLocked = true
                 pinchFrozen = false
                 pinchHasLastFocus = false
+                // 直到全部手指抬起前：禁止 fling + 禁止剩余单指 pan
+                blockPanFlingAfterPinch = true
+                abortFling()
                 settleAfterPinch()
+                // 同步 last 点，避免后续若误 pan 用旧坐标产生大 dx
+                lastX = detector.focusX
+                lastY = detector.focusY
+                val dPan = max(abs(transX - beforeTx), abs(transY - beforeTy))
                 android.util.Log.i(
                     "MangaZoom",
-                    "ImageView onScaleEnd relZoom=${getRelativeZoom()} " +
-                        "pan=($transX,$transY) fit=$fitScale cur=$currentScale",
+                    "imgScaleEnd sc ${"%.4f".format(beforeSc)}→${"%.4f".format(currentScale)} " +
+                        "pan (${"%.1f".format(beforeTx)},${"%.1f".format(beforeTy)})→" +
+                        "(${"%.1f".format(transX)},${"%.1f".format(transY)}) " +
+                        "dPan=${"%.1f".format(dPan)} settleJUMP=${dPan > 20f} " +
+                        "blockMoveAndFling=true",
                 )
                 onZoomChanged?.invoke(getRelativeZoom())
                 onTransformChanged?.invoke()
@@ -157,87 +197,164 @@ class ZoomableImageView @JvmOverloads constructor(
         return bmp.width * sc <= width + 0.5f && bmp.height * sc <= height + 0.5f
     }
 
-    private fun centerAtScale(scale: Float) {
-        val bmp = bitmap ?: return
+    /** 视口中心对应的 pan（任意 scale 连续） */
+    private fun centerPanFor(scale: Float): Pair<Float, Float> {
+        val bmp = bitmap ?: return 0f to 0f
         val vw = width.toFloat().coerceAtLeast(1f)
         val vh = height.toFloat().coerceAtLeast(1f)
         val sc = scale.coerceAtLeast(0.001f)
-        transX = (vw - bmp.width * sc) / 2f
-        transY = (vh - bmp.height * sc) / 2f
+        return (vw - bmp.width * sc) / 2f to (vh - bmp.height * sc) / 2f
     }
 
-    /**
-     * 漫画单图捏合一帧：
-     * 1) 目标比例 = startScale * (span/startSpan)，并限制单帧步进
-     * 2) **始终**用「绕焦点缩放」从上一帧矩阵增量更新（不切换公式）
-     * 3) 双指同向：叠加焦点位移
-     * 4) 仅当结果仍 ≤fit（整图进屏）时强制居中 —— 居中前后视觉连续，因整图本就小于屏
-     */
+    private fun centerAtScale(scale: Float) {
+        val (cx, cy) = centerPanFor(scale)
+        transX = cx
+        transY = cy
+    }
+
     private fun applyPinchFrame(focusX: Float, focusY: Float, span: Float) {
         val startSpan = pinchStartSpan.coerceAtLeast(1f)
         val s = span.coerceAtLeast(1f)
-        val ratio = (s / startSpan).coerceIn(0.15f, 6f)
-        val target = (pinchStartScale * ratio).coerceIn(minScale, maxScale)
+        val ratio = (s / startSpan).coerceIn(0.05f, 20f)
+        val next = (pinchStartScale * ratio).coerceIn(minScale, maxScale)
         val prevScale = currentScale.coerceAtLeast(0.001f)
-        val next = smoothZoomStep(prevScale, target)
         val prevTx = transX
         val prevTy = transY
 
-        // —— 绕焦点缩放（增量，跨 fit 也同一公式）——
-        val factor = next / prevScale
-        if (abs(factor - 1f) > 0.0001f) {
-            transX = focusX - (focusX - transX) * factor
-            transY = focusY - (focusY - transY) * factor
-            currentScale = next
-        } else if (abs(next - prevScale) > 0.0001f) {
-            currentScale = next
+        // 缩放：始终走居中 pan 几何（满幅度也 dContent=0）
+        currentScale = next
+        val (cx, cy) = centerPanFor(next)
+
+        if (next <= fitScale * 1.001f) {
+            pinchOffX = 0f
+            pinchOffY = 0f
+            transX = cx
+            transY = cy
+        } else {
+            // >fit：偏移随缩放同比变化，再叠双指平移
+            val f = next / prevScale
+            if (prevScale > fitScale * 1.001f && abs(f - 1f) > 0.0001f) {
+                pinchOffX *= f
+                pinchOffY *= f
+            } else if (prevScale <= fitScale * 1.001f) {
+                // 刚过 fit：从 0 偏移起步
+                pinchOffX = 0f
+                pinchOffY = 0f
+            }
+            if (pinchHasLastFocus) {
+                val dx = focusX - pinchLastFocusX
+                val dy = focusY - pinchLastFocusY
+                if (abs(dx) <= maxPinchFocusJump && abs(dy) <= maxPinchFocusJump) {
+                    pinchOffX += dx
+                    pinchOffY += dy
+                }
+            }
+            transX = cx + pinchOffX
+            transY = cy + pinchOffY
+            clampTranslation()
+            // clamp 后回写偏移，避免越界累积
+            pinchOffX = transX - cx
+            pinchOffY = transY - cy
         }
 
-        // —— 双指同向平移 ——
-        if (pinchHasLastFocus) {
-            val dx = focusX - pinchLastFocusX
-            val dy = focusY - pinchLastFocusY
-            if (abs(dx) <= maxPinchFocusJump && abs(dy) <= maxPinchFocusJump) {
-                transX += dx
-                transY += dy
-            }
-        }
         pinchLastFocusX = focusX
         pinchLastFocusY = focusY
         pinchHasLastFocus = true
 
-        // ≤fit：强制居中（松手不必再跳）。此时图未铺满，居中不会「甩」出焦点附近内容。
-        if (contentFitsAt(currentScale)) {
-            centerAtScale(currentScale)
-        } else {
-            clampTranslation()
-        }
-
         applyMatrix()
         invalidate()
 
-        if ((prevScale - fitScale) * (currentScale - fitScale) <= 0f ||
-            abs(currentScale - fitScale) < fitScale * 0.03f
-        ) {
+        val dPan = max(abs(transX - prevTx), abs(transY - prevTy))
+        val prevCx = (width / 2f - prevTx) / prevScale
+        val prevCy = (height / 2f - prevTy) / prevScale
+        val nowCx = (width / 2f - transX) / currentScale.coerceAtLeast(0.001f)
+        val nowCy = (height / 2f - transY) / currentScale.coerceAtLeast(0.001f)
+        val dContent = max(abs(nowCx - prevCx), abs(nowCy - prevCy)) *
+            min(prevScale, currentScale)
+        val cross = (prevScale - fitScale) * (currentScale - fitScale) <= 0f
+        if (cross || dContent > 8f || abs(currentScale / prevScale - 1f) > 0.2f) {
             android.util.Log.i(
                 "MangaZoom",
-                "imgFrame sc $prevScale→$currentScale target=$target " +
-                    "pan ($prevTx,$prevTy)→($transX,$transY) " +
-                    "focus=($focusX,$focusY) fits=${contentFitsAt(currentScale)}",
+                "imgFrame sc ${"%.4f".format(prevScale)}→${"%.4f".format(currentScale)} " +
+                    "fit=${"%.4f".format(fitScale)} ratio=${"%.3f".format(ratio)} " +
+                    "pan (${"%.1f".format(prevTx)},${"%.1f".format(prevTy)})→" +
+                    "(${"%.1f".format(transX)},${"%.1f".format(transY)}) " +
+                    "dPan=${"%.1f".format(dPan)} dContent=${"%.1f".format(dContent)} " +
+                    "JUMP=${dContent > 20f}",
             )
         }
     }
 
-    /** 向 target 靠拢；快速捏合时分帧追上，避免单帧比例爆炸 */
-    private fun smoothZoomStep(prev: Float, target: Float): Float {
-        val p = prev.coerceAtLeast(0.001f)
-        val t = target.coerceIn(minScale, maxScale)
-        // 相对最多 8%，绝对最多 6% fit —— 再快也平滑
-        val maxRel = 1.08f
-        val maxAbs = fitScale * 0.06f
-        var lo = max(p / maxRel, p - maxAbs)
-        var hi = min(p * maxRel, p + maxAbs)
-        return t.coerceIn(lo, hi).coerceIn(minScale, maxScale)
+    /**
+     * adb：run-as 写 files/debug_manga_pinch 后回前台。
+     * 覆盖：快速跨 fit + 带平移松手 settle + 模拟旧版 fling 危害。
+     */
+    fun debugSimulateFastSidePinch() {
+        val bmp = bitmap
+        if (bmp == null || width <= 0 || height <= 0 || fitScale <= 0f) {
+            android.util.Log.e("MangaZoom", "debugSimulate: not ready")
+            return
+        }
+        abortFling()
+        val startSc = (fitScale * 0.5f).coerceIn(minScale, maxScale)
+        currentScale = startSc
+        centerAtScale(startSc)
+        applyMatrix()
+        invalidate()
+        val focusX = width * 0.12f
+        val focusY = height * 0.5f
+        pinchStartScale = startSc
+        pinchStartSpan = 100f
+        pinchHasLastFocus = false
+        pinchFrozen = false
+        pinchOffX = 0f
+        pinchOffY = 0f
+        pinching = true
+        blockPanFlingAfterPinch = true
+        android.util.Log.i(
+            "MangaZoom",
+            "debugSimulate START sc=$startSc fit=$fitScale pan=($transX,$transY) " +
+                "focus=($focusX,$focusY) view=${width}x$height bmp=${bmp.width}x${bmp.height}",
+        )
+        // 快速跨 fit
+        var fx = focusX
+        var fy = focusY
+        for (sp in floatArrayOf(100f, 160f, 240f, 320f)) {
+            applyPinchFrame(fx, fy, sp)
+        }
+        // >fit 后双指同向拖一段（模拟松手前平移）
+        for (i in 1..4) {
+            fx += 40f
+            fy += 30f
+            applyPinchFrame(fx, fy, 320f)
+        }
+        val preEndSc = currentScale
+        val preEndTx = transX
+        val preEndTy = transY
+        // 模拟 onScaleEnd
+        pinching = false
+        settleAfterPinch()
+        val settleD = max(abs(transX - preEndTx), abs(transY - preEndTy))
+        android.util.Log.i(
+            "MangaZoom",
+            "debugSimulate SETTLE sc $preEndSc→$currentScale " +
+                "pan ($preEndTx,$preEndTy)→($transX,$transY) dPan=$settleD " +
+                "settleJUMP=${settleD > 20f}",
+        )
+        // 模拟旧逻辑：松手 fling（应被 block）
+        val wouldFling = isEnlarged() && (abs(2500f) > minFlingV)
+        android.util.Log.i(
+            "MangaZoom",
+            "debugSimulate RELEASE blockFling=$blockPanFlingAfterPinch " +
+                "wouldHaveFling=$wouldFling sc=$currentScale pan=($transX,$transY) " +
+                "rel=${getRelativeZoom()}",
+        )
+        if (!blockPanFlingAfterPinch && wouldFling) {
+            startPanFling(2500f, 1800f)
+            android.util.Log.e("MangaZoom", "debugSimulate BAD: fling started on release")
+        } else {
+            android.util.Log.i("MangaZoom", "debugSimulate OK: no fling on release")
+        }
     }
 
     /**
@@ -469,6 +586,8 @@ class ZoomableImageView @JvmOverloads constructor(
                 lastX = event.x
                 lastY = event.y
                 moved = false
+                // 新单指才允许 fling；双指结束后到此处前保持 block
+                blockPanFlingAfterPinch = false
                 // 新单指手势：仅在放大态锁翻页（缩小到 50% 仍可侧点/滑翻）
                 pageSwipeLocked = isEnlarged()
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -484,7 +603,13 @@ class ZoomableImageView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(event)
-                if (pinching || event.pointerCount > 1 || scaleDetector.isInProgress) {
+                // 双指过程中、或双指刚结束尚未全部抬起：禁止单指 pan
+                // （日志：scaleEnd pan 稳定，release 时 pan 已被最后一指 MOVE 拖飞）
+                if (pinching ||
+                    event.pointerCount > 1 ||
+                    scaleDetector.isInProgress ||
+                    blockPanFlingAfterPinch
+                ) {
                     pageSwipeLocked = true
                     moved = true
                     lastX = event.x
@@ -540,7 +665,8 @@ class ZoomableImageView @JvmOverloads constructor(
                 }
 
                 val multiOrPinch =
-                    pinching || pageSwipeLocked || scaleDetector.isInProgress
+                    pinching || pageSwipeLocked || scaleDetector.isInProgress ||
+                        blockPanFlingAfterPinch
                 if (!multiOrPinch && moved) {
                     if (isEnlarged() && needsPan()) {
                         if (abs(vx) > minFlingV || abs(vy) > minFlingV) {
@@ -565,12 +691,29 @@ class ZoomableImageView @JvmOverloads constructor(
                     } else {
                         onTransformChanged?.invoke()
                     }
-                } else if (isEnlarged() || pageSwipeLocked) {
-                    // 缩放/多指手势松手：只做平移惯性，绝不翻页
-                    if (event.actionMasked == MotionEvent.ACTION_UP && moved && isEnlarged()) {
+                } else if (isEnlarged() || pageSwipeLocked || blockPanFlingAfterPinch) {
+                    // 双指缩放后松手：禁止 fling（旧逻辑会用最后一指速度惯性滑=跳）
+                    if (event.actionMasked == MotionEvent.ACTION_UP &&
+                        moved &&
+                        isEnlarged() &&
+                        !blockPanFlingAfterPinch
+                    ) {
                         if (abs(vx) > minFlingV || abs(vy) > minFlingV) {
                             startPanFling(vx, vy)
+                            android.util.Log.i(
+                                "MangaZoom",
+                                "releaseFling vx=$vx vy=$vy pan=($transX,$transY)",
+                            )
                         }
+                    } else if (event.actionMasked == MotionEvent.ACTION_UP &&
+                        blockPanFlingAfterPinch
+                    ) {
+                        android.util.Log.i(
+                            "MangaZoom",
+                            "releaseNoFling afterPinch sc=$currentScale " +
+                                "pan=($transX,$transY) vx=$vx vy=$vy " +
+                                "(move also blocked until next DOWN)",
+                        )
                     }
                     if (event.actionMasked == MotionEvent.ACTION_UP) {
                         onTransformChanged?.invoke()
@@ -581,32 +724,36 @@ class ZoomableImageView @JvmOverloads constructor(
         return true
     }
 
-    /** 松手：≤fit 已居中；>fit 只夹边。不做大幅改 pan。 */
+    /** 松手：只夹边。居中缩放已保证 ≤fit 时 pan 正确，不再二次大改。 */
     private fun settleAfterPinch() {
         val before = Triple(currentScale, transX, transY)
         if (currentScale < minScale) {
             currentScale = minScale
-        } else if (abs(currentScale - fitScale) < fitScale * 0.01f) {
-            // 极近 fit 才吸附，避免快速捏合停在 1.02 时松手大跳
-            currentScale = fitScale
-        }
-        if (contentFitsAt(currentScale)) {
             centerAtScale(currentScale)
-        } else {
-            clampTranslation()
         }
+        clampTranslation()
         applyMatrix()
         invalidate()
         val dPan = max(abs(transX - before.second), abs(transY - before.third))
         android.util.Log.i(
             "MangaZoom",
-            "imgSettle sc ${before.first}→$currentScale " +
-                "pan (${before.second},${before.third})→($transX,$transY) dPan=$dPan",
+            "imgSettle sc ${"%.4f".format(before.first)}→${"%.4f".format(currentScale)} " +
+                "pan (${"%.1f".format(before.second)},${"%.1f".format(before.third)})→" +
+                "(${"%.1f".format(transX)},${"%.1f".format(transY)}) dPan=${"%.1f".format(dPan)} " +
+                "JUMP=${dPan > 80f}",
         )
     }
 
     private fun startPanFling(vx: Float, vy: Float) {
+        if (blockPanFlingAfterPinch) {
+            android.util.Log.i("MangaZoom", "startPanFling blocked after pinch")
+            return
+        }
         val (xMin, xMax, yMin, yMax) = panRange()
+        android.util.Log.i(
+            "MangaZoom",
+            "startPanFling vx=$vx vy=$vy from=($transX,$transY)",
+        )
         scroller.fling(
             transX.toInt(),
             transY.toInt(),

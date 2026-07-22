@@ -99,6 +99,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private var pinchFrozen = false
     /** 已越过 100%、进入自由平移阶段 */
     private var pinchFreeMode = false
+    /**
+     * 双指结束后到下一次 ACTION_DOWN：禁止剩余单指 pan / fling。
+     * （与 ZoomableImageView 相同：scaleEnd 后最后一指 MOVE 会拖飞画面）
+     */
+    private var blockPanAfterPinch = false
     /** 连续模式：上一帧焦点 y，用于竖向 overscroll 增量 */
     private var pinchLastFocusY = 0f
     private var pinchLastFocusYValid = false
@@ -135,6 +140,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 pageTurnLocked = true
                 selecting = false
                 pinchFrozen = false
+                blockPanAfterPinch = true
                 pinchFreeMode = !contentFitsAt(contentZoom)
                 capturePinchStart(detector)
                 abortPanFling()
@@ -151,13 +157,25 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector) {
+                val beforeZ = contentZoom
+                val beforeX = panX
+                val beforeY = panY
                 pinching = false
                 pageTurnLocked = true
                 pinchFrozen = false
+                blockPanAfterPinch = true
+                abortPanFling()
                 settleAfterPinch()
+                // 同步 last，避免后续误 pan 用旧坐标
+                lastX = detector.focusX
+                lastY = detector.focusY
+                val dPan = max(abs(panX - beforeX), abs(panY - beforeY))
                 android.util.Log.i(
                     "MangaZoom",
-                    "FrameLayout onScaleEnd zoom=$contentZoom pan=($panX,$panY)",
+                    "FrameScaleEnd z ${"%.3f".format(beforeZ)}→${"%.3f".format(contentZoom)} " +
+                        "pan (${"%.1f".format(beforeX)},${"%.1f".format(beforeY)})→" +
+                        "(${"%.1f".format(panX)},${"%.1f".format(panY)}) " +
+                        "dPan=${"%.1f".format(dPan)} blockMoveAndFling=true",
                 )
                 onZoomChanged?.invoke(contentZoom)
             }
@@ -317,6 +335,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 val slop = if (isZoomed() || isScaled()) tapSlop * 1.5f else tapSlop.toFloat()
                 if (moved > slop) return false
                 val w = width.toFloat().coerceAtLeast(1f)
+                // 放大态：整屏中部点都可开菜单（侧边也允许，避免难点）
+                if (isZoomed() || isScaled()) {
+                    onSingleTap?.invoke(e.x, e.y)
+                    return true
+                }
                 if (e.x < w / 3f || e.x > w * 2f / 3f) return false
                 onSingleTap?.invoke(e.x, e.y)
                 return true
@@ -378,9 +401,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
     fun setContentZoom(zoom: Float, notify: Boolean = false) {
         val z = zoom.coerceIn(minZoom, maxZoom)
-        // 回到约 100% 时清平移；缩小/放大都保留焦点平移
-        val nearIdentity = abs(z - 1f) < 0.01f
-        setTransform(z, if (nearIdentity) 0f else panX, if (nearIdentity) 0f else panY, notify)
+        // 约 100% 时仍走 setTransform/clampPan（长页可保留 panY）
+        setTransform(z, panX, panY, notify)
     }
 
     fun getPanX(): Float = panX
@@ -392,11 +414,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         contentZoom = zoom.coerceIn(minZoom, maxZoom)
         this.panX = panX
         this.panY = panY
-        // 仅在「约等于 1x」时归零；允许 minZoom~1 的缩小态
+        // 约 1x：不要无脑清 pan——横屏 fit-width 时内容可能高于视口，需 panY 看全页
         if (abs(contentZoom - 1f) < 0.01f) {
             contentZoom = 1f
-            this.panX = 0f
-            this.panY = 0f
         }
         clampPan()
         applyTransform()
@@ -405,6 +425,13 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
     /** 是否放大（>1）：用于平移接管触摸。缩小（&lt;1）仍把竖滑交给列表。 */
     fun isZoomed(): Boolean = contentZoom > 1.01f
+
+    /** 内容是否超出视口（1x 横屏长页也需要 pan） */
+    fun canPanContent(): Boolean {
+        if (width <= 0 || height <= 0) return false
+        val b = panBounds()
+        return abs(b[0] - b[1]) > 1f || abs(b[2] - b[3]) > 1f
+    }
 
     /** 是否相对 100% 有缩放（含缩小） */
     fun isScaled(): Boolean = abs(contentZoom - 1f) > 0.01f
@@ -532,11 +559,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private fun clampPan() {
         if (abs(contentZoom - 1f) < 0.01f) {
             contentZoom = 1f
-            panX = 0f
-            panY = 0f
-            return
         }
         val b = panBounds()
+        // 1x 且内容不超出：居中（通常 0）；超出（横屏长页）允许在 bounds 内滑
         panX = panX.coerceIn(b[0], b[1])
         panY = panY.coerceIn(b[2], b[3])
     }
@@ -605,6 +630,10 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     }
 
     private fun startPanFling(velocityX: Float, velocityY: Float) {
+        if (blockPanAfterPinch) {
+            android.util.Log.i("MangaZoom", "Frame startPanFling blocked after pinch")
+            return
+        }
         val b = panBounds()
         val vx = velocityX.toInt().coerceIn(-maxFlingVelocity, maxFlingVelocity)
         val vy = if (continuousScrollWhenZoomed) {
@@ -686,11 +715,23 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 abortPanFling()
+                // 新手势：解除「双指结束后禁 pan」——否则 multi 一直为 true，吞掉点按菜单
+                blockPanAfterPinch = false
                 // 连续未缩放：不要 stopScroll，否则快速连滑会掐断惯性并顿一下
                 if (!(continuousScrollWhenZoomed && !isZoomed())) {
                     onStopScroll?.invoke()
                 }
                 obtainTracker().clear()
+                // 尽早记下 down，供 GestureDetector 点按判定（须在 scale 之后、但 multi 之前不够早）
+                downX = ev.x
+                downY = ev.y
+                lastX = ev.x
+                lastY = ev.y
+                panning = false
+                selecting = false
+                fingerMoved = false
+                tapConsumed = false
+                pageTurnLocked = isZoomed()
             }
         }
         obtainTracker().addMovement(ev)
@@ -711,7 +752,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
         // 捏合必须先喂 scaleDetector，否则第二指落下时丢失 DOWN 序列
         scaleDetector.onTouchEvent(ev)
-        val multi = ev.pointerCount >= 2 || pinching || scaleDetector.isInProgress
+        // blockPanAfterPinch 仅用于「本段双指尚未全部抬起」：勿在新 DOWN 后仍为 true
+        val multi = ev.pointerCount >= 2 ||
+            pinching ||
+            scaleDetector.isInProgress ||
+            (blockPanAfterPinch && ev.actionMasked != MotionEvent.ACTION_DOWN)
         if (multi || pinching) {
             pageTurnLocked = true
             fingerMoved = true
@@ -799,12 +844,25 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 MotionEvent.ACTION_POINTER_UP -> {
                     pageTurnLocked = true
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    // block 期：只更新 last，不改 pan
+                    lastX = ev.x
+                    lastY = ev.y
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (pinching) {
                         pinching = false
                         pinchFrozen = false
+                        blockPanAfterPinch = true
                         settleAfterPinch()
                         onZoomChanged?.invoke(contentZoom)
+                    }
+                    if (blockPanAfterPinch) {
+                        android.util.Log.i(
+                            "MangaZoom",
+                            "Frame releaseNoFling afterPinch z=$contentZoom " +
+                                "pan=($panX,$panY)",
+                        )
                     }
                     // 多指手势整段结束：禁止本 UP 再走侧边翻页；锁保留到下次 DOWN
                     recycleTracker()
@@ -815,16 +873,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                downX = ev.x
-                downY = ev.y
-                lastX = ev.x
-                lastY = ev.y
-                panning = false
-                selecting = false
-                fingerMoved = false
-                tapConsumed = false
-                // 新单指：仅放大态继续锁水平边缘翻页；1x 允许侧点/滑翻
-                pageTurnLocked = isZoomed()
+                // down/坐标/block 已在分发入口处理
             }
             MotionEvent.ACTION_MOVE -> {
                 if (selecting) {
@@ -834,7 +883,14 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                     lastY = ev.y
                     return true
                 }
-                if (isZoomed()) {
+                // 双指刚结束：禁止剩余单指 pan
+                if (blockPanAfterPinch) {
+                    lastX = ev.x
+                    lastY = ev.y
+                    return true
+                }
+                // 放大 或 1x 但内容高于/宽于视口（PDF 横屏 fit-width 长页）
+                if (isZoomed() || canPanContent()) {
                     val dx = ev.x - lastX
                     val dy = ev.y - lastY
                     if (!panning) {
@@ -887,6 +943,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                             // 已缩放且非双指手势：水平顶边 fling 可翻页
                             if (isZoomed() &&
                                 !pageTurnLocked &&
+                                !blockPanAfterPinch &&
                                 onHorizontalSwipe != null &&
                                 trySwipePageTurn(vx, vy, ev.x - downX, ev.y - downY, edgeFling = true)
                             ) {
@@ -894,10 +951,12 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                                 return true
                             }
                             // 水平 pan 惯性（及单页模式竖向 pan）
-                            startPanFling(vx, vy)
-                            // 连续模式竖向：交给 RecyclerView.fling 以获得惯性
-                            if (continuousScrollWhenZoomed && abs(vy) >= minFlingVelocity) {
-                                onFlingScroll?.invoke(vx, vy)
+                            if (!blockPanAfterPinch) {
+                                startPanFling(vx, vy)
+                                // 连续模式竖向：交给 RecyclerView.fling 以获得惯性
+                                if (continuousScrollWhenZoomed && abs(vy) >= minFlingVelocity) {
+                                    onFlingScroll?.invoke(vx, vy)
+                                }
                             }
                         }
                     }

@@ -101,6 +101,8 @@ class ReadingActivity : AppCompatActivity() {
         const val EXTRA_ENCODING = "encoding"
         /** adb logcat -s MangaZoom */
         private const val TAG_MANGA_ZOOM = "MangaZoom"
+        /** adb: am broadcast -a com.whj.reader.DEBUG_MANGA_PINCH -p com.whj.reader */
+        const val ACTION_DEBUG_MANGA_PINCH = "com.whj.reader.DEBUG_MANGA_PINCH"
         /** 连续图图间间隔（px） */
         private const val MANGA_PAGE_GAP_PX = 10
     }
@@ -267,6 +269,21 @@ class ReadingActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent == null) return
             updateBattery(intent)
+        }
+    }
+
+    /** adb: am broadcast -a com.whj.reader.DEBUG_MANGA_PINCH -n com.whj.reader/.ReadingActivity 不适用；用下方显式注册 */
+    private val debugMangaPinchReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_DEBUG_MANGA_PINCH) return
+            if (!mangaMode || isMangaContinuousLayout()) {
+                android.util.Log.w("MangaZoom", "debug pinch: need manga single mode")
+                return
+            }
+            if (!::binding.isInitialized) return
+            binding.mangaImageView.post {
+                binding.mangaImageView.debugSimulateFastSidePinch()
+            }
         }
     }
 
@@ -459,6 +476,8 @@ class ReadingActivity : AppCompatActivity() {
         // 偏好页可能改过边缘手势，回来时刷新
         applyEdgeSwipeFlags()
         startClockAndBattery()
+        registerDebugMangaPinch()
+        maybeRunMangaPinchDebugFromFile()
         if (::keepScreen.isInitialized) keepScreen.onResume()
         // 仅在方向偏好与当前不一致时纠正（同方向不重设，避免闪）
         applyOrientationMode(AppSettings.orientationMode(this), toast = false, force = false)
@@ -466,6 +485,7 @@ class ReadingActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        unregisterDebugMangaPinch()
         stopClockAndBattery()
         if (::keepScreen.isInitialized) keepScreen.onPause()
         // 锁屏/切后台不暂停 TTS，由前台服务继续播放
@@ -621,6 +641,51 @@ class ReadingActivity : AppCompatActivity() {
         if (!batteryReceiverRegistered) return
         runCatching { unregisterReceiver(batteryReceiver) }
         batteryReceiverRegistered = false
+    }
+
+    private var debugPinchRegistered = false
+
+    private fun registerDebugMangaPinch() {
+        if (debugPinchRegistered) return
+        val filter = IntentFilter(ACTION_DEBUG_MANGA_PINCH)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(debugMangaPinchReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(debugMangaPinchReceiver, filter)
+        }
+        debugPinchRegistered = true
+    }
+
+    private fun unregisterDebugMangaPinch() {
+        if (!debugPinchRegistered) return
+        runCatching { unregisterReceiver(debugMangaPinchReceiver) }
+        debugPinchRegistered = false
+    }
+
+    /**
+     * adb 触发（不依赖广播）：
+     *   adb shell run-as com.whj.reader sh -c "echo 1 > files/debug_manga_pinch"
+     *   adb shell am start -n com.whj.reader/.MainActivity  # 或回前台
+     * 日志：adb logcat -s MangaZoom:I
+     */
+    private fun maybeRunMangaPinchDebugFromFile() {
+        val flag = java.io.File(filesDir, "debug_manga_pinch")
+        if (!flag.exists()) return
+        runCatching { flag.delete() }
+        if (!mangaMode) {
+            android.util.Log.w("MangaZoom", "debug file: not mangaMode")
+            return
+        }
+        if (isMangaContinuousLayout()) {
+            android.util.Log.w("MangaZoom", "debug file: continuous layout, need single")
+            return
+        }
+        if (!::binding.isInitialized) return
+        binding.mangaImageView.post {
+            android.util.Log.i("MangaZoom", "debug file: run simulate")
+            binding.mangaImageView.debugSimulateFastSidePinch()
+        }
     }
 
     private fun updateBattery(intent: Intent) {

@@ -582,6 +582,34 @@ class PdfReadingActivity : AppCompatActivity() {
         startClockAndBattery()
         if (::keepScreen.isInitialized) keepScreen.onResume()
         applyOrientationMode(AppSettings.pdfOrientationMode(this), allowSensor = true)
+        maybeRunPdfOrientDebugFromFile()
+    }
+
+    /**
+     * adb 调试竖/横切换：
+     *   adb shell run-as com.whj.reader sh -c "echo land > files/debug_pdf_orient"
+     *   adb shell run-as com.whj.reader sh -c "echo port > files/debug_pdf_orient"
+     * 然后 HOME 再回前台；日志：adb logcat -s PdfOrient:I
+     */
+    private fun maybeRunPdfOrientDebugFromFile() {
+        val flag = java.io.File(filesDir, "debug_pdf_orient")
+        if (!flag.exists()) return
+        val raw = runCatching { flag.readText().trim().lowercase() }.getOrDefault("")
+        runCatching { flag.delete() }
+        val next = when {
+            raw.startsWith("land") -> OrientationMode.LANDSCAPE
+            raw.startsWith("port") -> OrientationMode.PORTRAIT
+            else -> {
+                android.util.Log.w("PdfOrient", "debug file ignore raw='$raw'")
+                return
+            }
+        }
+        android.util.Log.i(
+            "PdfOrient",
+            "debug file → $next (was ${AppSettings.pdfOrientationMode(this)})",
+        )
+        AppSettings.setPdfOrientationMode(this, next)
+        applyOrientationMode(next, force = true)
     }
 
     override fun onPause() {
@@ -2501,17 +2529,24 @@ class PdfReadingActivity : AppCompatActivity() {
         if (r.pageCount <= 0) return
         val i = index.coerceIn(0, r.pageCount - 1)
         pageIndex = i
+        val container = binding.pdfContainer
+        // 旋转后首帧可能仍是旧尺寸，等布局好再渲
+        if (container.width <= 0 || container.height <= 0) {
+            android.util.Log.w(
+                "PdfOrient",
+                "showSinglePage defer page=$i container=${container.width}x${container.height}",
+            )
+            container.post { if (!isFinishing && !isDestroyed) showSinglePage(i) }
+            return
+        }
         synchronized(renderLock) {
             try {
                 currentPage?.close()
                 currentPage = null
                 val page = r.openPage(i)
                 currentPage = page
-                val container = binding.pdfContainer
-                val maxW = (container.width.takeIf { it > 0 }
-                    ?: resources.displayMetrics.widthPixels).coerceAtLeast(1)
-                val maxH = (container.height.takeIf { it > 0 }
-                    ?: (resources.displayMetrics.heightPixels * 0.8f).toInt()).coerceAtLeast(1)
+                val maxW = container.width.coerceAtLeast(1)
+                val maxH = container.height.coerceAtLeast(1)
                 lastRenderW = maxW
                 lastRenderH = maxH
                 val old = singleBitmap
@@ -2528,7 +2563,24 @@ class PdfReadingActivity : AppCompatActivity() {
                 currentPage = null
                 binding.ivPdfPage.setImageBitmap(bmp)
                 applyNightFilter(binding.ivPdfPage)
-                binding.ivPdfPage.post { applySinglePageImageMatrix() }
+                android.util.Log.i(
+                    "PdfOrient",
+                    "showSinglePage page=$i container=${maxW}x$maxH " +
+                        "land=$landscape bmp=${bmp.width}x${bmp.height} " +
+                        "zoom=${container.contentZoom} pan=(${container.getPanX()},${container.getPanY()})",
+                )
+                binding.ivPdfPage.post {
+                    applySinglePageImageMatrix()
+                    // 布局高度变更后重夹 pan，保证长页可滑
+                    binding.pdfContainer.post {
+                        binding.pdfContainer.setTransform(
+                            binding.pdfContainer.contentZoom,
+                            binding.pdfContainer.getPanX(),
+                            binding.pdfContainer.getPanY(),
+                            notify = false,
+                        )
+                    }
+                }
                 // 勿立刻 recycle：ImageView 可能仍短暂持有 old
                 if (old != null && old !== bmp) {
                     // 交给 GC；或下一帧再尝试
@@ -4719,6 +4771,17 @@ class PdfReadingActivity : AppCompatActivity() {
         val keepZoom = binding.pdfContainer.contentZoom
         val keepPanX = binding.pdfContainer.getPanX()
         val keepPanY = binding.pdfContainer.getPanY()
+        val cfg = resources.configuration
+        android.util.Log.i(
+            "PdfOrient",
+            "relayout start mode=${AppSettings.pdfOrientationMode(this)} " +
+                "pageMode=$pageMode page=$pageIndex " +
+                "cfg=${cfg.screenWidthDp}x${cfg.screenHeightDp} " +
+                "root=${binding.root.width}x${binding.root.height} " +
+                "container=${binding.pdfContainer.width}x${binding.pdfContainer.height} " +
+                "keepZoom=$keepZoom keepPan=($keepPanX,$keepPanY) " +
+                "isLand=${isLandscape()} winLand=${isWindowLandscape()}",
+        )
         sanitizeBottomChrome()
         // 先清左右 padding，再按模式重算竖栏（手机通常为 0）
         binding.pdfContainer.setPadding(0, 0, 0, 0)
@@ -4729,8 +4792,6 @@ class PdfReadingActivity : AppCompatActivity() {
         // 横竖屏切换：废弃旧宽度的 tile / 整页缓存，避免压扁
         tileCache.evictAll()
         bitmapCache.evictAll()
-        // 保留缩放（不 reset 到 1x）；仅重新 apply transform 适配新尺寸
-        binding.pdfContainer.setTransform(keepZoom, keepPanX, keepPanY, notify = true)
         updatePdfZoomChrome()
         // 重算全部页高表（宽度变了）
         for (i in 0 until pageCount) {
@@ -4738,15 +4799,47 @@ class PdfReadingActivity : AppCompatActivity() {
         }
         when (pageMode) {
             PdfPageMode.SINGLE -> {
-                if (pageCount > 0) showSinglePage(pageIndex)
+                // 单页：旋转后重渲 + 重置到 1x 顶对齐，避免竖屏 pan/zoom 带到横屏裁切
+                // （横屏 fit-width 长页靠 pan 看全页，旧 pan 会导致「显示不全」）
+                binding.pdfContainer.resetZoom(notify = false)
+                if (pageCount > 0) {
+                    binding.pdfContainer.post {
+                        if (isFinishing || isDestroyed) return@post
+                        showSinglePage(pageIndex)
+                        binding.ivPdfPage.post {
+                            applySinglePageImageMatrix()
+                            binding.pdfContainer.resetZoom(notify = true)
+                            android.util.Log.i(
+                                "PdfOrient",
+                                "relayout single done " +
+                                    "container=${binding.pdfContainer.width}x${binding.pdfContainer.height} " +
+                                    "iv=${binding.ivPdfPage.width}x${binding.ivPdfPage.height} " +
+                                    "zoom=${binding.pdfContainer.contentZoom} " +
+                                    "pan=(${binding.pdfContainer.getPanX()},${binding.pdfContainer.getPanY()}) " +
+                                    "canPan=${binding.pdfContainer.canPanContent()}",
+                            )
+                        }
+                    }
+                }
             }
             PdfPageMode.CONTINUOUS -> {
+                // 连续：旋转后重置 1x，避免旧 pan/zoom 在新宽高比下裁切/半页
+                binding.pdfContainer.resetZoom(notify = false)
                 binding.rvPdfPages.adapter?.notifyDataSetChanged()
                 binding.rvPdfPages.post {
+                    if (isFinishing || isDestroyed) return@post
                     refreshVisiblePageTiles(forceRender = true)
-                    binding.pdfContainer.setTransform(keepZoom, keepPanX, keepPanY, notify = true)
+                    binding.pdfContainer.resetZoom(notify = true)
                     updatePdfZoomChrome()
                     syncPdfContentBottomInset()
+                    android.util.Log.i(
+                        "PdfOrient",
+                        "relayout continuous done " +
+                            "container=${binding.pdfContainer.width}x${binding.pdfContainer.height} " +
+                            "rv=${binding.rvPdfPages.width}x${binding.rvPdfPages.height} " +
+                            "zoom=${binding.pdfContainer.contentZoom} " +
+                            "pan=(${binding.pdfContainer.getPanX()},${binding.pdfContainer.getPanY()})",
+                    )
                 }
             }
         }
@@ -4764,11 +4857,23 @@ class PdfReadingActivity : AppCompatActivity() {
             // 旋转后重算高亮，避免横屏坐标错位
             if (hlPage >= 0) refreshHighlightOverlay()
             if (hasTextSelection()) refreshSelectionOverlay()
+            android.util.Log.i(
+                "PdfOrient",
+                "relayout postChrome " +
+                    "container=${binding.pdfContainer.width}x${binding.pdfContainer.height} " +
+                    "iv=${binding.ivPdfPage.width}x${binding.ivPdfPage.height}",
+            )
         }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        android.util.Log.i(
+            "PdfOrient",
+            "onConfigurationChanged orient=${newConfig.orientation} " +
+                "size=${newConfig.screenWidthDp}x${newConfig.screenHeightDp} " +
+                "mode=${AppSettings.pdfOrientationMode(this)} pageMode=$pageMode",
+        )
         // 只重铺，不再 setRequestedOrientation
         if (chromeVisible) {
             chromeVisible = true
@@ -5573,25 +5678,64 @@ class PdfReadingActivity : AppCompatActivity() {
     }
 
     /**
-     * 单页 ImageView 矩阵：横屏按宽铺满（顶对齐可上下滑看全页），竖屏 fitCenter。
+     * 单页 ImageView 矩阵：横屏按宽铺满（顶对齐；内容加高后由 ZoomableFrameLayout pan 看全页），
+     * 竖屏 fitCenter。
      */
     private fun applySinglePageImageMatrix() {
         val iv = binding.ivPdfPage
+        val host = binding.pdfContainer
         val d = iv.drawable ?: return
         val dw = d.intrinsicWidth.toFloat().coerceAtLeast(1f)
         val dh = d.intrinsicHeight.toFloat().coerceAtLeast(1f)
-        val vw = iv.width.toFloat()
-        val vh = iv.height.toFloat()
-        if (vw <= 1f || vh <= 1f) return
+        // 用容器尺寸：ImageView 可能刚被加高，vw/vh 要以宿主视口为准
+        val vw = host.width.toFloat().coerceAtLeast(1f)
+        val vh = host.height.toFloat().coerceAtLeast(1f)
+        if (vw <= 1f || vh <= 1f) {
+            android.util.Log.w("PdfOrient", "applyMatrix skip host=${vw}x$vh")
+            return
+        }
         val landscape = vw > vh
         val scale = if (landscape) vw / dw else min(vw / dw, vh / dh)
+        val contentW = dw * scale
+        val contentH = dh * scale
+        // 横屏长页：把 ImageView 加高到内容高，才能通过 pan 滑到页底（原先 MATCH_PARENT 会裁切）
+        val lp = iv.layoutParams
+        val needTall = landscape && contentH > vh + 1f
+        val wantH = if (needTall) contentH.toInt().coerceAtLeast(1) else ViewGroup.LayoutParams.MATCH_PARENT
+        val wantW = ViewGroup.LayoutParams.MATCH_PARENT
+        if (lp != null && (lp.height != wantH || lp.width != wantW)) {
+            lp.width = wantW
+            lp.height = wantH
+            iv.layoutParams = lp
+            android.util.Log.i(
+                "PdfOrient",
+                "ivLayout tall=$needTall height=$wantH content=${contentW.toInt()}x${contentH.toInt()} " +
+                    "host=${vw.toInt()}x${vh.toInt()}",
+            )
+        }
         val m = Matrix()
         m.setScale(scale, scale)
-        val dx = (vw - dw * scale) / 2f
-        val dy = if (landscape && dh * scale > vh) 0f else (vh - dh * scale) / 2f
+        // 加高后 iv 高度=contentH，矩阵从 (0,0) 铺满内容即可；未加高则居中/顶对齐
+        val dx = if (needTall) 0f else (vw - contentW) / 2f
+        val dy = if (needTall) {
+            0f
+        } else if (landscape && contentH > vh) {
+            0f
+        } else {
+            (vh - contentH) / 2f
+        }
         m.postTranslate(dx, dy)
         iv.scaleType = ImageView.ScaleType.MATRIX
         iv.imageMatrix = m
+        android.util.Log.i(
+            "PdfOrient",
+            "applyMatrix land=$landscape scale=$scale " +
+                "content=${contentW.toInt()}x${contentH.toInt()} " +
+                "host=${vw.toInt()}x${vh.toInt()} " +
+                "iv=${iv.width}x${iv.height} dx=$dx dy=$dy " +
+                "canPan=${host.canPanContent()} zoom=${host.contentZoom} " +
+                "pan=(${host.getPanX()},${host.getPanY()})",
+        )
     }
 
     /**
