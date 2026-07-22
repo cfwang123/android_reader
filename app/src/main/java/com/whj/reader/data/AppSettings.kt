@@ -241,7 +241,7 @@ object AppSettings {
         val k = mangaStateKey(fileKey)
         val ok = prefs(ctx).edit()
             .putInt("manga_idx_$k", state.index.coerceAtLeast(0))
-            .putFloat("manga_zoom_$k", state.zoom.coerceIn(0.5f, 5f))
+            .putFloat("manga_zoom_$k", state.zoom.coerceIn(0.25f, 5f))
             .putFloat("manga_panX_$k", state.panX)
             .putFloat("manga_panY_$k", state.panY)
             .putInt("manga_itemOff_$k", state.itemOffset)
@@ -272,7 +272,7 @@ object AppSettings {
             }
             val state = MangaViewState(
                 index = p.getInt("manga_idx_$k", 0).coerceAtLeast(0),
-                zoom = p.getFloat("manga_zoom_$k", 1f).coerceIn(0.5f, 5f),
+                zoom = p.getFloat("manga_zoom_$k", 1f).coerceIn(0.25f, 5f),
                 panX = p.getFloat("manga_panX_$k", 0f),
                 panY = p.getFloat("manga_panY_$k", 0f),
                 itemOffset = p.getInt("manga_itemOff_$k", 0),

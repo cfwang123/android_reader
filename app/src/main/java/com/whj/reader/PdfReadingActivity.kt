@@ -336,6 +336,8 @@ class PdfReadingActivity : AppCompatActivity() {
     /** PDF 页面 OCR 任务（可取消） */
     private var ocrJob: kotlinx.coroutines.Job? = null
     private var ocrEngine: TfliteOcrEngine? = null
+    /** 长图条带 GPU det 哑火时按条回退用的 CPU 引擎 */
+    private var ocrCpuFallback: TfliteOcrEngine? = null
     private val sleepTimer = com.whj.reader.tts.TtsSleepTimer(
         onTick = { left ->
             if (!isFinishing && !isDestroyed) {
@@ -496,9 +498,11 @@ class PdfReadingActivity : AppCompatActivity() {
         pageMode = AppSettings.pdfPageMode(this)
         night = AppSettings.pdfNight(this)
         // 切边在 loadPdf 时按 fileKey 加载（各文件独立）
-        // onCreate 时 hasWindowFocus 多为 false，必须显式 allowSensor，否则 AUTO 会被锁成竖屏，
-        // 旋转后系统 letterbox（左右黑边），应用无法铺满。
-        applyOrientationMode(AppSettings.pdfOrientationMode(this), allowSensor = true)
+        // 大屏 force 解除可能残留的竖屏 letterbox，铺满窗口
+        applyOrientationMode(
+            AppSettings.pdfOrientationMode(this),
+            force = OrientationHelper.isLargeScreen(this),
+        )
         applyNightUi()
         keepScreen = KeepScreenController(this) {
             ::tts.isInitialized && tts.currentState().state == TtsManager.State.SPEAKING
@@ -610,6 +614,8 @@ class PdfReadingActivity : AppCompatActivity() {
         }
         runCatching { ocrEngine?.close() }
         ocrEngine = null
+        runCatching { ocrCpuFallback?.close() }
+        ocrCpuFallback = null
         closePdf()
         bitmapCache.evictAll()
         stopRenderWorker()
@@ -2699,7 +2705,10 @@ class PdfReadingActivity : AppCompatActivity() {
                 // 旋转后保持菜单
                 chromeVisible = true
             }
-            applyOrientationMode(next, force = false)
+            applyOrientationMode(
+                next,
+                force = OrientationHelper.isLargeScreen(this),
+            )
             updateOrientMenuIcon()
             val label = when (next) {
                 OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
@@ -3496,13 +3505,15 @@ class PdfReadingActivity : AppCompatActivity() {
             var fail = 0
             var skipped = pages.size - queue.size
             try {
-                // 长页多条带：GPU 连续 det 易“哑火”(boxes=0)；PDF OCR 固定 CPU 更稳
+                // 主路径 GPU（AUTO：GPU→强制 GPU→CPU）；条带哑火时再按条 CPU 回退
                 val eng = withContext(Dispatchers.Default) {
                     runCatching { ocrEngine?.close() }
                     ocrEngine = null
+                    runCatching { ocrCpuFallback?.close() }
+                    ocrCpuFallback = null
                     TfliteOcrEngine(
                         this@PdfReadingActivity,
-                        TfliteOcrEngine.Backend.CPU,
+                        TfliteOcrEngine.Backend.GPU,
                     ).also { ocrEngine = it }
                 }
                 for ((i, page) in queue.withIndex()) {
@@ -3642,8 +3653,13 @@ class PdfReadingActivity : AppCompatActivity() {
             // 矮页：整页一次，用实际位图尺寸映射
             val bmp = renderOcrPageBitmap(r, pageIndex, ocrTargetW)
             try {
-                log("single-shot bmp=${bmp.width}x${bmp.height} bytes=${bmp.byteCount}")
-                val result = engine.recognize(bmp)
+                log(
+                    "single-shot bmp=${bmp.width}x${bmp.height} bytes=${bmp.byteCount} " +
+                        "backend=${engine.backendName}",
+                )
+                val safe = ensureSoftwareArgb(bmp)
+                val result = engine.recognize(safe, autoInvert = true)
+                if (safe !== bmp && !safe.isRecycled) safe.recycle()
                 lines = result.lines
                 mapBmpW = bmp.width
                 mapBmpH = bmp.height
@@ -3672,6 +3688,8 @@ class PdfReadingActivity : AppCompatActivity() {
             var unifiedW = 0
             var unifiedScale = probeScale
             var totalLocalLines = 0
+            var gpuEmptyStreak = 0
+            log("tile engine backend=${engine.backendName}")
 
             for ((ti, range) in ranges.withIndex()) {
                 if (Thread.interrupted() || ocrJob?.isActive == false) {
@@ -3686,7 +3704,37 @@ class PdfReadingActivity : AppCompatActivity() {
                         log("unifiedW=$unifiedW unifiedScale=$unifiedScale")
                     }
                     val ink = sampleInkRatio(strip)
-                    val result = engine.recognize(strip, autoInvert = true)
+                    val inkF = ink.toFloatOrNull() ?: 0f
+                    // GPU 输入用独立软件位图，避免连续条带复用/硬件缓冲导致 det 哑火
+                    val safeBmp = ensureSoftwareArgb(strip)
+                    var result = engine.recognize(safeBmp, autoInvert = true)
+                    var usedBackend = result.backend
+                    // 主路径含 GPU 时：有“文字感”墨量却 0 行 → 本条纯 CPU 回退
+                    val mainIsGpu = engine.backendName.contains("GPU", ignoreCase = true)
+                    if (result.lines.isEmpty() && inkLooksLikeText(inkF) && mainIsGpu) {
+                        gpuEmptyStreak++
+                        log(
+                            "  strip$ti GPU empty streak=$gpuEmptyStreak ink=$ink " +
+                                "backend=${engine.backendName} → try CPU",
+                        )
+                        val cpu = ensureOcrCpuFallback()
+                        val r2 = cpu.recognize(safeBmp, autoInvert = true)
+                        if (r2.lines.isNotEmpty()) {
+                            result = r2
+                            usedBackend = "CPU-fallback"
+                            log("  strip$ti CPU-fallback ok lines=${r2.lines.size}")
+                            gpuEmptyStreak = 0
+                        } else {
+                            log("  strip$ti CPU-fallback still empty")
+                        }
+                    } else if (result.lines.isNotEmpty()) {
+                        gpuEmptyStreak = 0
+                    } else {
+                        // 高 ink 多半是插图区，或不含 GPU 无需回退
+                        log("  strip$ti empty skip-fallback ink=$ink backend=${engine.backendName}")
+                    }
+                    if (safeBmp !== strip && !safeBmp.isRecycled) safeBmp.recycle()
+
                     val local = result.lines
                     totalLocalLines += local.size
                     // 条带像素 → 整页内容像素：x 按宽比，y = 顶偏移 + 局部 y 按高比
@@ -3695,21 +3743,24 @@ class PdfReadingActivity : AppCompatActivity() {
                     val topPx = srcY0 * unifiedScale
                     val spanPx = stripContentSpan * unifiedScale
                     val yScale = if (strip.height > 0) spanPx / strip.height else 1f
+                    val mapH = max(1, (contentH * unifiedScale).toInt()).toFloat()
                     val mapped = local.map { line ->
                         val box = line.box
                         if (box == null || box.size < 8) {
                             line
                         } else {
                             val nb = FloatArray(8) { i ->
-                                if (i % 2 == 0) box[i] * xScale
-                                else box[i] * yScale + topPx
+                                if (i % 2 == 0) {
+                                    (box[i] * xScale).coerceIn(0f, unifiedW.toFloat())
+                                } else {
+                                    (box[i] * yScale + topPx).coerceIn(0f, mapH)
+                                }
                             }
                             line.copy(box = nb)
                         }
                     }
                     parts += mapped
                     val sample = local.take(2).joinToString(" | ") { it.text.take(24) }
-                    // 引擎内部 invert/低阈值 日志在 result.log
                     if (result.log.contains("invert") || result.log.contains("lowThr")) {
                         log("  engine: ${result.log.trim().replace("\n", " | ")}")
                     }
@@ -3718,7 +3769,7 @@ class PdfReadingActivity : AppCompatActivity() {
                             "bmp=${strip.width}x${strip.height} ink=$ink " +
                             "topPx=$topPx yScale=$yScale lines=${local.size} " +
                             "detMs=${result.detMs} recMs=${result.recMs} " +
-                            "sample=[$sample]",
+                            "via=$usedBackend sample=[$sample]",
                     )
                     log(lineYSpanText("strip$ti-local", local))
                     log(lineYSpanText("strip$ti-mapped", mapped))
@@ -3791,6 +3842,25 @@ class PdfReadingActivity : AppCompatActivity() {
         } else {
             "  $tag: ${lines.size} lines y=$minY..$maxY " +
                 "first='${lines.first().text.take(20)}' last='${lines.last().text.take(20)}'"
+        }
+    }
+
+    /** 白底正文常见 ink 区间；过高多为插图/大色块，不必 CPU 回退 */
+    private fun inkLooksLikeText(ink: Float): Boolean = ink in 0.04f..0.62f
+
+    private fun ensureSoftwareArgb(src: android.graphics.Bitmap): android.graphics.Bitmap {
+        if (src.config == android.graphics.Bitmap.Config.ARGB_8888 && !src.isMutable) {
+            // 仍 copy 一份，切断与 PdfRenderer 缓冲/上一帧 GPU 输入的关联
+            return src.copy(android.graphics.Bitmap.Config.ARGB_8888, false) ?: src
+        }
+        return src.copy(android.graphics.Bitmap.Config.ARGB_8888, false) ?: src
+    }
+
+    private fun ensureOcrCpuFallback(): TfliteOcrEngine {
+        ocrCpuFallback?.let { return it }
+        return TfliteOcrEngine(this, TfliteOcrEngine.Backend.CPU).also {
+            ocrCpuFallback = it
+            android.util.Log.i("PdfOcrDbg", "cpu fallback engine opened backend=${it.backendName}")
         }
     }
 

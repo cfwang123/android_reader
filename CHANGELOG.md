@@ -7,11 +7,25 @@
 **PDF**
 - **Per-file crop margins** (not shared across books); odd/even mirror per file
 - Crop panel: keep existing crop when re-opening; auto-sample only if unset
-- **Tall-page OCR**: split into screen-sized strips with overlap, merge lines; CPU backend for multi-strip stability; contrast / invert retries; debug log tag `PdfOcrDbg`
+- **Tall-page OCR**: split into screen-sized strips with overlap, merge lines; **GPU** primary with per-strip **CPU fallback** when det is empty on text-like ink; contrast / invert retries; debug log tag `PdfOcrDbg`
 - **TTS**: next sentence scrolls above the TTS bar (viewport accounts for chrome height)
 - **Progress %** = scroll position / total content height (page-height table; works inside long pages)
 - Layout (排版) panel: higher elevation, nav-bar insets, scrollable — not clipped by bottom chrome
-- Orientation change: **keep bottom menu open**; reflow **2×4** icon grid for new width
+- Continuous mode page gap **5px**; zoom min **50%**, save/restore zoom+pan per file
+- Close chrome without page-turn; orientation menu: **portrait / landscape only** (no auto-rotate)
+
+**MOBI manga / continuous**
+- Three view modes: **Text / Manga (single) / Continuous** (portrait & landscape)
+- Continuous: vertical image stream, **10px** gap, min zoom **25%**, fit-center; restore **index + scroll + zoom + pan**
+- Enter continuous: locate overlay (no flash of first page)
+- Mode switch: single→continuous tops current image; continuous→single uses most-visible image; image→text scrolls to matching paragraph
+- Single image: open menu while zoomed &gt;100%; landscape fit whole image in screen
+- Portrait↔landscape: rebind list widths (no half-width pages); collapse chrome after rotate
+
+**Reading / TTS / gestures**
+- TTS (TXT/MOBI/EPUB): **0.3s gap** between paragraphs
+- Edge swipe for font size: **10px** edge only; **0.5sp** steps (decimals); **no toast**
+- Center tap while chrome open: close menu without paging
 
 **Bookshelf**
 - Long-press → **Clear records**: progress, bookmarks, EPUB/MOBI chapter/parse caches, PDF crop/zoom/OCR, encoding, covers/meta — shelf entry kept
@@ -28,11 +42,25 @@
 **PDF**
 - **切边按文件独立保存**（多书不共用）；奇偶对称按书记忆
 - 切边页：已有切边则保留，未设置才自动采样
-- **超长页 OCR**：按屏高分块 + 交叠合并；多条带用 CPU 更稳；对比度/反色重试；调试日志 `PdfOcrDbg`
+- **超长页 OCR**：按屏高分块 + 交叠合并；主路径 **GPU**，文字区条带 det 空时 **CPU 回退**；对比度/反色重试；调试日志 `PdfOcrDbg`
 - **朗读**：下一句会滚出 TTS 控制栏遮挡区
 - **进度 %** = 滚动位置 / 全书内容总高度（页高表；长页内滚动也会变）
 - 排版面板：抬高层级、导航条留白、可滚动，避免被底栏裁切
-- 横竖屏切换：**保持底部菜单打开**，按新宽度重铺 **2×4** 图标
+- 连续模式页间间隔 **5px**；缩放最低 **50%**，按文件记忆缩放/平移
+- 关菜单不误翻页；视角仅 **竖屏 / 横屏**（去掉自动旋转）
+
+**MOBI 漫画 / 连续图**
+- 三种浏览模式：**正文 / 漫画（单图）/ 连续图**（横竖屏均可）
+- 连续图：纵向图流、图间 **10px**、最低缩放 **25%**、整图 fit；恢复 **索引 + 滚动 + 缩放 + 平移**
+- 进入连续图：定位遮罩，不闪首页
+- 模式切换：单图→连续顶对齐当前图；连续→单图取视口最完整图；图→正文滚到对应段落
+- 单图：放大 &gt;100% 仍可点中部开菜单；横屏整图进屏
+- 竖切横：按新宽度重绑列表（不再半宽图）；旋转后收起底栏防错位
+
+**阅读 / TTS / 手势**
+- TTS（TXT/MOBI/EPUB）：段落间 **0.3 秒** 间隔
+- 侧边滑改字号：仅贴边 **10px**；步进 **0.5sp**（支持小数）；**不弹 Toast**
+- 菜单打开时点中部：只关菜单不翻页
 
 **书架**
 - 长按 → **清除记录**：进度、书签、EPUB/MOBI 章节/解析缓存、PDF 切边/缩放/OCR、编码、封面与元数据；书架条目与源文件保留

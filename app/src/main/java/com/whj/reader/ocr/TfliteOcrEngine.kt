@@ -106,16 +106,18 @@ class TfliteOcrEngine(
     )
 
     private fun openModels(preferred: Backend): Models {
-        // AUTO：GPU → CPU
+        // AUTO/GPU：全 GPU → 强制全 GPU → det-GPU+cls/rec-CPU 混合 → CPU
         val attempts: List<() -> Opened> = when (preferred) {
             Backend.AUTO -> listOf(
                 { tryOpenBackend(Backend.GPU) },
                 { tryOpenGpuForce() },
+                { tryOpenGpuDetHybrid() },
                 { tryOpenBackend(Backend.CPU) },
             )
             Backend.GPU -> listOf(
                 { tryOpenBackend(Backend.GPU) },
                 { tryOpenGpuForce() },
+                { tryOpenGpuDetHybrid() },
                 { tryOpenBackend(Backend.CPU) },
             )
             Backend.CPU -> listOf { tryOpenBackend(Backend.CPU) }
@@ -155,8 +157,52 @@ class TfliteOcrEngine(
             val d = Interpreter(loadAsset("ocr/det.tflite"), gpuOpt("det"))
             val c = Interpreter(loadAsset("ocr/cls.tflite"), gpuOpt("cls"))
             val r = Interpreter(loadAsset("ocr/rec.tflite"), gpuOpt("rec"))
-            warmup(d, c, r)
             Opened(d, c, r, "GPU", created)
+        } catch (t: Throwable) {
+            created.forEach { runCatching { it.close() } }
+            throw t
+        }
+    }
+
+    /**
+     * 混合：det 走 GPU（密集卷积），cls/rec 走 CPU。
+     * 部分机型全图 GpuDelegate 在 cls/rec 上 apply 失败，但 det 可成功。
+     */
+    private fun tryOpenGpuDetHybrid(): Opened {
+        initLine("try hybrid GPU(det)+CPU(cls/rec)")
+        val created = ArrayList<AutoCloseable>()
+        return try {
+            fun detGpuOpt(force: Boolean): Interpreter.Options {
+                val o = Interpreter.Options().apply { setNumThreads(4) }
+                val d = if (force) {
+                    GpuDelegate()
+                } else {
+                    val compat = CompatibilityList()
+                    if (!compat.isDelegateSupportedOnThisDevice) {
+                        error("GPU not supported (CompatibilityList)")
+                    }
+                    GpuDelegate(compat.bestOptionsForThisDevice)
+                }
+                created.add(d)
+                o.addDelegate(d)
+                initLine("  det: GpuDelegate ${if (force) "force" else "bestOptions"}")
+                return o
+            }
+            fun cpuOpt(tag: String): Interpreter.Options {
+                initLine("  $tag: CPU threads=4")
+                return Interpreter.Options().apply { setNumThreads(4) }
+            }
+            val d = try {
+                Interpreter(loadAsset("ocr/det.tflite"), detGpuOpt(force = false))
+            } catch (t: Throwable) {
+                initLine("  det bestOptions fail, force: ${t.message}")
+                created.forEach { runCatching { it.close() } }
+                created.clear()
+                Interpreter(loadAsset("ocr/det.tflite"), detGpuOpt(force = true))
+            }
+            val c = Interpreter(loadAsset("ocr/cls.tflite"), cpuOpt("cls"))
+            val r = Interpreter(loadAsset("ocr/rec.tflite"), cpuOpt("rec"))
+            Opened(d, c, r, "GPU+CPU", created)
         } catch (t: Throwable) {
             created.forEach { runCatching { it.close() } }
             throw t
@@ -710,7 +756,7 @@ class TfliteOcrEngine(
             } catch (t: Throwable) {
                 sb.append("GPU: ${t.message}\n")
             }
-            sb.append("优先顺序: GPU → CPU\n")
+            sb.append("优先顺序: GPU → GPU(force) → GPU(det)+CPU → CPU\n")
             // 模型是否在 assets
             try {
                 val names = context.assets.list("ocr")?.toList().orEmpty()

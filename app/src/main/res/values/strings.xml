@@ -136,6 +136,7 @@
     <string name="mobi_manga_no_images">本书没有可显示的图片</string>
     <string name="mobi_manga_first">已是第一张</string>
     <string name="mobi_manga_last">已是最后一张</string>
+    <string name="mobi_manga_locating">正在定位…</string>
     <string name="pdf_crop">切边</string>
     <string name="pdf_crop_value">裁边 %1$d%%</string>
     <string name="pdf_crop_summary">左%1$d%% 上%2$d%% 右%3$d%% 下%4$d%%</string>

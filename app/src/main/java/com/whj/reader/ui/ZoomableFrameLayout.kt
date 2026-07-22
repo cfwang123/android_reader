@@ -14,6 +14,7 @@ import android.widget.FrameLayout
 import android.widget.OverScroller
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 双指捏合缩放（结束后保留）+ 缩放后单指平移/惯性 + 双击切换缩放。
@@ -31,7 +32,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     var contentZoom: Float = 1f
         private set
 
-    /** 默认 1；PDF 可读时设为 0.5 以支持缩小 */
+    /** 默认 1；漫画/PDF 可读时设为 0.25~0.5 以支持缩小 */
     var minZoom: Float = 1f
     var maxZoom: Float = 3.5f
 
@@ -85,6 +86,22 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private var downY = 0f
     private var lastX = 0f
     private var lastY = 0f
+    /**
+     * 双指起点状态：绝对 span 算法（与 ZoomableImageView 一致），
+     * 放大时用 startSpan 重算，避免 scaleFactor 累乘 + 抬指 span 突变跳动。
+     */
+    private var pinchStartZoom = 1f
+    private var pinchStartPanX = 0f
+    private var pinchStartPanY = 0f
+    private var pinchStartFocusX = 0f
+    private var pinchStartFocusY = 0f
+    private var pinchStartSpan = 1f
+    private var pinchFrozen = false
+    /** 已越过 100%、进入自由平移阶段 */
+    private var pinchFreeMode = false
+    /** 连续模式：上一帧焦点 y，用于竖向 overscroll 增量 */
+    private var pinchLastFocusY = 0f
+    private var pinchLastFocusYValid = false
     /** 本手势是否已超过点按阈值（连续模式用） */
     private var fingerMoved = false
     /** 本手势已处理过中部/侧边点按，防止 GestureDetector 再触发一次（开关两次=菜单不亮） */
@@ -117,15 +134,18 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 pinching = true
                 pageTurnLocked = true
                 selecting = false
+                pinchFrozen = false
+                pinchFreeMode = !contentFitsAt(contentZoom)
+                capturePinchStart(detector)
                 abortPanFling()
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
             }
 
             override fun onScale(detector: ScaleGestureDetector): Boolean {
-                val f = detector.scaleFactor
-                if (f.isNaN() || f.isInfinite() || f <= 0f) return false
-                applyScale(f.coerceIn(0.85f, 1.15f), detector.focusX, detector.focusY)
+                if (pinchFrozen) return true
+                if (detector.currentSpan < 1f) return true
+                applyPinchAbsolute(detector.focusX, detector.focusY, detector.currentSpan)
                 pageTurnLocked = true
                 return true
             }
@@ -133,8 +153,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             override fun onScaleEnd(detector: ScaleGestureDetector) {
                 pinching = false
                 pageTurnLocked = true
-                clampPan()
-                applyTransform()
+                pinchFrozen = false
+                settleAfterPinch()
                 android.util.Log.i(
                     "MangaZoom",
                     "FrameLayout onScaleEnd zoom=$contentZoom pan=($panX,$panY)",
@@ -144,6 +164,140 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         },
     ).also { it.isQuickScaleEnabled = false }
 
+    private fun capturePinchStart(detector: ScaleGestureDetector) {
+        capturePinchStartAt(
+            contentZoom.coerceAtLeast(0.01f),
+            panX,
+            panY,
+            detector.focusX,
+            detector.focusY,
+            detector.currentSpan.coerceAtLeast(1f),
+        )
+        pinchLastFocusY = detector.focusY
+        pinchLastFocusYValid = false
+    }
+
+    private fun capturePinchStartAt(
+        zoom: Float,
+        px: Float,
+        py: Float,
+        focusX: Float,
+        focusY: Float,
+        span: Float,
+    ) {
+        pinchStartZoom = zoom.coerceAtLeast(0.01f)
+        pinchStartPanX = px
+        pinchStartPanY = py
+        pinchStartFocusX = focusX
+        pinchStartFocusY = focusY
+        pinchStartSpan = span.coerceAtLeast(1f)
+    }
+
+    /** 内容在给定 zoom 下是否仍应居中（≤100%） */
+    private fun contentFitsAt(zoom: Float): Boolean {
+        val t = target()
+        val vw = width.toFloat().coerceAtLeast(1f)
+        val tw = (if (t != null && t.width > 0) t.width else width).toFloat().coerceAtLeast(1f)
+        val z = zoom.coerceAtLeast(0.01f)
+        // 与 UI「100%」一致：z≤1 且水平未超出
+        return z <= 1.001f && tw * z <= vw + 0.5f
+    }
+
+    private fun centeredPanAt(zoom: Float): Pair<Float, Float> {
+        val t = target()
+        val vw = width.toFloat().coerceAtLeast(1f)
+        val vh = height.toFloat().coerceAtLeast(1f)
+        val tw = (if (t != null && t.width > 0) t.width else width).toFloat().coerceAtLeast(1f)
+        val th = (if (t != null && t.height > 0) t.height else height).toFloat().coerceAtLeast(1f)
+        val z = zoom.coerceAtLeast(0.01f)
+        val cx = (vw - tw * z) / 2f
+        val cy = if (continuousScrollWhenZoomed) 0f else (vh - th * z) / 2f
+        return cx to cy
+    }
+
+    /**
+     * 捏合策略：
+     * - **≤100%**：强制居中 + 限制每帧步进（快速捏合不会单帧从 50% 蹦到 150%）
+     * - **越过 100%**：本帧最多落到略大于 100%，居中并重锚定
+     * - **>100%**：自由平移，缩放仍向绝对 span 目标平滑靠拢
+     */
+    private fun applyPinchAbsolute(focusX: Float, focusY: Float, span: Float) {
+        val startSpan = pinchStartSpan.coerceAtLeast(1f)
+        val s = span.coerceAtLeast(1f)
+        val ratio = (s / startSpan).coerceIn(0.2f, 5f)
+        val target = (pinchStartZoom * ratio).coerceIn(minZoom, maxZoom)
+        val prevZ = contentZoom.coerceAtLeast(0.01f)
+
+        // 快速捏合：限制每帧 zoom 变化，避免单帧跨越过大导致 pan 居中公式剧变
+        val next = smoothZoomStep(prevZ, target)
+
+        if (!pinchFreeMode && contentFitsAt(next)) {
+            // 仍 ≤100%：强制居中
+            contentZoom = next
+            val (cx, cy) = centeredPanAt(next)
+            panX = cx
+            panY = cy
+            applyTransform()
+        } else if (!pinchFreeMode && !contentFitsAt(next)) {
+            // 本帧将越过 100%：只走到略超 100%，居中后重锚定（禁止一次跳到 1.5x）
+            val crossZ = min(next, max(1.02f, prevZ * 1.12f)).coerceIn(1.001f, maxZoom)
+            contentZoom = crossZ
+            val (cx, cy) = centeredPanAt(crossZ)
+            panX = cx
+            panY = cy
+            capturePinchStartAt(crossZ, cx, cy, focusX, focusY, s)
+            pinchFreeMode = true
+            clampPanSoft()
+            applyTransform()
+            android.util.Log.i(
+                "MangaZoom",
+                "pinchCrossUp z $prevZ→$crossZ (target=$target) reAnchor pan=($panX,$panY)",
+            )
+        } else {
+            // 自由平移阶段
+            val contentX = (pinchStartFocusX - pinchStartPanX) / pinchStartZoom
+            val contentY = (pinchStartFocusY - pinchStartPanY) / pinchStartZoom
+            contentZoom = next
+            panX = focusX - contentX * next
+            if (continuousScrollWhenZoomed) {
+                panY = 0f
+            } else {
+                panY = focusY - contentY * next
+            }
+            clampPanSoft()
+            applyTransform()
+        }
+
+        if (continuousScrollWhenZoomed && pinchLastFocusYValid && pinchFreeMode) {
+            val dy = focusY - pinchLastFocusY
+            if (abs(dy) > 0.5f && abs(dy) < maxPinchPanPerFrameSafe()) {
+                onPanOverscroll?.invoke(0f, dy)
+            }
+        }
+        pinchLastFocusY = focusY
+        pinchLastFocusYValid = true
+    }
+
+    /**
+     * 向 [target] 靠拢，限制单帧相对/绝对变化。
+     * 慢速捏合几乎跟手；快速时分多帧追上，避免跳变。
+     */
+    private fun smoothZoomStep(prev: Float, target: Float): Float {
+        val p = prev.coerceAtLeast(0.01f)
+        val t = target.coerceIn(minZoom, maxZoom)
+        // 单帧最多 ×1.12 或 ÷1.12，且绝对步进不超过 0.12
+        val maxRel = 1.12f
+        val maxAbs = 0.12f
+        var lo = p / maxRel
+        var hi = p * maxRel
+        lo = max(lo, p - maxAbs)
+        hi = min(hi, p + maxAbs)
+        return t.coerceIn(lo, hi).coerceIn(minZoom, maxZoom)
+    }
+
+    private fun maxPinchPanPerFrameSafe(): Float =
+        (48f * resources.displayMetrics.density).coerceAtLeast(32f)
+
     private val gestureDetector = GestureDetector(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
@@ -152,15 +306,16 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             // 不启用双击缩放
             override fun onDoubleTap(e: MotionEvent): Boolean = false
 
-            // 中部立即响应（不等 double-tap 超时）；侧边在 dispatch UP 已处理
+            // 中部立即响应（含放大态开菜单）；侧边在 dispatch UP 已处理
             override fun onSingleTapUp(e: MotionEvent): Boolean {
-                if (pinching || panning || selecting || flingingPan) return false
+                if (pinching || selecting || flingingPan) return false
                 // 连续未缩放路径已在 dispatch UP 处理点按，此处再触发会 toggle 两次
                 if (tapConsumed) return true
-                if (continuousScrollWhenZoomed && !isZoomed()) return false
-                // 有明显位移则是滑动，不走点按
+                if (continuousScrollWhenZoomed && !isZoomed() && !isScaled()) return false
+                // 有明显位移则是滑动，不走点按（放大平移时允许微抖仍算点）
                 val moved = max(abs(e.x - downX), abs(e.y - downY))
-                if (moved > tapSlop) return false
+                val slop = if (isZoomed() || isScaled()) tapSlop * 1.5f else tapSlop.toFloat()
+                if (moved > slop) return false
                 val w = width.toFloat().coerceAtLeast(1f)
                 if (e.x < w / 3f || e.x > w * 2f / 3f) return false
                 onSingleTap?.invoke(e.x, e.y)
@@ -282,16 +437,43 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val cx = (focusX - panX) / old
         val cy = (focusY - panY) / old
         contentZoom = newZoom
-        if (abs(contentZoom - 1f) < 0.01f) {
-            contentZoom = 1f
-            panX = 0f
-            panY = 0f
-        } else {
-            panX = focusX - cx * contentZoom
-            panY = focusY - cy * contentZoom
-        }
-        clampPan()
+        panX = focusX - cx * contentZoom
+        panY = focusY - cy * contentZoom
+        clampPanSoft()
         applyTransform()
+    }
+
+    /**
+     * 轻量夹紧：1x 时也按 panBounds 居中/夹边，不在缩放过程中突然清零 pan。
+     * （内容铺满时 bounds 本身就是 0，结果仍是居中。）
+     */
+    private fun clampPanSoft() {
+        val b = panBounds()
+        panX = panX.coerceIn(b[0], b[1])
+        panY = panY.coerceIn(b[2], b[3])
+    }
+
+    /**
+     * 松手 settle：≤100% 捏合中已居中，此处只吸附比例 + 夹边，pan 不再大跳。
+     */
+    private fun settleAfterPinch() {
+        val beforeZ = contentZoom
+        val beforePan = panX to panY
+        if (abs(contentZoom - 1f) < 0.012f) {
+            contentZoom = 1f
+        }
+        if (contentFitsAt(contentZoom)) {
+            val (cx, cy) = centeredPanAt(contentZoom)
+            panX = cx
+            panY = cy
+        } else {
+            clampPanSoft()
+        }
+        applyTransform()
+        android.util.Log.i(
+            "MangaZoom",
+            "settle z $beforeZ→$contentZoom pan $beforePan→($panX,$panY)",
+        )
     }
 
     private fun zoomTo(zoom: Float, focusX: Float, focusY: Float) {
@@ -377,7 +559,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         val z = contentZoom.coerceAtLeast(0.01f)
         val lp = t.layoutParams ?: LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
 
-        if (z < 0.99f && continuousScrollWhenZoomed) {
+        // 捏合过程中固定 MATCH_PARENT，避免 z 越过 0.99 时 layout 高度突变跳动
+        if (!pinching && z < 0.99f && continuousScrollWhenZoomed) {
             // 布局加高：缩放后高度铺满，列表可见范围变为原来的 1/z
             val layoutH = (vh / z).toInt().coerceAtLeast(vh)
             if (lp.width != LayoutParams.MATCH_PARENT || lp.height != layoutH) {
@@ -398,7 +581,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         t.scaleX = z
         t.scaleY = z
 
-        // 缩小时强制水平居中（两侧黑边）；连续缩小 panY=0
+        // ≤100% 强制居中（含捏合中）：松手不必再跳居中
         if (z < 0.99f) {
             val layoutW = if (t.width > 0) t.width else vw
             val visualW = layoutW * z
@@ -512,6 +695,20 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         }
         obtainTracker().addMovement(ev)
 
+        // 抬指/第三指：先冻结再喂 detector，避免本帧 span 突变改姿态
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (pinching && ev.pointerCount <= 2) {
+                    pinchFrozen = true
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ev.pointerCount > 2 && pinching) {
+                    pinchFrozen = true
+                }
+            }
+        }
+
         // 捏合必须先喂 scaleDetector，否则第二指落下时丢失 DOWN 序列
         scaleDetector.onTouchEvent(ev)
         val multi = ev.pointerCount >= 2 || pinching || scaleDetector.isInProgress
@@ -599,24 +796,18 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             panning = false
             pageTurnLocked = true
             when (ev.actionMasked) {
+                MotionEvent.ACTION_POINTER_UP -> {
+                    pageTurnLocked = true
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (pinching) {
                         pinching = false
-                        clampPan()
-                        applyTransform()
+                        pinchFrozen = false
+                        settleAfterPinch()
                         onZoomChanged?.invoke(contentZoom)
                     }
                     // 多指手势整段结束：禁止本 UP 再走侧边翻页；锁保留到下次 DOWN
                     recycleTracker()
-                }
-                MotionEvent.ACTION_POINTER_UP -> {
-                    if (ev.pointerCount <= 2 && pinching) {
-                        pinching = false
-                        clampPan()
-                        applyTransform()
-                        onZoomChanged?.invoke(contentZoom)
-                    }
-                    pageTurnLocked = true
                 }
             }
             return true

@@ -187,7 +187,8 @@ class VirtualReaderView @JvmOverloads constructor(
     /** 0=无 1=左 2=右 */
     private var edgeSide = 0
     private var edgeAccum = 0f
-    private val edgeWidthPx: Float get() = max(40f * density, width * 0.12f)
+    /** 侧边改字号/语速热区：仅贴边 10px，避免误触正文滚动 */
+    private val edgeWidthPx: Float get() = 10f
     private val edgeStepPx: Float get() = 28f * density
 
     // 复用缓冲，减少 GC

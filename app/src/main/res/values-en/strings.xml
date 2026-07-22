@@ -135,6 +135,7 @@
     <string name="mobi_manga_no_images">No images in this book</string>
     <string name="mobi_manga_first">Already the first image</string>
     <string name="mobi_manga_last">Already the last image</string>
+    <string name="mobi_manga_locating">Locating…</string>
     <string name="pdf_page_mode">Page mode</string>
     <string name="pdf_mode_continuous">Continuous scroll</string>
     <string name="pdf_mode_single">Single page</string>

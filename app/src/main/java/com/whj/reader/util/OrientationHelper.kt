@@ -12,8 +12,8 @@ import com.whj.reader.model.OrientationMode
 /**
  * 阅读页方向：仅「竖屏 / 横屏」两档，**一律锁定系统方向并占满窗口**。
  *
- * - 不再做大屏 FULL_SENSOR「只改布局」——那会让横竖模式都停在横持窗口，
- *   竖屏再套中间竖栏，看起来「两种都是横屏、竖屏只用中间一条」。
+ * - 不再做大屏 FULL_SENSOR「只改布局」——那会让横竖模式都停在系统当前窗口方向，
+ *   系统竖屏时点「横屏」不会真正横过来。
  * - 不再做 portraitColumnPadding 收栏。
  * - 已废弃 AUTO，映射为竖屏。
  */
@@ -37,7 +37,7 @@ object OrientationHelper {
         val target = resolveSystemOrientation(fixed)
         val prev = activity.requestedOrientation
         Log.i(TAG, "apply mode=$fixed prev=$prev target=$target force=$force")
-        if (prev == target) {
+        if (!force && prev == target) {
             Log.i(TAG, "apply skip same")
             return false
         }
@@ -55,6 +55,11 @@ object OrientationHelper {
             -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
     }
+
+    /** 兼容旧调用签名（大屏分支已取消） */
+    @Suppress("UNUSED_PARAMETER")
+    fun resolveSystemOrientation(activity: Activity, mode: OrientationMode): Int =
+        resolveSystemOrientation(mode)
 
     /** 布局是否按横屏：跟用户选择一致 */
     fun isEffectiveLandscape(
