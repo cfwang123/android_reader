@@ -10,6 +10,7 @@ import com.whj.reader.model.ReadStyle
 import com.whj.reader.model.ReadTheme
 import com.whj.reader.model.ShelfSort
 import com.whj.reader.util.ReaderFonts
+import com.whj.reader.util.ReaderLog
 
 object AppSettings {
     /** TXT 阅读设置 */
@@ -249,8 +250,7 @@ object AppSettings {
             // 调试：便于 adb 对照同一本书
             .putString("manga_uri_$k", fileKey.take(240))
             .commit()
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "SAVE ok=$ok key=$k idx=${state.index} zoom=${state.zoom} " +
                 "pan=(${state.panX},${state.panY}) itemOff=${state.itemOffset} " +
                 "scrollY=${state.scrollY} uri=${fileKey.take(120)}",
@@ -259,7 +259,7 @@ object AppSettings {
 
     fun loadMangaViewState(ctx: Context, fileKey: String): MangaViewState {
         if (fileKey.isBlank()) {
-            android.util.Log.w("MangaZoom", "LOAD skip blank fileKey")
+            ReaderLog.w(ReaderLog.Module.MANGA_ZOOM, "LOAD skip blank fileKey")
             return MangaViewState()
         }
         val p = prefs(ctx)
@@ -278,8 +278,7 @@ object AppSettings {
                 itemOffset = p.getInt("manga_itemOff_$k", 0),
                 scrollY = p.getInt("manga_scrollY_$k", 0).coerceAtLeast(0),
             )
-            android.util.Log.i(
-                "MangaZoom",
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                 "LOAD hit key=$k idx=${state.index} zoom=${state.zoom} " +
                     "pan=(${state.panX},${state.panY}) itemOff=${state.itemOffset} " +
                     "scrollY=${state.scrollY} savedUri=${p.getString("manga_uri_$k", "")} " +
@@ -291,8 +290,7 @@ object AppSettings {
             }
             return state
         }
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "LOAD miss keys=$keys uri=${fileKey.take(120)}",
         )
         return MangaViewState()
@@ -310,7 +308,7 @@ object AppSettings {
             .remove("manga_scrollY_$k")
             .remove("manga_uri_$k")
             .apply()
-        android.util.Log.i("MangaZoom", "CLEAR key=$k uri=${fileKey.take(120)}")
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "CLEAR key=$k uri=${fileKey.take(120)}")
     }
 
     /** 稳定短键：避免仅用 hashCode 难排查；仍兼容旧 hash 键 */

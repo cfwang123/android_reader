@@ -10,7 +10,7 @@
 - **Text selection handles** (PDF / TXT / EPUB / MOBI text): two draggable handles at selection ends; drag to top/bottom edge to auto-scroll and extend selection (gradual speed ramp)
 
 #### Changed / fixed
-- **MOBI (Chinese UTF-8)**: fix mis-decoded Chinese MOBI (e.g. *Journey to the West*) — trust `encoding=65001`, repair PalmDOC HTML damage (NUL / `height` fragments); parse cache v5
+- **MOBI (Chinese UTF-8)**: fix mis-decoded Chinese MOBI — trust `encoding=65001`, repair PalmDOC HTML damage (NUL / `height` fragments); parse cache v5
 - **MOBI load**: after open, **prefetch the full book in the background** (like EPUB); top-left load % clears when done; chunk + full parse cache
 - **Custom TOC**: matching lines get chapter title styling; fix layout overflow right after scan (invalidate layout cache when `isChapter` changes)
 - **PDF / MOBI continuous images**: on portrait ↔ landscape, keep **zoom (width ratio)** and **horizontal pan ratio** (no reset to 1×)
@@ -34,7 +34,7 @@
 - **文本选区手柄**（PDF / TXT / EPUB / MOBI 正文）：选区两端拖动手柄，拖到上下边缘自动滚屏扩选（缓加速）
 
 #### 修改 / 修复
-- **MOBI 中文 UTF-8**：修复部分中文 MOBI（如《西游记》）乱码 — 信任 `encoding=65001`、修补 PalmDOC 解压后 HTML 损伤（NUL、`height` 碎片）；解析缓存 v5
+- **MOBI 中文 UTF-8**：修复部分中文 MOBI 乱码 — 信任 `encoding=65001`、修补 PalmDOC 解压后 HTML 损伤（NUL、`height` 碎片）；解析缓存 v5
 - **MOBI 加载**：打开后**后台预载全书**（与 EPUB 一致）；左上角加载百分比完成后消失；分块 + 全书解析缓存
 - **自定义目录**：匹配行显示章节标题样式；扫描后立即应用时修复排版溢出（`isChapter` 变化时刷新 layout 缓存）
 - **PDF / MOBI 连续图**：竖屏 ↔ 横屏保持 **缩放（相对屏宽）** 与 **水平平移比例**（不再重置为 1×）

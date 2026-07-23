@@ -42,6 +42,7 @@ import com.whj.reader.model.ShelfFolderKind
 import com.whj.reader.model.ShelfItem
 import com.whj.reader.model.ShelfSort
 import com.whj.reader.ui.ShelfAdapter
+import com.whj.reader.util.ReaderLog
 import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
@@ -189,6 +190,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        if (BuildConfig.DEBUG) {
+            ReaderLog.dumpEnabled("MainActivity")
+        }
 
         BookshelfStore.ensureMigrated(this)
 

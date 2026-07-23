@@ -1,5 +1,6 @@
 package com.whj.reader.ui
 
+import com.whj.reader.util.ReaderLog
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
@@ -138,8 +139,7 @@ class ZoomableImageView @JvmOverloads constructor(
                     pinchOffX = transX - cx
                     pinchOffY = transY - cy
                 }
-                android.util.Log.i(
-                    "MangaZoom",
+                ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                     "imgBegin sc=$currentScale fit=$fitScale span=$pinchStartSpan " +
                         "pan=($transX,$transY) off=($pinchOffX,$pinchOffY) " +
                         "focus=(${detector.focusX},${detector.focusY})",
@@ -175,8 +175,7 @@ class ZoomableImageView @JvmOverloads constructor(
                 lastX = detector.focusX
                 lastY = detector.focusY
                 val dPan = max(abs(transX - beforeTx), abs(transY - beforeTy))
-                android.util.Log.i(
-                    "MangaZoom",
+                ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                     "imgScaleEnd sc ${"%.4f".format(beforeSc)}→${"%.4f".format(currentScale)} " +
                         "pan (${"%.1f".format(beforeTx)},${"%.1f".format(beforeTy)})→" +
                         "(${"%.1f".format(transX)},${"%.1f".format(transY)}) " +
@@ -273,8 +272,7 @@ class ZoomableImageView @JvmOverloads constructor(
             min(prevScale, currentScale)
         val cross = (prevScale - fitScale) * (currentScale - fitScale) <= 0f
         if (cross || dContent > 8f || abs(currentScale / prevScale - 1f) > 0.2f) {
-            android.util.Log.i(
-                "MangaZoom",
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                 "imgFrame sc ${"%.4f".format(prevScale)}→${"%.4f".format(currentScale)} " +
                     "fit=${"%.4f".format(fitScale)} ratio=${"%.3f".format(ratio)} " +
                     "pan (${"%.1f".format(prevTx)},${"%.1f".format(prevTy)})→" +
@@ -292,7 +290,7 @@ class ZoomableImageView @JvmOverloads constructor(
     fun debugSimulateFastSidePinch() {
         val bmp = bitmap
         if (bmp == null || width <= 0 || height <= 0 || fitScale <= 0f) {
-            android.util.Log.e("MangaZoom", "debugSimulate: not ready")
+            ReaderLog.e(ReaderLog.Module.MANGA_ZOOM, "debugSimulate: not ready")
             return
         }
         abortFling()
@@ -311,8 +309,7 @@ class ZoomableImageView @JvmOverloads constructor(
         pinchOffY = 0f
         pinching = true
         blockPanFlingAfterPinch = true
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "debugSimulate START sc=$startSc fit=$fitScale pan=($transX,$transY) " +
                 "focus=($focusX,$focusY) view=${width}x$height bmp=${bmp.width}x${bmp.height}",
         )
@@ -335,25 +332,23 @@ class ZoomableImageView @JvmOverloads constructor(
         pinching = false
         settleAfterPinch()
         val settleD = max(abs(transX - preEndTx), abs(transY - preEndTy))
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "debugSimulate SETTLE sc $preEndSc→$currentScale " +
                 "pan ($preEndTx,$preEndTy)→($transX,$transY) dPan=$settleD " +
                 "settleJUMP=${settleD > 20f}",
         )
         // 模拟旧逻辑：松手 fling（应被 block）
         val wouldFling = isEnlarged() && (abs(2500f) > minFlingV)
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "debugSimulate RELEASE blockFling=$blockPanFlingAfterPinch " +
                 "wouldHaveFling=$wouldFling sc=$currentScale pan=($transX,$transY) " +
                 "rel=${getRelativeZoom()}",
         )
         if (!blockPanFlingAfterPinch && wouldFling) {
             startPanFling(2500f, 1800f)
-            android.util.Log.e("MangaZoom", "debugSimulate BAD: fling started on release")
+            ReaderLog.e(ReaderLog.Module.MANGA_ZOOM, "debugSimulate BAD: fling started on release")
         } else {
-            android.util.Log.i("MangaZoom", "debugSimulate OK: no fling on release")
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "debugSimulate OK: no fling on release")
         }
     }
 
@@ -697,16 +692,14 @@ class ZoomableImageView @JvmOverloads constructor(
                     ) {
                         if (abs(vx) > minFlingV || abs(vy) > minFlingV) {
                             startPanFling(vx, vy)
-                            android.util.Log.i(
-                                "MangaZoom",
+                            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                                 "releaseFling vx=$vx vy=$vy pan=($transX,$transY)",
                             )
                         }
                     } else if (event.actionMasked == MotionEvent.ACTION_UP &&
                         blockPanFlingAfterPinch
                     ) {
-                        android.util.Log.i(
-                            "MangaZoom",
+                        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                             "releaseNoFling afterPinch sc=$currentScale " +
                                 "pan=($transX,$transY) vx=$vx vy=$vy " +
                                 "(move also blocked until next DOWN)",
@@ -732,8 +725,7 @@ class ZoomableImageView @JvmOverloads constructor(
         applyMatrix()
         invalidate()
         val dPan = max(abs(transX - before.second), abs(transY - before.third))
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "imgSettle sc ${"%.4f".format(before.first)}→${"%.4f".format(currentScale)} " +
                 "pan (${"%.1f".format(before.second)},${"%.1f".format(before.third)})→" +
                 "(${"%.1f".format(transX)},${"%.1f".format(transY)}) dPan=${"%.1f".format(dPan)} " +
@@ -743,12 +735,11 @@ class ZoomableImageView @JvmOverloads constructor(
 
     private fun startPanFling(vx: Float, vy: Float) {
         if (blockPanFlingAfterPinch) {
-            android.util.Log.i("MangaZoom", "startPanFling blocked after pinch")
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "startPanFling blocked after pinch")
             return
         }
         val (xMin, xMax, yMin, yMax) = panRange()
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "startPanFling vx=$vx vy=$vy from=($transX,$transY)",
         )
         scroller.fling(

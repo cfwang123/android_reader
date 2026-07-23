@@ -9,6 +9,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.RectF
+import com.whj.reader.util.ReaderLog
 import android.util.AttributeSet
 import android.util.SparseArray
 import android.view.View
@@ -470,8 +471,7 @@ class PdfPageSurface @JvmOverloads constructor(
                 val bmp = fullBitmap
                 if (bmp == null || bmp.isRecycled) {
                     if (ancestorScaled()) {
-                        android.util.Log.w(
-                            "PdfZoom",
+                        ReaderLog.w(ReaderLog.Module.PDF_ZOOM,
                             "onDraw FULL empty page=$pageIndex scaled recycled=${bmp?.isRecycled}",
                         )
                     }
@@ -513,8 +513,7 @@ class PdfPageSurface @JvmOverloads constructor(
                     drawn++
                 }
                 if (parentScaled && clipSkipped > 0 && drawn == 0 && tiles.size() > 0) {
-                    android.util.Log.w(
-                        "PdfZoom",
+                    ReaderLog.w(ReaderLog.Module.PDF_ZOOM,
                         "onDraw page=$pageIndex scaled clipSkip=$clipSkipped tiles=${tiles.size()} " +
                             "clip=$clipTop..$clipBottom viewH=$height",
                     )

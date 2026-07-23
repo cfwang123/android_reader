@@ -96,7 +96,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.util.Log
+import com.whj.reader.util.ReaderLog
 import kotlin.math.abs
 
 class ReadingActivity : AppCompatActivity() {
@@ -107,8 +107,7 @@ class ReadingActivity : AppCompatActivity() {
         const val EXTRA_TITLE = "title"
         /** 指定文本编码；空/不传 = 自动判断 */
         const val EXTRA_ENCODING = "encoding"
-        /** adb logcat -s MangaZoom */
-        private const val TAG_MANGA_ZOOM = "MangaZoom"
+        /** adb logcat -s MangaZoom（需 setprop debug.whj.reader.log manga_zoom） */
         /** adb: am broadcast -a com.whj.reader.DEBUG_MANGA_PINCH -p com.whj.reader */
         const val ACTION_DEBUG_MANGA_PINCH = "com.whj.reader.DEBUG_MANGA_PINCH"
         /** 连续图图间间隔（px） */
@@ -285,7 +284,7 @@ class ReadingActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_DEBUG_MANGA_PINCH) return
             if (!mangaMode || isMangaContinuousLayout()) {
-                android.util.Log.w("MangaZoom", "debug pinch: need manga single mode")
+                ReaderLog.w(ReaderLog.Module.MANGA_ZOOM, "debug pinch: need manga single mode")
                 return
             }
             if (!::binding.isInitialized) return
@@ -517,8 +516,7 @@ class ReadingActivity : AppCompatActivity() {
         binding.root.removeCallbacks(saveMangaViewRunnable)
         if (mangaMode && mangaPaths.isNotEmpty() && fileKey.isNotEmpty()) {
             val best = bestMangaTransformForSave()
-            Log.i(
-                TAG_MANGA_ZOOM,
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                 "flushLeave best=$best live=${readLiveMangaTransform()} " +
                     "pending=$pendingMangaTransform suppress=$suppressMangaViewSave " +
                     "cont=${isMangaContinuousLayout()} idx=$mangaIndex",
@@ -682,16 +680,16 @@ class ReadingActivity : AppCompatActivity() {
         if (!flag.exists()) return
         runCatching { flag.delete() }
         if (!mangaMode) {
-            android.util.Log.w("MangaZoom", "debug file: not mangaMode")
+            ReaderLog.w(ReaderLog.Module.MANGA_ZOOM, "debug file: not mangaMode")
             return
         }
         if (isMangaContinuousLayout()) {
-            android.util.Log.w("MangaZoom", "debug file: continuous layout, need single")
+            ReaderLog.w(ReaderLog.Module.MANGA_ZOOM, "debug file: continuous layout, need single")
             return
         }
         if (!::binding.isInitialized) return
         binding.mangaImageView.post {
-            android.util.Log.i("MangaZoom", "debug file: run simulate")
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "debug file: run simulate")
             binding.mangaImageView.debugSimulateFastSidePinch()
         }
     }
@@ -2186,7 +2184,7 @@ class ReadingActivity : AppCompatActivity() {
         pendingMangaScrollOffset = 0
         pendingMangaScrollY = 0
         pendingMangaTransform = Triple(1f, 0f, 0f)
-        Log.i(TAG_MANGA_ZOOM, "switchLayout cont=$wantContinuous idx=$mangaIndex")
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "switchLayout cont=$wantContinuous idx=$mangaIndex")
         allowProgressSave = true
         if (wantContinuous) {
             // 单图→连续：遮罩定位，避免闪到列表头
@@ -2569,8 +2567,7 @@ class ReadingActivity : AppCompatActivity() {
         val targetScrollY = pendingMangaScrollY.coerceAtLeast(0)
         mangaIndex = idx
         lm.scrollToPositionWithOffset(idx, itemOff)
-        Log.i(
-            TAG_MANGA_ZOOM,
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "restoreScroll idx=$idx itemOff=$itemOff targetScrollY=$targetScrollY",
         )
         // 仅当明确有 scrollY（同会话未换向）才微调；换向后 target=0 跳过
@@ -2653,7 +2650,7 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun loadPendingMangaTransformFromStore() {
         if (fileKey.isEmpty()) {
-            Log.w(TAG_MANGA_ZOOM, "loadPending skip empty fileKey")
+            ReaderLog.w(ReaderLog.Module.MANGA_ZOOM, "loadPending skip empty fileKey")
             return
         }
         val state = AppSettings.loadMangaViewState(this, fileKey)
@@ -2666,8 +2663,7 @@ class ReadingActivity : AppCompatActivity() {
         pendingMangaScrollY = state.scrollY.coerceAtLeast(0)
         // 缩放/平移：一律写入 pending（含 1x+平移）
         pendingMangaTransform = Triple(zoom, panX, panY)
-        Log.i(
-            TAG_MANGA_ZOOM,
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "loadPending set pending=$pendingMangaTransform idx=${state.index} " +
                 "itemOff=${state.itemOffset} scrollY=${state.scrollY} cont=$mangaContinuousPref",
         )
@@ -2675,8 +2671,7 @@ class ReadingActivity : AppCompatActivity() {
 
     private fun scheduleRestoreMangaZoom(revealWhenReady: Boolean = false) {
         val attempts = intArrayOf(0, 16, 48, 120, 280, 500, 900, 1500)
-        Log.i(
-            TAG_MANGA_ZOOM,
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "scheduleRestore pending=$pendingMangaTransform " +
                 "scroll=($pendingMangaScrollIndex,$pendingMangaScrollOffset,$pendingMangaScrollY) " +
                 "cont=${isMangaContinuousLayout()} suppress=$suppressMangaViewSave reveal=$revealWhenReady",
@@ -2695,8 +2690,7 @@ class ReadingActivity : AppCompatActivity() {
                 val scrollOk = !isMangaContinuousLayout() || isMangaScrollRestoredEnough()
                 val singleReady = isMangaContinuousLayout() ||
                     (binding.mangaImageView.hasBitmap() && binding.mangaImageView.width > 0)
-                Log.i(
-                    TAG_MANGA_ZOOM,
+                ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                     "restore tick delay=${delay}ms zoomOk=$zoomOk scrollOk=$scrollOk " +
                         "before=$before after=$after pending=$pendingMangaTransform " +
                         "cont=${isMangaContinuousLayout()} " +
@@ -2708,7 +2702,7 @@ class ReadingActivity : AppCompatActivity() {
                     suppressMangaViewSave = false
                     if (revealWhenReady) revealMangaContent()
                 } else if (delay >= attempts.last()) {
-                    Log.w(TAG_MANGA_ZOOM, "restore FAILED after all retries")
+                    ReaderLog.w(ReaderLog.Module.MANGA_ZOOM, "restore FAILED after all retries")
                     suppressMangaViewSave = false
                     if (revealWhenReady) revealMangaContent()
                 }
@@ -2775,7 +2769,7 @@ class ReadingActivity : AppCompatActivity() {
     private fun scheduleSaveMangaViewState() {
         if (!mangaMode || !allowProgressSave || fileKey.isEmpty()) return
         if (suppressMangaViewSave) {
-            Log.i(TAG_MANGA_ZOOM, "scheduleSave skipped suppress=true")
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "scheduleSave skipped suppress=true")
             return
         }
         binding.root.removeCallbacks(saveMangaViewRunnable)
@@ -2785,14 +2779,13 @@ class ReadingActivity : AppCompatActivity() {
     private fun saveMangaViewStateNow() {
         // 恢复过程中控件可能仍是 1x：跳过节流保存，避免冲掉 prefs
         if (suppressMangaViewSave) {
-            Log.i(TAG_MANGA_ZOOM, "saveNow skipped suppress=true pending=$pendingMangaTransform")
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "saveNow skipped suppress=true pending=$pendingMangaTransform")
             return
         }
         if (fileKey.isEmpty() || !mangaMode || mangaPaths.isEmpty()) return
         if (!::binding.isInitialized) return
         val best = bestMangaTransformForSave()
-        Log.i(
-            TAG_MANGA_ZOOM,
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "saveNow best=$best live=${readLiveMangaTransform()} pending=$pendingMangaTransform " +
                 "cont=${isMangaContinuousLayout()} idx=$mangaIndex",
         )
@@ -2818,8 +2811,7 @@ class ReadingActivity : AppCompatActivity() {
         pendingMangaScrollIndex = idx
         pendingMangaScrollOffset = itemOff
         pendingMangaScrollY = scrollY
-        Log.i(
-            TAG_MANGA_ZOOM,
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "writeState z=$zoom pan=($panX,$panY) idx=$idx itemOff=$itemOff scrollY=$scrollY " +
                 "cont=${isMangaContinuousLayout()} fileKey=${fileKey.take(100)} " +
                 "suppress=$suppressMangaViewSave",
@@ -2890,33 +2882,30 @@ class ReadingActivity : AppCompatActivity() {
     private fun tryApplyPendingMangaTransform() {
         val t = pendingMangaTransform
         if (t == null) {
-            Log.d(TAG_MANGA_ZOOM, "tryApply no pending")
+            ReaderLog.d(ReaderLog.Module.MANGA_ZOOM, "tryApply no pending")
             return
         }
         val (zoom, panX, panY) = t
         if (isMangaContinuousLayout()) {
             val host = binding.mangaContinuousHost
             if (host.width <= 0 || host.height <= 0) {
-                Log.d(TAG_MANGA_ZOOM, "tryApply cont host not laid out w=${host.width} h=${host.height}")
+                ReaderLog.d(ReaderLog.Module.MANGA_ZOOM, "tryApply cont host not laid out w=${host.width} h=${host.height}")
                 return
             }
             host.setTransform(zoom.coerceIn(0.25f, 3.5f), panX, panY, notify = false)
-            Log.i(
-                TAG_MANGA_ZOOM,
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                 "tryApply cont set z=$zoom pan=($panX,$panY) → live=${readLiveMangaTransform()}",
             )
         } else {
             val iv = binding.mangaImageView
             if (iv.width <= 0 || iv.height <= 0 || !iv.hasBitmap()) {
-                Log.d(
-                    TAG_MANGA_ZOOM,
+                ReaderLog.d(ReaderLog.Module.MANGA_ZOOM,
                     "tryApply single not ready w=${iv.width} h=${iv.height} bmp=${iv.hasBitmap()}",
                 )
                 return
             }
             iv.setTransform(zoom.coerceIn(0.25f, 5f), panX, panY, notify = false)
-            Log.i(
-                TAG_MANGA_ZOOM,
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                 "tryApply single set z=$zoom pan=($panX,$panY) rel=${iv.getRelativeZoom()} " +
                     "live=${readLiveMangaTransform()}",
             )
@@ -3047,8 +3036,7 @@ class ReadingActivity : AppCompatActivity() {
             abs(iv.getRelativeZoom() - 1f) > 0.02f ||
             abs(iv.getPanX()) > 1f ||
             abs(iv.getPanY()) > 1f
-        Log.i(
-            TAG_MANGA_ZOOM,
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "afterBitmapReady pendingUseful=$pendingUseful viewScaled=$viewScaled " +
                 "suppress=$suppressMangaViewSave rel=${iv.getRelativeZoom()} " +
                 "pan=(${iv.getPanX()},${iv.getPanY()}) pending=$t",
@@ -3057,7 +3045,7 @@ class ReadingActivity : AppCompatActivity() {
             tryApplyPendingMangaTransform()
             if (isPendingMangaTransformAppliedOnView()) {
                 suppressMangaViewSave = false
-                Log.i(TAG_MANGA_ZOOM, "afterBitmapReady applied OK suppress=false")
+                ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "afterBitmapReady applied OK suppress=false")
             }
             return
         }

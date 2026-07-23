@@ -1,7 +1,9 @@
 package com.whj.reader.ui
 
+import com.whj.reader.util.ReaderLog
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Matrix
 import android.graphics.PointF
 import android.util.AttributeSet
 import android.view.GestureDetector
@@ -11,6 +13,7 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.OverScroller
 import kotlin.math.abs
 import kotlin.math.max
@@ -160,6 +163,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private var fingerMoved = false
     /** 本手势已处理过中部/侧边点按，防止 GestureDetector 再触发一次（开关两次=菜单不亮） */
     private var tapConsumed = false
+    /** 同一 DOWN 序列只触发一次侧边翻页（防 dispatch + intercept 双发） */
+    private var sideTapFiredDownTime = -1L
+    /** 最近一次成功触发的侧边点按 DOWN 时间（供 Activity 去重） */
+    val sideTapGestureDownTime: Long
+        get() = sideTapFiredDownTime
     /**
      * 双指缩放 / 多指手势期间禁止边缘翻页与水平滑翻页。
      * 锁到整段手势结束；下一次单指 DOWN 时按是否放大重新设定。
@@ -223,8 +231,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 lastX = detector.focusX
                 lastY = detector.focusY
                 val dPan = max(abs(panX - beforeX), abs(panY - beforeY))
-                android.util.Log.i(
-                    "MangaZoom",
+                ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                     "FrameScaleEnd z ${"%.3f".format(beforeZ)}→${"%.3f".format(contentZoom)} " +
                         "pan (${"%.1f".format(beforeX)},${"%.1f".format(beforeY)})→" +
                         "(${"%.1f".format(panX)},${"%.1f".format(panY)}) " +
@@ -264,11 +271,27 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         pinchStartSpan = span.coerceAtLeast(1f)
     }
 
-    /** 布局/测量尺寸；单页长页在 requestLayout 前用 layoutParams 高度算 pan 边界 */
+    /** 布局/测量尺寸；单页长页用 bitmap×matrix 视觉尺寸算 pan 边界，避免 layout 残留加高 */
     private fun targetContentSize(t: View?): Pair<Float, Float> {
         val vw = width.toFloat().coerceAtLeast(1f)
         val vh = height.toFloat().coerceAtLeast(1f)
         if (t == null) return vw to vh
+        if (t is ImageView && t.drawable != null && !continuousScrollWhenZoomed) {
+            val d = t.drawable!!
+            val dw = d.intrinsicWidth.toFloat().coerceAtLeast(1f)
+            val dh = d.intrinsicHeight.toFloat().coerceAtLeast(1f)
+            var tw = dw
+            var th = dh
+            if (t.scaleType == ImageView.ScaleType.MATRIX) {
+                val vals = FloatArray(9)
+                t.imageMatrix.getValues(vals)
+                tw = dw * abs(vals[Matrix.MSCALE_X]).coerceAtLeast(0.001f)
+                th = dh * abs(vals[Matrix.MSCALE_Y]).coerceAtLeast(0.001f)
+            }
+            if (allowTallZoomTarget && th > vh + 1f) {
+                return tw.coerceAtLeast(1f) to th.coerceAtLeast(1f)
+            }
+        }
         var tw = if (t.width > 0) t.width.toFloat() else vw
         var th = if (t.height > 0) t.height.toFloat() else vh
         if (allowTallZoomTarget) {
@@ -336,8 +359,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             pinchFreeMode = true
             clampPanSoft()
             applyTransform()
-            android.util.Log.i(
-                "MangaZoom",
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                 "pinchCrossUp z $prevZ→$crossZ (target=$target) reAnchor pan=($panX,$panY)",
             )
         } else {
@@ -404,8 +426,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 val slop = if (isZoomed() || isScaled()) tapSlop * 1.5f else tapSlop.toFloat()
                 if (moved > slop) return false
                 val w = width.toFloat().coerceAtLeast(1f)
-                // 放大态：整屏中部点都可开菜单（侧边也允许，避免难点）
+                // 放大态：中部开菜单；侧边由 onSideTapImmediate 处理，避免双翻页
                 if (isZoomed() || isScaled()) {
+                    if (e.x < w / 3f || e.x > w * 2f / 3f) return false
                     onSingleTap?.invoke(e.x, e.y)
                     return true
                 }
@@ -459,22 +482,22 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private fun sideTapSlop(): Float =
         if (isZoomed() || isScaled()) tapSlop * 1.5f else tapSlop.toFloat()
 
-    /** @return 是否已触发侧边翻页 */
-    private fun tryFireSideTap(x: Float, y: Float): Boolean {
+    /** @return 是否已触发（含重复 UP 被吞掉） */
+    private fun fireSideTapOnce(ev: MotionEvent, x: Float, y: Float): Boolean {
         val cb = onSideTapImmediate ?: return false
         if (pinching || selecting || handleDragActive) return false
+        if (sideTapFiredDownTime == ev.downTime) return true
         val w = width.toFloat().coerceAtLeast(1f)
-        return when {
-            x < w / 3f -> {
-                cb.invoke(0, x, y)
-                true
-            }
-            x > w * 2f / 3f -> {
-                cb.invoke(2, x, y)
-                true
-            }
-            else -> false
+        val zone = when {
+            x < w / 3f -> 0
+            x > w * 2f / 3f -> 2
+            else -> return false
         }
+        sideTapFiredDownTime = ev.downTime
+        onStopScroll?.invoke()
+        cb.invoke(zone, x, y)
+        tapConsumed = true
+        return true
     }
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
@@ -507,9 +530,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 if (sideTapTrack) {
                     val dist = max(abs(ev.x - sideTapDownX), abs(ev.y - sideTapDownY))
                     if (dist <= sideTapSlop()) {
-                        onStopScroll?.invoke()
-                        tryFireSideTap(ev.x, ev.y)
-                        tapConsumed = true
+                        fireSideTapOnce(ev, ev.x, ev.y)
                         sideTapTrack = false
                         return true
                     }
@@ -545,6 +566,27 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
     fun getPanX(): Float = panX
     fun getPanY(): Float = panY
+
+    /** 竖向 pan 范围：first=minY（看底部），second=maxY（看顶部，通常 0） */
+    fun verticalPanLimits(): Pair<Float, Float> {
+        val b = panBounds()
+        return b[2] to b[3]
+    }
+
+    /**
+     * 视口像素平移；[clampPan] 后应用。
+     * @return 实际位移 (dx, dy)
+     */
+    fun panContentBy(dx: Float, dy: Float): Pair<Float, Float> {
+        abortPanFling()
+        val ox = panX
+        val oy = panY
+        panX += dx
+        panY += dy
+        clampPan()
+        applyTransform()
+        return (panX - ox) to (panY - oy)
+    }
 
     /** 恢复缩放+平移（用于打开 PDF 时还原视图） */
     fun setTransform(zoom: Float, panX: Float, panY: Float, notify: Boolean = false) {
@@ -637,8 +679,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             clampPanSoft()
         }
         applyTransform()
-        android.util.Log.i(
-            "MangaZoom",
+        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
             "settle z $beforeZ→$contentZoom pan $beforePan→($panX,$panY)",
         )
     }
@@ -731,8 +772,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 lp.width = LayoutParams.MATCH_PARENT
                 lp.height = layoutH
                 t.layoutParams = lp
-                android.util.Log.i(
-                    "PdfZoom",
+                ReaderLog.i(ReaderLog.Module.PDF_ZOOM,
                     "applyTransform tallRv z=$z pinching=$pinching layoutH=$layoutH vh=$vh " +
                         "targetWas=${t.height}",
                 )
@@ -747,8 +787,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 lp.width = LayoutParams.MATCH_PARENT
                 lp.height = wantH
                 t.layoutParams = lp
-                android.util.Log.i(
-                    "PdfZoom",
+                ReaderLog.i(ReaderLog.Module.PDF_ZOOM,
                     "applyTransform resetRv z=$z pinching=$pinching wantH=$wantH prevH=$prevH vh=$vh",
                 )
             }
@@ -784,7 +823,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
 
     private fun startPanFling(velocityX: Float, velocityY: Float) {
         if (blockPanAfterPinch) {
-            android.util.Log.i("MangaZoom", "Frame startPanFling blocked after pinch")
+            ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "Frame startPanFling blocked after pinch")
             return
         }
         val b = panBounds()
@@ -890,6 +929,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 selecting = false
                 fingerMoved = false
                 tapConsumed = false
+                sideTapFiredDownTime = -1L
                 pageTurnLocked = isZoomed()
             }
         }
@@ -933,6 +973,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                     panning = false
                     fingerMoved = false
                     tapConsumed = false
+                    sideTapFiredDownTime = -1L
                     pageTurnLocked = false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -969,14 +1010,18 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                             val w = width.toFloat().coerceAtLeast(1f)
                             when {
                                 onSideTapImmediate != null && ev.x < w / 3f -> {
-                                    onStopScroll?.invoke()
-                                    onSideTapImmediate?.invoke(0, ev.x, ev.y)
-                                    tapConsumed = true
+                                    if (fireSideTapOnce(ev, ev.x, ev.y)) {
+                                        recycleTracker()
+                                        gestureDetector.onTouchEvent(ev)
+                                        return true
+                                    }
                                 }
                                 onSideTapImmediate != null && ev.x > w * 2f / 3f -> {
-                                    onStopScroll?.invoke()
-                                    onSideTapImmediate?.invoke(2, ev.x, ev.y)
-                                    tapConsumed = true
+                                    if (fireSideTapOnce(ev, ev.x, ev.y)) {
+                                        recycleTracker()
+                                        gestureDetector.onTouchEvent(ev)
+                                        return true
+                                    }
                                 }
                                 ev.x >= w / 3f && ev.x <= w * 2f / 3f -> {
                                     // 中部：只在这里触发一次菜单
@@ -1019,8 +1064,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         onZoomChanged?.invoke(contentZoom)
                     }
                     if (blockPanAfterPinch) {
-                        android.util.Log.i(
-                            "MangaZoom",
+                        ReaderLog.i(ReaderLog.Module.MANGA_ZOOM,
                             "Frame releaseNoFling afterPinch z=$contentZoom " +
                                 "pan=($panX,$panY)",
                         )
@@ -1146,20 +1190,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                     }
                     // 2) 侧边轻点：立即翻页（双指缩放手势中禁止；放大态也允许）
                     if (!tapConsumed && onSideTapImmediate != null && total <= touchSlop) {
-                        val w = width.toFloat().coerceAtLeast(1f)
-                        when {
-                            ev.x < w / 3f -> {
-                                onStopScroll?.invoke()
-                                onSideTapImmediate?.invoke(0, ev.x, ev.y)
-                                recycleTracker()
-                                return true
-                            }
-                            ev.x > w * 2f / 3f -> {
-                                onStopScroll?.invoke()
-                                onSideTapImmediate?.invoke(2, ev.x, ev.y)
-                                recycleTracker()
-                                return true
-                            }
+                        if (fireSideTapOnce(ev, ev.x, ev.y)) {
+                            recycleTracker()
+                            return true
                         }
                     }
                 }
