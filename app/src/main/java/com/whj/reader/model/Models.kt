@@ -280,7 +280,7 @@ enum class ShelfSort {
 
 /** PDF 翻页/浏览模式（与 TXT 排版无关） */
 enum class PdfPageMode {
-    /** 连续滚动（默认），页间细黑线 */
+    /** 连续滚动（默认），页间间隔见 @dimen/pdf_page_gap */
     CONTINUOUS,
     /** 单页模式，左右点按翻页 */
     SINGLE,

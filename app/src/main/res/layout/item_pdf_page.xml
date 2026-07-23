@@ -30,10 +30,10 @@
             android:includeFontPadding="false" />
     </FrameLayout>
 
-    <!-- 页间间隔（连续滚动，5px） -->
+    <!-- 页间间隔（连续滚动，见 @dimen/pdf_page_gap） -->
     <View
         android:id="@+id/pageDivider"
         android:layout_width="match_parent"
-        android:layout_height="5px"
+        android:layout_height="@dimen/pdf_page_gap"
         android:background="#000000" />
 </LinearLayout>

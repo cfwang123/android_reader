@@ -110,7 +110,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * PDF 阅读（与 TXT 隔离：独立进度 / 上次书 / 页面模式 / 视角）。
- * - 连续滚动（默认）：RecyclerView + 页间细黑线
+ * - 连续滚动（默认）：RecyclerView + 页间间隔（@dimen/pdf_page_gap，默认 10dp）
  * - 单页模式：左右点按翻页
  * - 中部：与 TXT 相同 8 图标菜单
  */
@@ -1676,7 +1676,8 @@ class PdfReadingActivity : AppCompatActivity() {
     // ─── 稳定页高表（PdfPageHeightTable） ─────────────────
 
     private fun initPageHeightTable(count: Int) {
-        pageHeightTable.init(count)
+        val gapPx = resources.getDimensionPixelSize(R.dimen.pdf_page_gap)
+        pageHeightTable.init(count, gapPx)
     }
 
     private fun contentWidthForHeight(): Int = pdfViewportWidth()

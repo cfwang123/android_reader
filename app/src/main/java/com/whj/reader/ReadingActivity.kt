@@ -110,8 +110,6 @@ class ReadingActivity : AppCompatActivity() {
         /** adb logcat -s MangaZoom（开关见 ReaderLog.ENABLED_MODULES） */
         /** adb: am broadcast -a com.whj.reader.DEBUG_MANGA_PINCH -p com.whj.reader */
         const val ACTION_DEBUG_MANGA_PINCH = "com.whj.reader.DEBUG_MANGA_PINCH"
-        /** 连续图图间间隔（px） */
-        private const val MANGA_PAGE_GAP_PX = 10
     }
 
     private lateinit var binding: ActivityReadingBinding
@@ -2444,7 +2442,7 @@ class ReadingActivity : AppCompatActivity() {
         rv.adapter = adapter
         rv.itemAnimator = null
         rv.setHasFixedSize(false)
-        // 图间 5px 由适配器内 divider 控制（黑条可见）
+        // 图间间隔由适配器内 divider 控制（@dimen/mobi_continuous_image_gap，默认 10dp）
         mangaGapDecoration?.let { rv.removeItemDecoration(it) }
         mangaGapDecoration = null
         rv.setBackgroundColor(0xFF000000.toInt())
@@ -3073,7 +3071,7 @@ class ReadingActivity : AppCompatActivity() {
     }
 
     /**
-     * 连续图列表：每项一图 + 底部分隔条 [MANGA_PAGE_GAP_PX]。
+     * 连续图列表：每项一图 + 底部分隔条（[R.dimen.mobi_continuous_image_gap]，默认 10dp）。
      */
     private inner class MangaContinuousAdapter :
         RecyclerView.Adapter<MangaContinuousAdapter.VH>() {
@@ -3089,6 +3087,7 @@ class ReadingActivity : AppCompatActivity() {
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val ctx = parent.context
+            val gapPx = parent.resources.getDimensionPixelSize(R.dimen.mobi_continuous_image_gap)
             val root = android.widget.LinearLayout(ctx).apply {
                 orientation = android.widget.LinearLayout.VERTICAL
                 layoutParams = RecyclerView.LayoutParams(
@@ -3109,7 +3108,7 @@ class ReadingActivity : AppCompatActivity() {
             val gap = View(ctx).apply {
                 layoutParams = android.widget.LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    MANGA_PAGE_GAP_PX,
+                    gapPx,
                 )
                 setBackgroundColor(0xFF000000.toInt())
             }

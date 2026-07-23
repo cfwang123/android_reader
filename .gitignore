@@ -7,14 +7,13 @@
 *.dm
 *.idsig
 
-AGENTS.md
-/fonts
-
 # Generated files
-bin/
-gen/
-out/
-release/
+AGENTS.md
+/bin/
+/gen/
+/out/
+/release/
+/fonts/
 
 # Gradle
 .gradle/

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- PDF 连续滚动：页与页之间的间隔 -->
+    <dimen name="pdf_page_gap">10dp</dimen>
+    <!-- MOBI 连续图模式：图与图之间的间隔 -->
+    <dimen name="mobi_continuous_image_gap">10dp</dimen>
+</resources>

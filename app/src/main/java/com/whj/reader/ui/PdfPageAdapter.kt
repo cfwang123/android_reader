@@ -6,7 +6,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.whj.reader.databinding.ItemPdfPageBinding
 
 /**
- * PDF 连续滚动列表：每页一个 [PdfPageSurface]，页底细黑线分隔（最后一页无分隔线）；
+ * PDF 连续滚动列表：每页一个 [PdfPageSurface]，页底间隔条分隔（@dimen/pdf_page_gap，默认 10dp；最后一页无分隔线）；
  * 左上角半透明页码角标。
  */
 class PdfPageAdapter(

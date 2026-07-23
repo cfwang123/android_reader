@@ -9,8 +9,12 @@ class PdfPageHeightTable {
 
     data class SeekTarget(val page: Int, val offsetInPage: Int)
 
-    /** 与 item_pdf_page 的 pageDivider 一致 */
-    var pageDividerPx: Int = 5
+    /**
+     * 页间分隔线高度（px），须与 item_pdf_page 的 pageDivider / @dimen/pdf_page_gap 一致。
+     * 由 [init] 从外部传入（默认 10dp 换算）。
+     */
+    var pageDividerPx: Int = 0
+        private set
 
     /** 未知页尺寸时的估算宽高比 H/W */
     @Volatile
@@ -22,8 +26,12 @@ class PdfPageHeightTable {
 
     fun snapshotPrefix(n: Int): List<Int> = heights.take(n)
 
-    fun init(count: Int) {
-        pageDividerPx = 5
+    /**
+     * @param count 页数
+     * @param pageDividerPx 页间间隔像素，通常为 `R.dimen.pdf_page_gap`（默认 10dp）
+     */
+    fun init(count: Int, pageDividerPx: Int) {
+        this.pageDividerPx = pageDividerPx.coerceAtLeast(0)
         heights = IntArray(count.coerceAtLeast(0))
     }
 
