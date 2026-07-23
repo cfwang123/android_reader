@@ -125,7 +125,11 @@
     <string name="pdf_page_mode">页面模式</string>
     <string name="pdf_mode_continuous">连续滚动</string>
     <string name="pdf_mode_single">单页模式</string>
-    <string name="pdf_mode_hint">连续滚动时页间显示细黑线分隔；单页模式左右点按翻页。双指缩放后仍可滚动。</string>
+    <string name="pdf_mode_badge_continuous">连续</string>
+    <string name="pdf_mode_badge_single">单页</string>
+    <string name="pdf_mode_switched_continuous">已切换：连续滚动</string>
+    <string name="pdf_mode_switched_single">已切换：单页模式</string>
+    <string name="pdf_mode_hint">当前模式见底栏中间标签。连续：上下滑浏览，页间细线分隔；单页：左右点按/滑动翻页。双指缩放后仍可滚动。</string>
     <string name="mobi_view_mode">浏览模式</string>
     <string name="mobi_mode_text">正文</string>
     <string name="mobi_mode_manga">漫画</string>
@@ -157,6 +161,8 @@
     <string name="pdf_crop_edge_b">下边 %1$d%%</string>
     <string name="pdf_tts_unavailable">当前 PDF 未提取到可朗读文字</string>
     <string name="pdf_tts_page_no_text">当前页无可朗读文字</string>
+    <string name="pdf_select_no_text">当前页无文字层，可先对该页 OCR 后再选字</string>
+    <string name="pdf_tts_sel_map_fail">无法定位选区起点，请重新选择正文后朗读</string>
     <string name="pdf_tts_extracting">正在提取文字…</string>
     <string name="pdf_tts_ready">已提取 %1$d 段，可朗读</string>
     <string name="pdf_text_copied">已复制</string>

@@ -33,7 +33,7 @@ const HELP = `
 
 命令:
   build     编译 APK（默认 release）
-  release   编译 release 包（assembleRelease）
+  release   编译 release 并将 APK 移动到 release/reader{version}.apk
   rebuild   清理后重新编译（clean + build）
   clean     清理构建产物
   run       安装到真机并启动（debug 包）
@@ -390,6 +390,32 @@ function build(variant) {
   }
 }
 
+/** 将 build 输出目录中的 release APK 移动到项目 release/ 目录 */
+function moveReleaseApk(apkPath) {
+  if (!fs.existsSync(apkPath)) {
+    die(`未找到 release APK: ${apkPath}`);
+  }
+  fs.mkdirSync(RELEASE_APK_DIR, { recursive: true });
+  const dest = path.join(RELEASE_APK_DIR, path.basename(apkPath));
+  if (fs.existsSync(dest)) {
+    fs.unlinkSync(dest);
+  }
+  try {
+    fs.renameSync(apkPath, dest);
+  } catch {
+    // 跨盘符时 rename 可能失败，回退为复制后删除
+    fs.copyFileSync(apkPath, dest);
+    fs.unlinkSync(apkPath);
+  }
+  console.log(`\nRelease APK: ${dest}`);
+  return dest;
+}
+
+function releaseApk() {
+  build('release');
+  moveReleaseApk(getApkPath('release'));
+}
+
 function apk() {
   const apkPath = ensureReleaseApk(true);
   fs.mkdirSync(RELEASE_APK_DIR, { recursive: true });
@@ -451,8 +477,8 @@ switch (command) {
     build(variant);
     break;
   case 'release':
-    // 始终编译 release，等价于 build --release
-    build('release');
+    // 编译 release，并将 APK 移动到项目 release/ 目录
+    releaseApk();
     break;
   case 'rebuild':
     rebuild(variant);

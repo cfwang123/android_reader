@@ -62,7 +62,10 @@ class PdfSelectionOverlay @JvmOverloads constructor(
         } else {
             handlesVisible = false
         }
+        // 仅手柄需要接触摸；选区外必须放行，否则无法 pan/滚列表
+        // 点击取消选区由 ZoomableFrameLayout 的 onSingleTap 处理
         isClickable = handlesVisible
+        isFocusable = false
         invalidate()
     }
 
@@ -118,6 +121,10 @@ class PdfSelectionOverlay @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 只接管「手柄拖动」；其它触摸一律 return false，交给下层 pan / 列表滚动。
+     * 取消选区仅响应轻点（Activity.onSingleTap），不在此处 DOWN 抢事件。
+     */
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!handlesVisible) return false
         when (event.actionMasked) {
@@ -137,6 +144,8 @@ class PdfSelectionOverlay @JvmOverloads constructor(
                     onHandleDrag?.invoke(draggingHandle!!, event.x, event.y, false)
                     return true
                 }
+                // 未点中手柄：不消费，pan/滚页由 ZoomableFrameLayout / RV 处理
+                return false
             }
             MotionEvent.ACTION_MOVE -> {
                 val h = draggingHandle ?: return false

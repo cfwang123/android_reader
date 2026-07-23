@@ -76,10 +76,19 @@ class PdfPageSurface @JvmOverloads constructor(
         bindGeneration: Long,
     ) -> Unit)? = null
 
+    /**
+     * 宽度变化导致逻辑高度/分块几何失效时回调（旋转后常见）。
+     * 宿主应补渲；勿在回调里再改 layout 形成死循环。
+     */
+    var onGeometryInvalidated: ((surface: PdfPageSurface) -> Unit)? = null
+
     val isFullMode: Boolean get() = mode == Mode.FULL
     val isTileMode: Boolean get() = mode == Mode.TILES
     val logicalHeight: Int
         get() = (layoutParams?.height?.takeIf { it > 0 } ?: height).coerceAtLeast(0)
+
+    /** 上次已按此宽度校正过高度，避免 onSizeChanged 抖动 */
+    private var heightSyncedForWidth: Int = 0
 
     fun bind(
         pageIndex: Int,
@@ -104,11 +113,10 @@ class PdfPageSurface @JvmOverloads constructor(
         // tile 位图由 Activity tileCache 持有，此处只摘引用
         clearBitmapsInternal(recycleTiles = false)
         pendingTiles.clear()
+        heightSyncedForWidth = 0
 
         val tw = targetWidth.coerceAtLeast(1)
-        val srcW = this.pageW * (1f - this.cropL - this.cropR).coerceAtLeast(0.2f)
-        val srcH = this.pageH * (1f - this.cropT - this.cropB).coerceAtLeast(0.2f)
-        val displayH = max(1, (tw * srcH / srcW).toInt())
+        val displayH = computeDisplayHeight(tw)
         this.tileHeightPx = tileHeightPx.coerceAtLeast(400)
         this.tileCount = if (useTiles) {
             max(1, (displayH + this.tileHeightPx - 1) / this.tileHeightPx)
@@ -133,10 +141,83 @@ class PdfPageSurface @JvmOverloads constructor(
         if (minimumHeight != displayH) {
             minimumHeight = displayH
         }
+        heightSyncedForWidth = tw
         if (needResize) {
             requestLayout()
         }
         invalidate()
+    }
+
+    private fun computeDisplayHeight(targetWidth: Int): Int {
+        val tw = targetWidth.coerceAtLeast(1).toFloat()
+        val srcW = pageW * (1f - cropL - cropR).coerceAtLeast(0.2f)
+        val srcH = pageH * (1f - cropT - cropB).coerceAtLeast(0.2f)
+        if (srcW <= 0.01f) return 1
+        return max(1, (tw * srcH / srcW).toInt())
+    }
+
+    /**
+     * layout 宽度变化时（横竖屏）按页宽高比校正高度。
+     * 解决：bind 时用了旧宽/屏宽估算，真正 layout 后宽变了但高度未改 → 整页压扁/拉长。
+     */
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w <= 0 || pageIndex < 0) return
+        if (w == heightSyncedForWidth) return
+        syncHeightToLaidOutWidth(w)
+    }
+
+    /**
+     * 按当前（或指定）layout 宽度校正高度与 tile 分块。
+     * @return 是否发生了几何变化（高度或分块）
+     */
+    fun syncHeightToLaidOutWidth(laidOutWidth: Int = width): Boolean {
+        if (pageIndex < 0 || laidOutWidth <= 0) return false
+        if (laidOutWidth == heightSyncedForWidth) {
+            val lpH = layoutParams?.height ?: 0
+            val expected = computeDisplayHeight(laidOutWidth)
+            if (kotlin.math.abs(lpH - expected) <= 2) return false
+        }
+        val displayH = computeDisplayHeight(laidOutWidth)
+        val oldH = layoutParams?.height ?: 0
+        val oldTiles = tileCount
+        val useTiles = mode == Mode.TILES || tileCount > 0
+        if (useTiles) {
+            tileCount = max(1, (displayH + tileHeightPx - 1) / tileHeightPx)
+        }
+        var resized = false
+        if (kotlin.math.abs(oldH - displayH) > 2) {
+            val lp = layoutParams ?: ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                displayH,
+            )
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+            lp.height = displayH
+            layoutParams = lp
+            minimumHeight = displayH
+            requestLayout()
+            resized = true
+        }
+        heightSyncedForWidth = laidOutWidth
+        // 分块数变了必须清内容重渲；高度变了整图也需按新框重贴
+        val tilesChanged = useTiles && oldTiles != tileCount
+        if (tilesChanged || (resized && mode == Mode.FULL)) {
+            if (tilesChanged) {
+                clearBitmapsInternal(recycleTiles = false)
+                pendingTiles.clear()
+                mode = Mode.TILES
+                bindGeneration++
+            }
+            // 整图：高度变了但位图宽高比仍对；若仅高度校准则 draw 已正确，
+            // 若高度变化很大仍保留 fullBitmap，由 aspect 绘制即可。
+            post { onGeometryInvalidated?.invoke(this) }
+            return true
+        }
+        if (resized) {
+            post { onGeometryInvalidated?.invoke(this) }
+            return true
+        }
+        return false
     }
 
     fun clearContent() {
@@ -146,6 +227,8 @@ class PdfPageSurface @JvmOverloads constructor(
         clearBitmapsInternal(recycleTiles = false)
         mode = Mode.EMPTY
         tileCount = 0
+        heightSyncedForWidth = 0
+        onGeometryInvalidated = null
         invalidate()
     }
 
@@ -179,10 +262,14 @@ class PdfPageSurface @JvmOverloads constructor(
             if (vw <= 0) return
             val expectedH = max(1, (vw.toFloat() * bmp.height / bmp.width.toFloat()).toInt())
             val lp = layoutParams ?: return
-            if (kotlin.math.abs(lp.height - expectedH) <= 2) return
+            if (kotlin.math.abs(lp.height - expectedH) <= 2) {
+                heightSyncedForWidth = vw
+                return
+            }
             lp.height = expectedH
             layoutParams = lp
             minimumHeight = expectedH
+            heightSyncedForWidth = vw
             requestLayout()
         }
         val vw = width.takeIf { it > 0 }
@@ -221,9 +308,7 @@ class PdfPageSurface @JvmOverloads constructor(
         this.cropR = cropR.coerceIn(0f, 0.30f)
         this.cropB = cropB.coerceIn(0f, 0.30f)
         val tw = targetWidth.coerceAtLeast(1)
-        val srcW = this.pageW * (1f - this.cropL - this.cropR).coerceAtLeast(0.2f)
-        val srcH = this.pageH * (1f - this.cropT - this.cropB).coerceAtLeast(0.2f)
-        val displayH = max(1, (tw * srcH / srcW).toInt())
+        val displayH = computeDisplayHeight(tw)
         val oldH = layoutParams?.height ?: 0
         val oldTiles = tileCount
         this.tileHeightPx = tileHeightPx.coerceAtLeast(400)
@@ -244,6 +329,7 @@ class PdfPageSurface @JvmOverloads constructor(
             minimumHeight = displayH
             requestLayout()
         }
+        heightSyncedForWidth = tw
         // 矮页↔长页切换或 tile 数变化：清内容等宿主重渲
         if (useTiles != (mode == Mode.TILES) || (useTiles && oldTiles != tileCount)) {
             clearBitmapsInternal(recycleTiles = false)

@@ -427,6 +427,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 if (moved > slop) return false
                 val w = width.toFloat().coerceAtLeast(1f)
                 // 放大态：中部开菜单；侧边由 onSideTapImmediate 处理，避免双翻页
+                // 选区取消：中部/侧边均可点按触发 onSingleTap（由 Activity 清选区）
                 if (isZoomed() || isScaled()) {
                     if (e.x < w / 3f || e.x > w * 2f / 3f) return false
                     onSingleTap?.invoke(e.x, e.y)
@@ -618,10 +619,17 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     /** 是否相对 100% 有缩放（含缩小） */
     fun isScaled(): Boolean = abs(contentZoom - 1f) > 0.01f
 
+    /**
+     * 容器坐标 → zoomTarget 内容坐标（与 [applyTransform] 互逆，含 target 的 layout 偏移）。
+     */
     fun mapToContent(x: Float, y: Float): PointF {
+        val t = target()
+        val tl = t?.left?.toFloat() ?: 0f
+        val tt = t?.top?.toFloat() ?: 0f
+        val z = contentZoom.coerceAtLeast(0.01f)
         return PointF(
-            (x - panX) / contentZoom.coerceAtLeast(0.01f),
-            (y - panY) / contentZoom.coerceAtLeast(0.01f),
+            (x - panX - tl) / z,
+            (y - panY - tt) / z,
         )
     }
 

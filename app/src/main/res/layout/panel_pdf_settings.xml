@@ -36,30 +36,42 @@
                 android:id="@+id/btnModeContinuous"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="48dp"
                 android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:text="@string/pdf_mode_continuous"
-                android:textSize="13sp" />
+                android:textSize="14sp"
+                android:textStyle="bold" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnModeSingle"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
+                android:layout_height="48dp"
                 android:layout_weight="1"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:text="@string/pdf_mode_single"
-                android:textSize="13sp" />
+                android:textSize="14sp"
+                android:textStyle="bold" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvModeCurrent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:textColor="#1565C0"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:text="@string/pdf_mode_hint"
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />

@@ -107,7 +107,7 @@ class ReadingActivity : AppCompatActivity() {
         const val EXTRA_TITLE = "title"
         /** 指定文本编码；空/不传 = 自动判断 */
         const val EXTRA_ENCODING = "encoding"
-        /** adb logcat -s MangaZoom（需 setprop debug.whj.reader.log manga_zoom） */
+        /** adb logcat -s MangaZoom（开关见 ReaderLog.ENABLED_MODULES） */
         /** adb: am broadcast -a com.whj.reader.DEBUG_MANGA_PINCH -p com.whj.reader */
         const val ACTION_DEBUG_MANGA_PINCH = "com.whj.reader.DEBUG_MANGA_PINCH"
         /** 连续图图间间隔（px） */
