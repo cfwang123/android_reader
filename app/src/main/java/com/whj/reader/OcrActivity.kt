@@ -31,7 +31,7 @@ import kotlin.math.max
 /**
  * 通用 OCR：相册 / 拍照 → 识别 → 文字叠加层 → 长按选中复制 / 一键复制全部。
  */
-class OcrActivity : AppCompatActivity(), OcrOverlayView.Listener {
+class OcrActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityOcrBinding
     private var engine: TfliteOcrEngine? = null
@@ -78,7 +78,8 @@ class OcrActivity : AppCompatActivity(), OcrOverlayView.Listener {
         binding.btnToggleLayer.setOnClickListener { toggleTextLayer() }
         refreshLayerButton()
 
-        binding.overlay.listener = this
+        binding.overlay.onSelectionChanged = { selected -> onSelectionChanged(selected) }
+        binding.overlay.onSelectionStarted = { onSelectionStarted() }
         binding.etFullText.keyListener = null // 只读可选，避免误改识别结果
         binding.etFullText.setTextIsSelectable(true)
 
@@ -233,12 +234,12 @@ class OcrActivity : AppCompatActivity(), OcrOverlayView.Listener {
         super.onDestroy()
     }
 
-    override fun onSelectionChanged(selected: List<TfliteOcrEngine.LineResult>) {
+    private fun onSelectionChanged(selected: List<TfliteOcrEngine.LineResult>) {
         binding.btnCopySelected.isEnabled = selected.isNotEmpty()
         syncFullTextSelection()
     }
 
-    override fun onSelectionStarted() {
+    private fun onSelectionStarted() {
         // 长按开始选区（与 PDF 一致：再拖动扩展，不自动复制）
         binding.btnCopySelected.isEnabled = true
         syncFullTextSelection()

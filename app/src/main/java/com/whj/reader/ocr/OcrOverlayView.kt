@@ -28,13 +28,10 @@ class OcrOverlayView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
 
-    interface Listener {
-        fun onSelectionChanged(selected: List<TfliteOcrEngine.LineResult>)
-        /** 长按开始选区后回调（不自动复制） */
-        fun onSelectionStarted()
-    }
-
-    var listener: Listener? = null
+    /** 选区变化（直接函数回调，无 Listener interface） */
+    var onSelectionChanged: ((selected: List<TfliteOcrEngine.LineResult>) -> Unit)? = null
+    /** 长按开始选区后回调（不自动复制） */
+    var onSelectionStarted: (() -> Unit)? = null
 
     private var bitmap: Bitmap? = null
     private var lines: List<TfliteOcrEngine.LineResult> = emptyList()
@@ -119,7 +116,7 @@ class OcrOverlayView @JvmOverloads constructor(
                 notifySelection()
                 invalidate()
                 performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                listener?.onSelectionStarted()
+                onSelectionStarted?.invoke()
             }
         },
     )
@@ -185,7 +182,7 @@ class OcrOverlayView @JvmOverloads constructor(
     }
 
     private fun notifySelection() {
-        listener?.onSelectionChanged(getSelectedLines())
+        onSelectionChanged?.invoke(getSelectedLines())
     }
 
     private fun applyRange(anchor: Int, current: Int) {

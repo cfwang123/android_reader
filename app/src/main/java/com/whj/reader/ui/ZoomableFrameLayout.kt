@@ -1,10 +1,14 @@
 package com.whj.reader.ui
 
 import com.whj.reader.util.ReaderLog
+import com.whj.reader.util.ReaderTapZones
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Matrix
 import android.graphics.PointF
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -110,6 +114,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     /** 按下时停止外部惯性滚动（如 RV.stopScroll） */
     var onStopScroll: (() -> Unit)? = null
 
+    /** 双指捏合开始时（用于取消选区等） */
+    var onPinchBegin: (() -> Unit)? = null
+
     /**
      * 连续模式：竖向交给列表，pan 只负责水平。
      */
@@ -193,10 +200,88 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     private val scroller = OverScroller(context)
     private var flingingPan = false
 
+    /** 自定义长按：先等待再计时，避免捏合第一指误触选区 */
+    private val longPressHandler = Handler(Looper.getMainLooper())
+    private var longPressArmRunnable: Runnable? = null
+    private var longPressFireRunnable: Runnable? = null
+    private var longPressX = 0f
+    private var longPressY = 0f
+    private var longPressDownTime = 0L
+    /** 本段手势曾出现多指（含捏合第二指），直到全部抬起前禁止长按 */
+    private var multiTouchThisGesture = false
+    /** 捏合结束后短暂禁止长按，避免抬指顺序导致误进选区 */
+    private var suppressLongPressUntil = 0L
+
+    /** 第二指落下前不启动长按计时（常见捏合间隔） */
+    private fun longPressArmDelayMs(): Long =
+        if (isScaled()) 420L else 300L
+
+    private fun longPressFireDelayMs(): Long {
+        val base = ViewConfiguration.getLongPressTimeout().toLong()
+        return if (isScaled()) (base * 1.6).toLong().coerceAtLeast(650L) else base
+    }
+
+    private fun canStartLongPress(): Boolean =
+        !pinching &&
+            !panning &&
+            !fingerMoved &&
+            !selecting &&
+            !handleDragActive &&
+            !blockPanAfterPinch &&
+            !multiTouchThisGesture &&
+            !scaleDetector.isInProgress &&
+            SystemClock.uptimeMillis() >= suppressLongPressUntil
+
+    private fun scheduleLongPressIfNeeded(x: Float, y: Float, downTime: Long) {
+        if (onLongPress == null) return
+        if (SystemClock.uptimeMillis() < suppressLongPressUntil) return
+        cancelScheduledLongPress()
+        longPressX = x
+        longPressY = y
+        longPressDownTime = downTime
+        longPressArmRunnable = Runnable {
+            longPressArmRunnable = null
+            if (!canStartLongPress()) return@Runnable
+            longPressFireRunnable = Runnable {
+                longPressFireRunnable = null
+                fireLongPressIfAllowed(downTime)
+            }
+            longPressHandler.postDelayed(longPressFireRunnable!!, longPressFireDelayMs())
+        }
+        longPressHandler.postDelayed(longPressArmRunnable!!, longPressArmDelayMs())
+    }
+
+    private fun fireLongPressIfAllowed(expectedDownTime: Long) {
+        if (expectedDownTime != longPressDownTime) return
+        if (!canStartLongPress() || onLongPress == null) return
+        abortPanFling()
+        selecting = true
+        parent?.requestDisallowInterceptTouchEvent(true)
+        onLongPress?.invoke(longPressX, longPressY)
+    }
+
+    private fun cancelScheduledLongPress() {
+        longPressArmRunnable?.let { longPressHandler.removeCallbacks(it) }
+        longPressFireRunnable?.let { longPressHandler.removeCallbacks(it) }
+        longPressArmRunnable = null
+        longPressFireRunnable = null
+        val cancel = MotionEvent.obtain(
+            SystemClock.uptimeMillis(),
+            SystemClock.uptimeMillis(),
+            MotionEvent.ACTION_CANCEL,
+            0f,
+            0f,
+            0,
+        )
+        gestureDetector.onTouchEvent(cancel)
+        cancel.recycle()
+    }
+
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                cancelScheduledLongPress()
                 pinching = true
                 pageTurnLocked = true
                 selecting = false
@@ -206,6 +291,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 capturePinchStart(detector)
                 abortPanFling()
                 parent?.requestDisallowInterceptTouchEvent(true)
+                onPinchBegin?.invoke()
                 return true
             }
 
@@ -225,6 +311,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 pageTurnLocked = true
                 pinchFrozen = false
                 blockPanAfterPinch = true
+                suppressLongPressUntil =
+                    SystemClock.uptimeMillis() + suppressLongPressAfterPinchMs
+                cancelScheduledLongPress()
                 abortPanFling()
                 settleAfterPinch()
                 // 同步 last，避免后续误 pan 用旧坐标
@@ -429,11 +518,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 // 放大态：中部开菜单；侧边由 onSideTapImmediate 处理，避免双翻页
                 // 选区取消：中部/侧边均可点按触发 onSingleTap（由 Activity 清选区）
                 if (isZoomed() || isScaled()) {
-                    if (e.x < w / 3f || e.x > w * 2f / 3f) return false
+                    if (!ReaderTapZones.isSide(e.x, w)) return false
                     onSingleTap?.invoke(e.x, e.y)
                     return true
                 }
-                if (e.x < w / 3f || e.x > w * 2f / 3f) return false
+                if (!ReaderTapZones.isSide(e.x, w)) return false
                 onSingleTap?.invoke(e.x, e.y)
                 return true
             }
@@ -454,11 +543,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             }
 
             override fun onLongPress(e: MotionEvent) {
-                if (pinching) return
-                abortPanFling()
-                selecting = true
-                parent?.requestDisallowInterceptTouchEvent(true)
-                onLongPress?.invoke(e.x, e.y)
+                // 长按由 scheduleLongPressIfNeeded 调度，避免与捏合/pan 冲突
             }
         },
     )
@@ -473,11 +558,21 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         // dispatch 返回 false，后续 MOVE/UP 不再送达 → 侧边翻页/中部菜单全失效。
         isClickable = true
         isFocusable = false
+        // 长按完全走自定义调度，避免 GestureDetector 与捏合抢事件
+        gestureDetector.setIsLongpressEnabled(false)
+    }
+
+    private val suppressLongPressAfterPinchMs = 480L
+
+    /** 外部清除文字选区时同步手势状态，避免 selecting 残留阻塞 pan */
+    fun endSelectionGesture() {
+        selecting = false
+        cancelScheduledLongPress()
     }
 
     private fun isSideZoneX(x: Float): Boolean {
         val w = width.toFloat().coerceAtLeast(1f)
-        return x < w / 3f || x > w * 2f / 3f
+        return ReaderTapZones.isSide(x, w)
     }
 
     private fun sideTapSlop(): Float =
@@ -489,11 +584,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         if (pinching || selecting || handleDragActive) return false
         if (sideTapFiredDownTime == ev.downTime) return true
         val w = width.toFloat().coerceAtLeast(1f)
-        val zone = when {
-            x < w / 3f -> 0
-            x > w * 2f / 3f -> 2
-            else -> return false
-        }
+        val zone = ReaderTapZones.zone(x, w)
+        if (zone == 1) return false
         sideTapFiredDownTime = ev.downTime
         onStopScroll?.invoke()
         cb.invoke(zone, x, y)
@@ -903,6 +995,10 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         applyTransform()
     }
 
+    private fun abortPendingLongPress() {
+        cancelScheduledLongPress()
+    }
+
     private fun obtainTracker(): VelocityTracker {
         val existing = velocityTracker
         if (existing != null) return existing
@@ -936,9 +1032,17 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 panning = false
                 selecting = false
                 fingerMoved = false
+                multiTouchThisGesture = false
                 tapConsumed = false
                 sideTapFiredDownTime = -1L
                 pageTurnLocked = isZoomed()
+                scheduleLongPressIfNeeded(ev.x, ev.y, ev.downTime)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cancelScheduledLongPress()
+                if (ev.actionMasked == MotionEvent.ACTION_UP && ev.pointerCount <= 1) {
+                    multiTouchThisGesture = false
+                }
             }
         }
         obtainTracker().addMovement(ev)
@@ -951,6 +1055,13 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ev.pointerCount >= 2) {
+                    multiTouchThisGesture = true
+                    selecting = false
+                    cancelScheduledLongPress()
+                    // 第二指落下即取消选区，不必等 onScaleBegin
+                    onPinchBegin?.invoke()
+                }
                 if (ev.pointerCount > 2 && pinching) {
                     pinchFrozen = true
                 }
@@ -967,6 +1078,21 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         if (multi || pinching) {
             pageTurnLocked = true
             fingerMoved = true
+            cancelScheduledLongPress()
+        }
+
+        // 平移/滚动超过 slop 即取消长按，避免 pan 时误进文字选区
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE &&
+            ev.pointerCount == 1 &&
+            !pinching &&
+            !scaleDetector.isInProgress &&
+            !selecting
+        ) {
+            val total = max(abs(ev.x - downX), abs(ev.y - downY))
+            if (total > touchSlop && !fingerMoved) {
+                fingerMoved = true
+                cancelScheduledLongPress()
+            }
         }
 
         // 连续模式未缩放：单指路径尽量短，把滚动交给 RecyclerView（对齐 Office 丝滑）
@@ -1017,21 +1143,21 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                             }
                             val w = width.toFloat().coerceAtLeast(1f)
                             when {
-                                onSideTapImmediate != null && ev.x < w / 3f -> {
+                                onSideTapImmediate != null && ReaderTapZones.isLeft(ev.x, w) -> {
                                     if (fireSideTapOnce(ev, ev.x, ev.y)) {
                                         recycleTracker()
                                         gestureDetector.onTouchEvent(ev)
                                         return true
                                     }
                                 }
-                                onSideTapImmediate != null && ev.x > w * 2f / 3f -> {
+                                onSideTapImmediate != null && ReaderTapZones.isRight(ev.x, w) -> {
                                     if (fireSideTapOnce(ev, ev.x, ev.y)) {
                                         recycleTracker()
                                         gestureDetector.onTouchEvent(ev)
                                         return true
                                     }
                                 }
-                                ev.x >= w / 3f && ev.x <= w * 2f / 3f -> {
+                                ReaderTapZones.zone(ev.x, w) == 1 -> {
                                     // 中部：只在这里触发一次菜单
                                     onSingleTap?.invoke(ev.x, ev.y)
                                     tapConsumed = true
@@ -1068,6 +1194,9 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         pinching = false
                         pinchFrozen = false
                         blockPanAfterPinch = true
+                        suppressLongPressUntil =
+                            SystemClock.uptimeMillis() + suppressLongPressAfterPinchMs
+                        cancelScheduledLongPress()
                         settleAfterPinch()
                         onZoomChanged?.invoke(contentZoom)
                     }
@@ -1111,6 +1240,8 @@ class ZoomableFrameLayout @JvmOverloads constructor(
                         val total = max(abs(ev.x - downX), abs(ev.y - downY))
                         if (total > touchSlop) {
                             panning = true
+                            fingerMoved = true
+                            cancelScheduledLongPress()
                             parent?.requestDisallowInterceptTouchEvent(true)
                         }
                     }

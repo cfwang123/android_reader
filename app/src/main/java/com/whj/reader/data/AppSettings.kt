@@ -56,6 +56,12 @@ object AppSettings {
             bgTextureId = p.getString("bgTextureId", "") ?: "",
             textColor = migratedText,
             customBgImageFile = p.getString("customBgImageFile", "") ?: "",
+            customBgImageAlpha = p.getInt("customBgImageAlpha", 100).coerceIn(0, 100),
+            customBgImageScaleMode = runCatching {
+                com.whj.reader.model.BgImageScaleMode.valueOf(
+                    p.getString("customBgImageScaleMode", com.whj.reader.model.BgImageScaleMode.STRETCH.name)!!,
+                )
+            }.getOrDefault(com.whj.reader.model.BgImageScaleMode.STRETCH),
         )
     }
 
@@ -71,6 +77,8 @@ object AppSettings {
             .putString("bgTextureId", style.bgTextureId)
             .putInt("textColor", style.textColor)
             .putString("customBgImageFile", style.customBgImageFile)
+            .putInt("customBgImageAlpha", style.customBgImageAlpha.coerceIn(0, 100))
+            .putString("customBgImageScaleMode", style.customBgImageScaleMode.name)
             .apply()
     }
 
@@ -336,6 +344,7 @@ object AppSettings {
             .putString("lastBookTitle", title)
             .putLong("lastBookAt", System.currentTimeMillis())
             .apply()
+        com.whj.reader.widget.ContinueReadingWidgetUpdater.updateAll(ctx)
     }
 
     fun lastBookAt(ctx: Context): Long =
@@ -621,6 +630,7 @@ object AppSettings {
             .putString("lastPdfTitle", title)
             .putLong("lastPdfAt", System.currentTimeMillis())
             .apply()
+        com.whj.reader.widget.ContinueReadingWidgetUpdater.updateAll(ctx)
     }
 
     fun lastPdfAt(ctx: Context): Long =

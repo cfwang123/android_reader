@@ -61,21 +61,19 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         val isAuto: Boolean = false,
     )
 
-    interface Listener {
-        fun onStateChanged(snapshot: Snapshot)
-        /**
-         * 高亮当前朗读句（句号分段）。
-         * @param startOffset 段内起始（含）
-         * @param endOffset 段内结束（不含）；-1 表示清高亮
-         */
-        fun onSentenceHighlight(paragraphIndex: Int, startOffset: Int, endOffset: Int)
-        fun onError(message: String)
-        /**
-         * 文档已读到末尾，但调用方可能还有未提取页。
-         * 返回 true 表示正在补充内容，TTS 进入等待；补充后请调用 [continueAfterMoreContent]。
-         */
-        fun onNeedMoreContent(lastParagraphIndex: Int): Boolean = false
-    }
+    // 回调（直接函数引用，无 Listener interface）
+    var onStateChanged: ((Snapshot) -> Unit)? = null
+    /**
+     * 高亮当前朗读句（句号分段）。
+     * 参数：paragraphIndex, startOffset（含）, endOffset（不含；-1 清高亮）
+     */
+    var onSentenceHighlight: ((paragraphIndex: Int, startOffset: Int, endOffset: Int) -> Unit)? = null
+    var onError: ((message: String) -> Unit)? = null
+    /**
+     * 文档已读到末尾，但调用方可能还有未提取页。
+     * 返回 true 表示正在补充内容，TTS 进入等待；补充后请调用 [continueAfterMoreContent]。
+     */
+    var onNeedMoreContent: ((lastParagraphIndex: Int) -> Boolean)? = null
 
     private var tts: TextToSpeech? = null
     private var ready = false
@@ -182,7 +180,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private var switchResultCallback: ((Boolean) -> Unit)? = null
     private var forceSingleEngine = false
 
-    var listener: Listener? = null
+
 
     init {
         // 供通知栏「停止」回调
@@ -951,7 +949,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
      */
     fun playFromParagraphOffset(paragraphIndex: Int, charOffset: Int) {
         if (paragraphs.isEmpty()) {
-            listener?.onError(str(R.string.tts_no_content))
+            onError?.invoke(str(R.string.tts_no_content))
             return
         }
         val p = paragraphIndex.coerceIn(0, paragraphs.lastIndex)
@@ -974,7 +972,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
 
     private fun playFromInternal(paragraphIndex: Int, sentenceIndex: Int) {
         if (paragraphs.isEmpty()) {
-            listener?.onError(str(R.string.tts_no_content))
+            onError?.invoke(str(R.string.tts_no_content))
             return
         }
         if (!ready) {
@@ -1325,7 +1323,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     /** @return true 表示正在等待补充内容 */
     private fun requestMoreContentOrEnd(): Boolean {
         val need = runCatching {
-            listener?.onNeedMoreContent(paraIndex) == true
+            onNeedMoreContent?.invoke(paraIndex) == true
         }.getOrDefault(false)
         if (need) {
             waitingForMoreContent = true
@@ -1384,7 +1382,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             pipeline.clear()
             state = State.IDLE
             statusMessage = str(R.string.tts_speak_failed)
-            listener?.onError(str(R.string.tts_status_fail))
+            onError?.invoke(str(R.string.tts_status_fail))
             notifyState()
             return
         }
@@ -1491,22 +1489,22 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
 
     private fun notifySentenceHighlight(clear: Boolean = false) {
         if (clear || paragraphs.isEmpty()) {
-            listener?.onSentenceHighlight(-1, 0, -1)
+            onSentenceHighlight?.invoke(-1, 0, -1)
             return
         }
         val span = sentenceSpans.getOrNull(paraIndex)?.getOrNull(sentIndex)
         if (span == null) {
             // 无句信息时退回整段
             val len = paragraphs.getOrNull(paraIndex)?.text?.length ?: 0
-            listener?.onSentenceHighlight(paraIndex, 0, len)
+            onSentenceHighlight?.invoke(paraIndex, 0, len)
         } else {
-            listener?.onSentenceHighlight(paraIndex, span.start, span.end)
+            onSentenceHighlight?.invoke(paraIndex, span.start, span.end)
         }
     }
 
     private fun notifyState() {
         val snap = Snapshot(state, paraIndex, sentIndex, ready, statusMessage)
-        listener?.onStateChanged(snap)
+        onStateChanged?.invoke(snap)
         // SPEAKING / PAUSED 保持前台服务（通知+锁屏控件）；IDLE 停服务
         when (state) {
             State.SPEAKING -> {

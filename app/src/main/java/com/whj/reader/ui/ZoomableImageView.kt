@@ -1,6 +1,7 @@
 package com.whj.reader.ui
 
 import com.whj.reader.util.ReaderLog
+import com.whj.reader.util.ReaderTapZones
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
@@ -377,13 +378,14 @@ class ZoomableImageView @JvmOverloads constructor(
 
     private fun isSideZone(x: Float): Boolean {
         val w = width.toFloat().coerceAtLeast(1f)
-        return x < w / 3f || x > w * 2f / 3f
+        return ReaderTapZones.isSide(x, w)
     }
 
     private fun fireSideTap(x: Float) {
-        val w = width.toFloat().coerceAtLeast(1f)
-        if (x < w / 3f) onSideTap?.invoke(0)
-        else if (x > w * 2f / 3f) onSideTap?.invoke(2)
+        when (ReaderTapZones.zone(x, width.toFloat().coerceAtLeast(1f))) {
+            0 -> onSideTap?.invoke(0)
+            2 -> onSideTap?.invoke(2)
+        }
     }
 
     fun setImageBitmap(bmp: Bitmap?) {

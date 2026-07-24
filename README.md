@@ -11,7 +11,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 | **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history; long-press clear local records |
 | **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then **prefetch the rest in the background** |
 | **MOBI** | Text body; **view modes**: text / single image / continuous strip; image-only books auto-enter image mode; improved UTF-8 Chinese MOBI |
-| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
+| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, **highlights & notes**, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
 | **TTS / export** | System speech, sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
 | **OCR** | Gallery or camera; on-device; scanned PDFs (long pages split into strips) |
 | **Other** | UI color themes (16); **portrait / landscape lock** (menu can stay open); fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
@@ -35,12 +35,13 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 
 - **Open**: large books paint the first screen first, then **prefetch in the background** (EPUB/MOBI); restore position without flashing page 1
 - **Progress**: EPUB/MOBI show **chapter n/m + within-chapter %**; TXT shows percentage
-- **TOC**: auto-detect chapter titles; if empty or wrong, **Custom TOC scan** with wildcards (`*`, `x`, `xxx`, `xxxx`) — e.g. `第x章 *`, `卷第x *`, `Chapter x`; saved per book
-- **Reading style**: background textures / solid color / imported image; text color presets + custom HSV; size and spacing; install custom fonts (long-press to remove); system default font (no bundled commercial typeface)
+- **TOC**: auto-detect chapter titles; if empty or wrong, **Custom TOC scan** with wildcards (`*`, `?` one char, `x`, `xxx`, `xxxx`) — e.g. `第x章 *`, `第?回 *`, `Chapter x`; **saved per book** and reopened for edit
+- **Reading style**: background textures / solid color / **imported image** (full screen, adjustable opacity, solid underlay color, **stretch or fit-center** scale); text color presets + custom HSV; size and spacing; install custom fonts (long-press to remove); system default font (no bundled commercial typeface)
 - **TXT**: auto or manual encoding; simplified↔traditional Chinese
 - **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; long-press image → gallery
 - **MOBI view modes** (Style → View mode): **Text** (normal reading); **Single image** (one picture at a time, pinch-zoom, side-tap / swipe); **Continuous strip** (vertical image stream). Image-only MOBI auto-enters image mode; progress **image n / total** in image modes. **Portrait ↔ landscape** keeps zoom and horizontal pan ratio in continuous strip
 - **Text selection**: long-press to select; **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / read-from-here menu
+- **Highlights & notes** (TXT / EPUB / MOBI): **Highlight** from the selection menu; background or underline; optional note; **note bubbles** on the right; tap highlight or bubble to view/edit; **Notes** tab in the TOC sheet
 - **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter; vertical list scroll does not steal horizontal tab swipe
 - **In-book search**: live results, tap to jump
 - **Gestures**: side-tap page turn, scroll; **volume keys** page turn (default on); **left/right screen edge** (10px) adjusts font size in 0.5sp steps; back can stop TTS only
@@ -54,7 +55,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **Fast scroll**: right-edge thumb in continuous mode (drag to jump; shows while scrolling, hides ~1s after stop)
 - **TOC** prepared in the background after open
 - **Links**: page jump; external links need confirm; back / forward
-- Select text when available; **handles** to adjust the range; **OCR scanned pages** (tall pages tiled; **partial results re-scanned** in strips; page range, cancelable)
+- Select text when available; **handles** to adjust the range; **Highlight** + notes (background/underline, optional remark; **bubbles on the right**; tap to open; **Notes** tab in TOC); **OCR scanned pages** (tall pages tiled; **partial results re-scanned** in strips; page range, cancelable)
 - **TTS / export** after text or OCR; highlight follows scroll and stays above the TTS bar; export by page range
 - Side-tap page turn; center-tap opens the menu; **orientation change can keep the 2×4 menu open**; **continuous mode** keeps zoom and horizontal pan ratio when rotating
 

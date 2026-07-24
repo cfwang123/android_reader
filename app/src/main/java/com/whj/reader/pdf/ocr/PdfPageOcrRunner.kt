@@ -1,4 +1,6 @@
 package com.whj.reader.pdf.ocr
+import com.whj.reader.PdfReadingActivity
+import com.whj.reader.pdf.render.PdfLayoutMetrics
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -19,44 +21,8 @@ import kotlin.math.sqrt
  * UI 进度对话框 / 任务编排仍由宿主 Activity 负责。
  */
 class PdfPageOcrRunner(
-    private val host: Host,
+    private val activity: PdfReadingActivity,
 ) {
-    interface Host {
-        fun context(): Context
-        fun fileKey(): String
-        fun filesDir(): File
-        fun cropForPage(pageIndex: Int): FloatArray
-        fun renderLock(): Any
-        fun renderer(): PdfRenderer?
-        fun getOpenPage(): PdfRenderer.Page?
-        fun setOpenPage(page: PdfRenderer.Page?)
-        fun rememberPageSize(pageIndex: Int, size: Pair<Float, Float>)
-        fun pdfMaxRenderWidth(): Int
-        fun pdfViewportWidth(): Int
-        fun screenHeightPx(): Int
-        fun logicalDisplayHeight(
-            pageW: Float,
-            pageH: Float,
-            margins: FloatArray,
-            targetWidth: Int,
-        ): Int
-        fun renderPageBitmap(
-            page: PdfRenderer.Page,
-            targetWidth: Int,
-            pageIndex: Int,
-        ): Bitmap
-        fun renderPageStripBitmap(
-            page: PdfRenderer.Page,
-            targetWidth: Int,
-            srcY0: Float,
-            srcY1: Float,
-            pageIndex: Int,
-        ): Bitmap
-        /** OCR 协程仍在跑时返回 true */
-        fun isOcrJobActive(): Boolean
-        fun getCpuFallback(): TfliteOcrEngine?
-        fun setCpuFallback(engine: TfliteOcrEngine?)
-    }
 
     companion object {
         /** 连续页合并为区间，如 `1~100, 151~299` */
@@ -85,7 +51,7 @@ class PdfPageOcrRunner(
     }
 
     fun ocrOnePage(pageIndex: Int, engine: TfliteOcrEngine): Boolean {
-        val r = host.renderer() ?: return false
+        val r = activity.renderer ?: return false
         if (pageIndex !in 0 until r.pageCount) return false
         val dbg = StringBuilder()
         fun log(msg: String) {
@@ -93,33 +59,33 @@ class PdfPageOcrRunner(
             ReaderLog.i(ReaderLog.Module.PDF_OCR, msg)
         }
 
-        val margins = host.cropForPage(pageIndex)
+        val margins = activity.cropForPage(pageIndex)
         val cl = margins[0]
         val ct = margins[1]
         val cr = margins[2]
         val cb = margins[3]
 
-        val screenH = host.screenHeightPx().coerceAtLeast(800)
-        val ocrTargetW = host.pdfMaxRenderWidth()
+        val screenH = activity.resources.displayMetrics.heightPixels.coerceAtLeast(800)
+        val ocrTargetW = activity.pdfMaxRenderWidth()
         // 条带不宜太高：det 输入约 0.3× 缩放时字过小；控制在 ~900px 提高检出率
         val tileHPx = (screenH * 0.55f).toInt().coerceIn(520, 960)
         val overlapPx = (tileHPx * 0.22f).toInt().coerceIn(80, 220)
 
-        val (pageW, pageH) = synchronized(host.renderLock()) {
-            host.getOpenPage()?.close()
-            host.setOpenPage(null)
+        val (pageW, pageH) = synchronized(activity.renderLock) {
+            activity.currentPage?.close()
+            activity.currentPage = null
             val page = r.openPage(pageIndex)
-            host.setOpenPage(page)
+            activity.currentPage = page
             try {
                 val pw = page.width.toFloat()
                 val ph = page.height.toFloat()
-                host.rememberPageSize(pageIndex, pw to ph)
+                activity.rendererPageSize[pageIndex] = pw to ph
                 page.close()
-                host.setOpenPage(null)
+                activity.currentPage = null
                 pw to ph
             } catch (t: Throwable) {
                 runCatching { page.close() }
-                host.setOpenPage(null)
+                activity.currentPage = null
                 throw t
             }
         }
@@ -127,13 +93,13 @@ class PdfPageOcrRunner(
         val contentW = pageW * (1f - cl - cr).coerceAtLeast(0.2f)
         val contentH = pageH * (1f - ct - cb).coerceAtLeast(0.2f)
         log(
-            "=== ocr page=$pageIndex === screen=${host.pdfViewportWidth()}x${screenH} " +
+            "=== ocr page=$pageIndex === screen=${activity.pdfViewportWidth()}x${screenH} " +
                 "pagePt=${pageW}x${pageH} crop=[$cl,$ct,$cr,$cb] " +
                 "contentPt=${contentW}x${contentH} aspect=${contentH / contentW.coerceAtLeast(1f)}",
         )
 
         // 先估 scale（与 strip 渲染一致），判断是否分块
-        val displayH = host.logicalDisplayHeight(pageW, pageH, margins, ocrTargetW)
+        val displayH = PdfLayoutMetrics.logicalDisplayHeight(pageW, pageH, margins, ocrTargetW)
         var probeScale = (ocrTargetW / contentW).coerceIn(0.05f, 1.25f)
         val probeStripH = min(contentH, tileHPx / probeScale)
         val areaBefore = contentW * probeStripH * probeScale * probeScale
@@ -200,7 +166,7 @@ class PdfPageOcrRunner(
             log("tile engine backend=${engine.backendName}")
 
             for ((ti, range) in ranges.withIndex()) {
-                if (Thread.interrupted() || !host.isOcrJobActive()) {
+                if (Thread.interrupted() || !activity.isOcrJobActive()) {
                     throw kotlinx.coroutines.CancellationException("ocr cancelled")
                 }
                 val (srcY0, srcY1) = range
@@ -324,8 +290,8 @@ class PdfPageOcrRunner(
         }
         writeOcrDebugFile(pageIndex, dbg.toString())
         PdfOcrCacheStore.savePage(
-            host.context(),
-            host.fileKey(),
+            activity,
+            activity.fileKey,
             pageIndex,
             chars,
             pageWidth = pageW,
@@ -365,9 +331,9 @@ class PdfPageOcrRunner(
     }
 
     private fun ensureOcrCpuFallback(): TfliteOcrEngine {
-        host.getCpuFallback()?.let { return it }
-        return TfliteOcrEngine(host.context(), TfliteOcrEngine.Backend.CPU).also {
-            host.setCpuFallback(it)
+        activity.ocrCpuFallback?.let { return it }
+        return TfliteOcrEngine(activity, TfliteOcrEngine.Backend.CPU).also {
+            activity.ocrCpuFallback = it
             ReaderLog.i(ReaderLog.Module.PDF_OCR, "cpu fallback engine opened backend=${it.backendName}")
         }
     }
@@ -402,7 +368,7 @@ class PdfPageOcrRunner(
 
     private fun writeOcrDebugFile(pageIndex: Int, text: String) {
         runCatching {
-            val dir = java.io.File(host.filesDir(), "pdf_ocr_debug").also { it.mkdirs() }
+            val dir = java.io.File(activity.filesDir, "pdf_ocr_debug").also { it.mkdirs() }
             java.io.File(dir, "page_$pageIndex.txt").writeText(text, Charsets.UTF_8)
             // 整文件覆盖会话汇总，避免无限增长
             java.io.File(dir, "last_session.txt").writeText(
@@ -452,23 +418,23 @@ class PdfPageOcrRunner(
         r: PdfRenderer,
         pageIndex: Int,
         targetWidth: Int,
-    ): Bitmap = synchronized(host.renderLock()) {
-        host.getOpenPage()?.close()
-        host.setOpenPage(null)
+    ): Bitmap = synchronized(activity.renderLock) {
+        activity.currentPage?.close()
+        activity.currentPage = null
         val page = r.openPage(pageIndex)
-        host.setOpenPage(page)
+        activity.currentPage = page
         try {
-            val b = host.renderPageBitmap(
+            val b = activity.renderPageBitmap(
                 page = page,
                 targetWidth = targetWidth,
-                pageIndex = pageIndex,
+                pageIndexForMirror = pageIndex,
             )
             page.close()
-            host.setOpenPage(null)
+            activity.currentPage = null
             b
         } catch (t: Throwable) {
             runCatching { page.close() }
-            host.setOpenPage(null)
+            activity.currentPage = null
             throw t
         }
     }
@@ -479,25 +445,25 @@ class PdfPageOcrRunner(
         targetWidth: Int,
         srcY0: Float,
         srcY1: Float,
-    ): Bitmap = synchronized(host.renderLock()) {
-        host.getOpenPage()?.close()
-        host.setOpenPage(null)
+    ): Bitmap = synchronized(activity.renderLock) {
+        activity.currentPage?.close()
+        activity.currentPage = null
         val page = r.openPage(pageIndex)
-        host.setOpenPage(page)
+        activity.currentPage = page
         try {
-            val b = host.renderPageStripBitmap(
+            val b = activity.renderPageStripBitmap(
                 page = page,
                 targetWidth = targetWidth,
                 srcY0 = srcY0,
                 srcY1 = srcY1,
-                pageIndex = pageIndex,
+                pageIndexForMirror = pageIndex,
             )
             page.close()
-            host.setOpenPage(null)
+            activity.currentPage = null
             b
         } catch (t: Throwable) {
             runCatching { page.close() }
-            host.setOpenPage(null)
+            activity.currentPage = null
             throw t
         }
     }

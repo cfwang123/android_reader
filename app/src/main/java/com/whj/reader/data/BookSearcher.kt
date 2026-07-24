@@ -2,18 +2,28 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
+import com.whj.reader.model.Chapter
 import com.whj.reader.model.Paragraph
-import kotlinx.coroutines.ensureActive
-import kotlin.coroutines.coroutineContext
 
 /**
- * 书内全文搜索（TXT 段落 / PDF 按页）。
+ * 书内全文搜索（TXT 段落 / PDF 按页，含 OCR 缓存）。
  * 支持边搜边回调，便于 UI 实时展示。
  */
 object BookSearcher {
 
     const val MAX_RESULTS = 200
     private const val CONTEXT_RADIUS = 28
+
+    enum class SearchScope {
+        /** 全书 */
+        FULL,
+        /** TXT/EPUB/MOBI：当前章 */
+        CURRENT_CHAPTER,
+        /** PDF：当前页 */
+        CURRENT_PAGE,
+        /** PDF：仅已 OCR 的页 */
+        OCR_PAGES,
+    }
 
     data class Hit(
         /** TXT：段落下标；PDF：页码 0-based */
@@ -27,6 +37,8 @@ object BookSearcher {
         /** 上下文摘要 */
         val context: String,
         val isPdf: Boolean,
+        /** PDF：命中来自 OCR 缓存 */
+        val fromOcr: Boolean = false,
     )
 
     fun searchTxt(paragraphs: List<Paragraph>, query: String): List<Hit> {
@@ -45,16 +57,34 @@ object BookSearcher {
     fun searchTxtStreaming(
         paragraphs: List<Paragraph>,
         query: String,
+        scope: SearchScope = SearchScope.FULL,
+        currentParagraph: Int = 0,
+        chapters: List<Chapter> = emptyList(),
         isActive: () -> Boolean = { true },
         onHit: (Hit) -> Boolean,
     ): Int {
         val q = query.trim()
         if (q.isEmpty() || paragraphs.isEmpty()) return 0
+        val range = if (scope == SearchScope.CURRENT_CHAPTER) {
+            chapterParagraphRange(chapters, currentParagraph, paragraphs.lastIndex)
+        } else {
+            null
+        }
+        val searchable = if (range != null) {
+            paragraphs.filter { it.index in range }
+        } else {
+            paragraphs
+        }
+        if (searchable.isEmpty()) return 0
         val totalChars = paragraphs.sumOf { it.text.length }.coerceAtLeast(1)
         var charBefore = 0
         var count = 0
         for (p in paragraphs) {
             if (!isActive()) return count
+            if (range != null && p.index !in range) {
+                charBefore += p.text.length
+                continue
+            }
             val text = p.text
             var start = 0
             while (start < text.length) {
@@ -81,13 +111,16 @@ object BookSearcher {
     }
 
     /**
-     * 搜索 PDF：按页抽取文字后匹配。
+     * 搜索 PDF：文字层 + OCR 缓存（按 [scope] 限定页）。
      * [onHit] 非空时边搜边回调，返回 false 停止。
      */
     fun searchPdf(
         context: Context,
         uri: Uri,
+        fileKey: String,
         query: String,
+        scope: SearchScope = SearchScope.FULL,
+        currentPage: Int = 0,
         marginsForPage: ((pageIndex: Int) -> FloatArray)? = null,
         isActive: () -> Boolean = { true },
         onHit: ((Hit) -> Boolean)? = null,
@@ -95,31 +128,69 @@ object BookSearcher {
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
         if (!isActive()) return emptyList()
-        val raw = PdfTextExtractor.extractAll(context, uri)
-        if (!isActive()) return emptyList()
-        val extracted = if (marginsForPage != null) {
-            PdfTextExtractor.filterByCrop(raw, marginsForPage)
-        } else {
-            raw
+
+        val pageCount = PdfTextExtractor.pageCount(context, uri).coerceAtLeast(0)
+        val pagesToScan: List<Int> = when (scope) {
+            SearchScope.CURRENT_PAGE -> {
+                if (pageCount <= 0) emptyList()
+                else listOf(currentPage.coerceIn(0, pageCount - 1))
+            }
+            SearchScope.OCR_PAGES -> {
+                PdfOcrCacheStore.loadIndex(context, fileKey)
+                    .filter { (_, meta) -> meta.charCount > 0 }
+                    .keys
+                    .sorted()
+            }
+            else -> if (pageCount <= 0) emptyList() else (0 until pageCount).toList()
         }
-        val out = ArrayList<Hit>(32)
-        val pageTexts = LinkedHashMap<Int, String>()
-        if (extracted.pageChars.isNotEmpty()) {
-            for ((page, chars) in extracted.pageChars.toSortedMap()) {
-                if (chars.isEmpty()) continue
-                pageTexts[page] = buildString(chars.size) {
-                    for (c in chars) append(c.char)
+        if (pagesToScan.isEmpty()) return emptyList()
+
+        val nativeByPage = when (scope) {
+            SearchScope.OCR_PAGES -> emptyMap()
+            SearchScope.CURRENT_PAGE -> {
+                val raw = PdfTextExtractor.extractPagesRaw(context, uri, pagesToScan)
+                val cropped = if (marginsForPage != null) {
+                    PdfTextExtractor.filterByCrop(
+                        PdfTextExtractor.Extracted(
+                            emptyList(),
+                            raw,
+                            emptyList(),
+                            raw,
+                        ),
+                        marginsForPage,
+                    ).pageChars
+                } else {
+                    raw
                 }
+                buildNativePageTexts(cropped)
             }
-        } else if (extracted.paragraphs.isNotEmpty()) {
-            extracted.paragraphs.forEachIndexed { i, para ->
-                val page = extracted.paraLinks.getOrNull(i)?.pageIndex ?: i
-                val prev = pageTexts[page].orEmpty()
-                pageTexts[page] = if (prev.isEmpty()) para.text else "$prev\n${para.text}"
+            else -> {
+                val raw = PdfTextExtractor.extractAll(context, uri)
+                if (!isActive()) return emptyList()
+                val extracted = if (marginsForPage != null) {
+                    PdfTextExtractor.filterByCrop(raw, marginsForPage)
+                } else {
+                    raw
+                }
+                buildNativePageTexts(
+                    if (extracted.pageChars.isNotEmpty()) extracted.pageChars
+                    else extracted.rawPageChars,
+                    fromParagraphs = extracted,
+                )
             }
         }
-        for ((page, text) in pageTexts) {
+
+        val out = ArrayList<Hit>(32)
+        for (page in pagesToScan) {
             if (!isActive()) return out
+            val (text, fromOcr) = pageSearchText(
+                context = context,
+                fileKey = fileKey,
+                page = page,
+                nativeText = nativeByPage[page],
+                scope = scope,
+            )
+            if (text.isEmpty()) continue
             var start = 0
             while (start < text.length) {
                 if (!isActive()) return out
@@ -132,6 +203,7 @@ object BookSearcher {
                     locationLabelValue = page + 1,
                     context = makeContext(text, idx, q.length),
                     isPdf = true,
+                    fromOcr = fromOcr,
                 )
                 out.add(hit)
                 if (onHit != null && !onHit(hit)) return out
@@ -140,6 +212,64 @@ object BookSearcher {
             }
         }
         return out
+    }
+
+    /** 当前章段落下标范围（含首尾）；无章节时 null */
+    fun chapterParagraphRange(
+        chapters: List<Chapter>,
+        currentParagraph: Int,
+        lastParagraphIndex: Int,
+    ): IntRange? {
+        val starts = chapters.map { it.paragraphIndex }.filter { it >= 0 }.distinct().sorted()
+        if (starts.isEmpty()) return null
+        val chIdx = starts.indexOfLast { it <= currentParagraph }.let { if (it < 0) 0 else it }
+        val start = starts[chIdx]
+        val end = starts.getOrNull(chIdx + 1)?.minus(1) ?: lastParagraphIndex
+        return start..end.coerceAtLeast(start)
+    }
+
+    private fun buildNativePageTexts(
+        pageChars: Map<Int, List<PdfTextExtractor.PdfChar>>,
+        fromParagraphs: PdfTextExtractor.Extracted? = null,
+    ): Map<Int, String> {
+        val pageTexts = LinkedHashMap<Int, String>()
+        if (pageChars.isNotEmpty()) {
+            for ((page, chars) in pageChars.toSortedMap()) {
+                if (chars.isEmpty()) continue
+                pageTexts[page] = buildString(chars.size) {
+                    for (c in chars) append(c.char)
+                }
+            }
+        } else if (fromParagraphs != null && fromParagraphs.paragraphs.isNotEmpty()) {
+            fromParagraphs.paragraphs.forEachIndexed { i, para ->
+                val page = fromParagraphs.paraLinks.getOrNull(i)?.pageIndex ?: i
+                val prev = pageTexts[page].orEmpty()
+                pageTexts[page] = if (prev.isEmpty()) para.text else "$prev\n${para.text}"
+            }
+        }
+        return pageTexts
+    }
+
+    private fun pageSearchText(
+        context: Context,
+        fileKey: String,
+        page: Int,
+        nativeText: String?,
+        scope: SearchScope,
+    ): Pair<String, Boolean> {
+        when (scope) {
+            SearchScope.OCR_PAGES -> {
+                val chars = PdfOcrCacheStore.loadPage(context, fileKey, page) ?: return "" to true
+                return chars.joinToString("") { it.char.toString() } to true
+            }
+            else -> {
+                val native = nativeText?.trim().orEmpty()
+                if (native.isNotEmpty()) return native to false
+                val chars = PdfOcrCacheStore.loadPage(context, fileKey, page) ?: return "" to false
+                val ocr = chars.joinToString("") { it.char.toString() }
+                return ocr to ocr.isNotEmpty()
+            }
+        }
     }
 
     fun makeContext(text: String, start: Int, length: Int): String {

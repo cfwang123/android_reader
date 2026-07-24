@@ -24,27 +24,23 @@ class TtsExportHelper(private val context: Context) {
 
     enum class Format { MP3, M4A, WAV }
 
-    interface Listener {
-        /**
-         * @param done 已完成段数（synth 时为已完成段；当前段合成中仍为已完成数）
-         * @param total 总段数
-         * @param phase prepare / synth / merge / encode
-         * @param doneChars 已合成字数（含当前段估算）
-         * @param totalChars 全文总字数
-         * @param partFraction 当前段内进度 0..1（仅 synth 有效）
-         */
-        fun onProgress(
+    /**
+     * 导出回调（直接持有函数，无 Listener interface）。
+     * @param onProgress done/total/phase/doneChars/totalChars/partFraction
+     */
+    class Callbacks(
+        val onProgress: (
             done: Int,
             total: Int,
             phase: String,
-            doneChars: Int = 0,
-            totalChars: Int = 0,
-            partFraction: Float = 0f,
-        )
-        fun onSuccess(file: File)
-        fun onError(message: String)
-        fun onCancelled()
-    }
+            doneChars: Int,
+            totalChars: Int,
+            partFraction: Float,
+        ) -> Unit = { _, _, _, _, _, _ -> },
+        val onSuccess: (File) -> Unit,
+        val onError: (String) -> Unit,
+        val onCancelled: () -> Unit = {},
+    )
 
     private val main = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
@@ -81,20 +77,20 @@ class TtsExportHelper(private val context: Context) {
         format: Format,
         filePrefix: String = "tts",
         bitRateKbps: Int = 64,
-        listener: Listener,
+        callbacks: Callbacks,
     ) {
         if (working) {
-            listener.onError("busy")
+            callbacks.onError("busy")
             return
         }
         val body = text.trim()
         if (body.isEmpty()) {
-            listener.onError("empty")
+            callbacks.onError("empty")
             return
         }
         working = true
         cancelled.set(false)
-        listenerRef = listener
+        cb = callbacks
         outFormat = format
         prefix = filePrefix
         aacBitRate = bitRateKbps.coerceIn(16, 320) * 1000
@@ -116,7 +112,7 @@ class TtsExportHelper(private val context: Context) {
     private var outFormat: Format = Format.M4A
     private var prefix: String = "tts"
     private var aacBitRate: Int = 64_000
-    private var listenerRef: Listener? = null
+    private var cb: Callbacks? = null
     private var waitingUtterance: String? = null
     private var waitingPart: File? = null
     private var advancing = false
@@ -134,14 +130,16 @@ class TtsExportHelper(private val context: Context) {
         // 始终主线程回调，避免 UI 不刷新
         main.post {
             if (!working && phase != "encode" && phase != "merge") return@post
-            listenerRef?.onProgress(
-                done,
-                total,
-                phase,
-                chars.coerceIn(0, totalChars.coerceAtLeast(chars)),
-                totalChars,
-                partFraction.coerceIn(0f, 1f),
-            )
+            cb?.let { c ->
+                c.onProgress(
+                    done,
+                    total,
+                    phase,
+                    chars.coerceIn(0, totalChars.coerceAtLeast(chars)),
+                    totalChars,
+                    partFraction.coerceIn(0f, 1f),
+                )
+            }
         }
     }
 
@@ -254,8 +252,7 @@ class TtsExportHelper(private val context: Context) {
         }
         val engine = tts
         val dir = workDir
-        val listener = listenerRef
-        if (engine == null || dir == null || listener == null) {
+        if (engine == null || dir == null || cb == null) {
             finishError("state lost")
             return
         }
@@ -400,7 +397,7 @@ class TtsExportHelper(private val context: Context) {
     }
 
     private fun mergeAndFinish() {
-        val listener = listenerRef ?: return
+        val callbacks = cb ?: return
         val dir = workDir ?: return
         clearPartWatch()
         try {
@@ -436,9 +433,8 @@ class TtsExportHelper(private val context: Context) {
             }
             cleanupTemp()
             working = false
-            val okListener = listener
             releaseEngine()
-            okListener.onSuccess(finalFile)
+            callbacks.onSuccess(finalFile)
         } catch (t: Throwable) {
             Log.e(TAG, "merge", t)
             finishError(t.message ?: "merge failed")
@@ -494,29 +490,29 @@ class TtsExportHelper(private val context: Context) {
     private fun failCurrent(msg: String) {
         Log.e(TAG, "fail: $msg")
         clearPartWatch()
-        val listener = listenerRef
+        val callbacks = cb
         cleanupTemp()
         working = false
         releaseEngine()
-        listener?.onError(msg)
+        callbacks?.let { it.onError(msg) }
     }
 
     private fun finishError(msg: String) {
         clearPartWatch()
-        val listener = listenerRef
+        val callbacks = cb
         cleanupTemp()
         working = false
         releaseEngine()
-        listener?.onError(msg)
+        callbacks?.let { it.onError(msg) }
     }
 
     private fun finishCancelled() {
         clearPartWatch()
-        val listener = listenerRef
+        val callbacks = cb
         cleanupTemp()
         working = false
         releaseEngine()
-        listener?.onCancelled()
+        callbacks?.let { it.onCancelled() }
     }
 
     private fun cleanupTemp() {
@@ -534,7 +530,7 @@ class TtsExportHelper(private val context: Context) {
         tts = null
         waitingUtterance = null
         waitingPart = null
-        listenerRef = null
+        cb = null
         initTimeoutRunnable = null
     }
 

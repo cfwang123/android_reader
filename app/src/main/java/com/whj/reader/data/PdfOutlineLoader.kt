@@ -190,6 +190,85 @@ object PdfOutlineLoader {
         return bestPath
     }
 
+    /**
+     * 视口内（DFS 序）第一个大纲标题：页码落在 [viewportTopPage, viewportBottomPage]。
+     */
+    fun firstTitleInViewport(
+        roots: List<Node>,
+        viewportTopPage: Int,
+        viewportBottomPage: Int,
+    ): Node? {
+        if (roots.isEmpty() || viewportTopPage < 0) return null
+        val top = viewportTopPage
+        val bottom = viewportBottomPage.coerceAtLeast(top)
+        var found: Node? = null
+        fun walk(nodes: List<Node>) {
+            for (n in nodes) {
+                if (found == null && n.pageIndex in top..bottom && n.pageIndex >= 0) {
+                    found = n
+                }
+                if (found == null && n.children.isNotEmpty()) walk(n.children)
+            }
+        }
+        walk(roots)
+        return found
+    }
+
+    /**
+     * 当前最深子章节：
+     * - 视口内有标题 → 限在该标题子树内取最深节（同页后续兄弟如 9.1.8 不抢 9.1.7）
+     * - 无视口标题 → 正文页所属最深节
+     */
+    fun resolveCurrentLeaf(
+        roots: List<Node>,
+        viewportTopPage: Int,
+        viewportBottomPage: Int,
+        bodyPage: Int,
+    ): Node? {
+        if (roots.isEmpty() || bodyPage < 0) return null
+        val firstTitle = firstTitleInViewport(roots, viewportTopPage, viewportBottomPage)
+        if (firstTitle != null) {
+            return deepestInSubtreeAtPage(firstTitle, bodyPage) ?: firstTitle
+        }
+        return pathToCurrent(roots, bodyPage).lastOrNull()
+    }
+
+    /** 子树内 pageIndex ≤ [page] 的最深节点 */
+    private fun deepestInSubtreeAtPage(root: Node, page: Int): Node? {
+        var best: Node? = null
+        var bestPage = -1
+        fun walk(n: Node) {
+            if (n.pageIndex in 0..page && n.pageIndex >= bestPage) {
+                bestPage = n.pageIndex
+                best = n
+            }
+            for (c in n.children) walk(c)
+        }
+        walk(root)
+        return best
+    }
+
+    /** 从根到指定节点的路径 */
+    fun pathToNode(roots: List<Node>, target: Node): List<Node>? {
+        var result: List<Node>? = null
+        fun walk(nodes: List<Node>, stack: ArrayList<Node>) {
+            for (n in nodes) {
+                stack.add(n)
+                if (n.id == target.id) result = ArrayList(stack)
+                if (result == null && n.children.isNotEmpty()) walk(n.children, stack)
+                stack.removeAt(stack.lastIndex)
+            }
+        }
+        walk(roots, ArrayList())
+        return result
+    }
+
+    /** 默认展开：当前节路径上有子节点的祖先 */
+    fun defaultExpandedForLeaf(roots: List<Node>, leaf: Node?): MutableSet<Node> {
+        val path = leaf?.let { pathToNode(roots, it) } ?: emptyList()
+        return path.filter { it.children.isNotEmpty() }.toMutableSet()
+    }
+
     /** 默认展开：当前节路径上有子节点的祖先 */
     fun defaultExpanded(roots: List<Node>, currentPage: Int): MutableSet<Node> {
         val path = pathToCurrent(roots, currentPage)

@@ -952,7 +952,7 @@ object EpubLoader {
         private val spineCacheDir: File,
         private val cachedChapters: List<Chapter>,
         private val injectedNavKeys: MutableSet<String>,
-    ) : BookStreamer {
+    ) : BookStreamer() {
         @Volatile
         private var cancelled = false
         @Volatile

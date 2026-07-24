@@ -3,7 +3,8 @@ package com.whj.reader.data
 import android.content.Context
 
 /**
- * 按书 URI 记忆自定义章节目录正则；空表示使用内置自动识别。
+ * 按书 URI 记忆自定义章节目录通配符模式（及是否忽略大小写）。
+ * 打开「自定义目录扫描」时回填，便于再次编辑；空表示使用内置自动识别。
  */
 object BookChapterPatternStore {
     private const val PREF = "reader_book_chapter_pattern"

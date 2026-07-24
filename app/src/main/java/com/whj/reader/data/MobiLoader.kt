@@ -674,7 +674,7 @@ object MobiLoader {
         private val title: String,
         private val uriStr: String,
         private val imagePaths: List<String>,
-    ) : BookStreamer {
+    ) : BookStreamer() {
         /** 每批解析的 HTML 块数（按需续载，避免一次扫完全书） */
         private val batchChunks = 2
 

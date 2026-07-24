@@ -20,7 +20,7 @@ import com.whj.reader.data.PdfOutlineLoader
 class PdfTocAdapter(
     private val roots: List<PdfOutlineLoader.Node>,
     private var expanded: MutableSet<PdfOutlineLoader.Node>,
-    private val currentPage: Int,
+    currentLeaf: PdfOutlineLoader.Node?,
     private val onOpenPage: (pageIndex: Int) -> Unit,
 ) : RecyclerView.Adapter<PdfTocAdapter.VH>() {
 
@@ -33,11 +33,14 @@ class PdfTocAdapter(
     )
 
     private val currentPath: List<PdfOutlineLoader.Node> =
-        PdfOutlineLoader.pathToCurrent(roots, currentPage)
+        currentLeaf?.let { PdfOutlineLoader.pathToNode(roots, it) } ?: emptyList()
     private val currentPathSet: Set<PdfOutlineLoader.Node> = currentPath.toSet()
-    private val currentLeaf: PdfOutlineLoader.Node? = currentPath.lastOrNull()
+    private val currentLeaf: PdfOutlineLoader.Node? = currentLeaf
 
     private var rows: List<Row> = flatten()
+
+    /** 当前章节在扁平列表中的行号（用于打开目录后滚动定位） */
+    fun currentRowIndex(): Int = rows.indexOfFirst { it.isCurrent }
 
     fun toggle(node: PdfOutlineLoader.Node) {
         if (node.children.isEmpty()) return

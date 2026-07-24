@@ -121,7 +121,12 @@ object ReadingProgressStore {
             .put("fileExt", p.fileExt)
         val ed = prefs(ctx).edit().putString(key(uri), o.toString())
         // 退出阅读回书架：commit 保证立刻读到最新进度
-        if (sync) ed.commit() else ed.apply()
+        if (sync) {
+            ed.commit()
+            com.whj.reader.widget.ContinueReadingWidgetUpdater.updateAll(ctx)
+        } else {
+            ed.apply()
+        }
     }
 
     /**

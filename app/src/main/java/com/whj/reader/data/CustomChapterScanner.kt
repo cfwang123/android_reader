@@ -7,7 +7,8 @@ import java.util.regex.PatternSyntaxException
 
 /**
  * 通配符章节目录扫描（非正则）：
- * - `*` 任意内容
+ * - `*` 任意内容（含空）
+ * - `?` 任意单个字符
  * - `x` 阿拉伯数字或中文数字（一、十、百…）
  * - `xxx` 三位数字（如 001）
  * - `xxxx` 四位数字（如 0001）
@@ -26,6 +27,7 @@ object CustomChapterScanner {
         Preset("0001. 标题", "xxxx. *"),
         Preset("Chapter N", "Chapter x"),
         Preset("一、标题", "一、 *"),
+        Preset("第?回（单字）", "第?回 *"),
     )
 
     private const val CJK_NUM = "[0-9零一二三四五六七八九十百千两〇]+"
@@ -63,6 +65,11 @@ object CustomChapterScanner {
                 }
                 pattern[i] == '*' -> {
                     sb.append(".*")
+                    i++
+                }
+                pattern[i] == '?' -> {
+                    // 单个任意字符（不含换行；扫描按段首行）
+                    sb.append('.')
                     i++
                 }
                 else -> {
@@ -117,7 +124,8 @@ object CustomChapterScanner {
     }
 
     private fun escapeRegexChar(ch: Char): String = when (ch) {
-        '\\', '.', '^', '$', '|', '?', '+', '(', ')', '[', ']', '{', '}' -> "\\$ch"
+        // `?` 已作为通配符处理，此处不再出现
+        '\\', '.', '^', '$', '|', '+', '(', ')', '[', ']', '{', '}' -> "\\$ch"
         else -> ch.toString()
     }
 }

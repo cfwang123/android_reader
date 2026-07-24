@@ -90,6 +90,10 @@ class PdfPageSurface @JvmOverloads constructor(
     /** 上次已按此宽度校正过高度，避免 onSizeChanged 抖动 */
     private var heightSyncedForWidth: Int = 0
 
+    /** 最近一次 bind/渲染所用的目标宽度（旋转后用于判断位图是否可复用） */
+    var boundTargetWidth: Int = 0
+        private set
+
     fun bind(
         pageIndex: Int,
         pageW: Float,
@@ -114,8 +118,9 @@ class PdfPageSurface @JvmOverloads constructor(
         clearBitmapsInternal(recycleTiles = false)
         pendingTiles.clear()
         heightSyncedForWidth = 0
+        boundTargetWidth = targetWidth.coerceAtLeast(1)
 
-        val tw = targetWidth.coerceAtLeast(1)
+        val tw = boundTargetWidth
         val displayH = computeDisplayHeight(tw)
         this.tileHeightPx = tileHeightPx.coerceAtLeast(400)
         this.tileCount = if (useTiles) {
@@ -228,9 +233,12 @@ class PdfPageSurface @JvmOverloads constructor(
         mode = Mode.EMPTY
         tileCount = 0
         heightSyncedForWidth = 0
+        boundTargetWidth = 0
         onGeometryInvalidated = null
         invalidate()
     }
+
+    fun peekFullBitmap(): Bitmap? = fullBitmap?.takeUnless { it.isRecycled }
 
     /** 取出整图引用并清空（rebind 时丢给调用方/GC，勿 recycle 正在显示的图） */
     fun drainFullBitmap(): Bitmap? {

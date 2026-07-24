@@ -1,4 +1,6 @@
 package com.whj.reader.pdf.render
+import com.whj.reader.PdfReadingActivity
+import com.whj.reader.pdf.render.PdfLayoutMetrics
 
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
@@ -11,38 +13,8 @@ import com.whj.reader.util.ReaderLog
  */
 class PdfRenderPipeline(
     private val cache: PdfRenderCache,
-    private val host: Host,
+    private val activity: PdfReadingActivity,
 ) {
-    interface Host {
-        fun pageCount(): Int
-        fun currentPageIndex(): Int
-        fun isPageInRenderWindow(page: Int): Boolean
-        fun preferPreviewQuality(): Boolean
-        fun isAlive(): Boolean
-        fun runOnUi(block: () -> Unit)
-        fun offerTask(task: PdfRenderTask)
-        fun cropForPage(page: Int): FloatArray
-        fun logicalDisplayHeight(pageW: Float, pageH: Float, margins: FloatArray, targetWidth: Int): Int
-        fun ensurePageSize(page: Int): Pair<Float, Float>
-        fun renderLock(): Any
-        fun renderer(): PdfRenderer?
-        fun getOpenPage(): PdfRenderer.Page?
-        fun setOpenPage(page: PdfRenderer.Page?)
-        fun renderFullPage(page: PdfRenderer.Page, targetWidth: Int, pageIndex: Int): Bitmap
-        fun renderStrip(
-            page: PdfRenderer.Page,
-            targetWidth: Int,
-            srcY0: Float,
-            srcY1: Float,
-            pageIndex: Int,
-        ): Bitmap
-        fun findSurfaceForPage(page: Int): PdfPageSurface?
-        fun enqueueUiAttach(attach: PdfUiAttach)
-        fun pinTile(bmp: Bitmap?)
-        fun unpinTile(bmp: Bitmap?)
-        fun deliverTile(surface: PdfPageSurface, tileIndex: Int, bmp: Bitmap, bindGen: Long)
-        fun tileCacheKey(page: Int, tileIndex: Int, targetWidth: Int): Long
-    }
 
     private val pendingFullPages =
         java.util.concurrent.ConcurrentHashMap<Int, PdfRenderTask.Full>()
@@ -71,7 +43,7 @@ class PdfRenderPipeline(
         when (task) {
             is PdfRenderTask.Full -> pendingFullPages.remove(task.page, task)
             is PdfRenderTask.Tile -> {
-                val key = host.tileCacheKey(task.page, task.tileIndex, task.targetWidth)
+                val key = activity.tileCacheKey(task.page, task.tileIndex, task.targetWidth)
                 pendingTiles.remove(key, task)
             }
             is PdfRenderTask.PageSize -> pendingPageSizes.remove(task.page)
@@ -86,13 +58,13 @@ class PdfRenderPipeline(
         targetWidth: Int,
         bindGen: Long,
     ) {
-        if (pageIndex !in 0 until host.pageCount()) return
+        if (pageIndex !in 0 until activity.pageCount) return
         val cached = cache.bitmapCache.get(pageIndex)
         if (cached != null && !cached.isRecycled) {
-            val needUpgrade = !host.preferPreviewQuality() &&
+            val needUpgrade = !activity.preferPreviewQuality() &&
                 !cache.isBitmapFullQuality(cached, targetWidth)
             if (!needUpgrade) {
-                host.enqueueUiAttach(
+                activity.enqueueUiAttach(
                     PdfUiAttach(surface, pageIndex, bindGen, cached, isTile = false),
                 )
                 return
@@ -103,7 +75,7 @@ class PdfRenderPipeline(
         }
         val task = PdfRenderTask.Full(pageIndex, surface, targetWidth, bindGen)
         pendingFullPages[pageIndex] = task
-        host.offerTask(task)
+        activity.offerTask(task)
     }
 
     fun enqueueTile(
@@ -115,15 +87,15 @@ class PdfRenderPipeline(
         targetWidth: Int,
         bindGen: Long,
     ) {
-        val cacheKey = host.tileCacheKey(pageIndex, tileIndex, targetWidth)
+        val cacheKey = activity.tileCacheKey(pageIndex, tileIndex, targetWidth)
         val cached = cache.tileCache.get(cacheKey)
         if (cached != null && !cached.isRecycled) {
             if (surface.pageIndex == pageIndex && surface.bindGeneration == bindGen) {
-                host.deliverTile(surface, tileIndex, cached, bindGen)
+                activity.deliverTile(surface, tileIndex, cached, bindGen)
             }
             return
         }
-        if (!host.isPageInRenderWindow(pageIndex)) return
+        if (!activity.isPageInRenderWindow(pageIndex)) return
         pendingTiles[cacheKey]?.let { it.cancelled = true }
         val task = PdfRenderTask.Tile(
             page = pageIndex,
@@ -135,20 +107,20 @@ class PdfRenderPipeline(
             bindGen = bindGen,
         )
         pendingTiles[cacheKey] = task
-        host.offerTask(task)
+        activity.offerTask(task)
     }
 
     fun runFullPageTask(task: PdfRenderTask.Full) {
         if (task.cancelled) return
         val pageIndex = task.page
-        if (!host.isPageInRenderWindow(pageIndex) && !task.cancelled) {
-            if (kotlin.math.abs(pageIndex - host.currentPageIndex()) >
+        if (!activity.isPageInRenderWindow(pageIndex) && !task.cancelled) {
+            if (kotlin.math.abs(pageIndex - activity.pageIndex) >
                 PdfRenderConfig.CACHE_KEEP_RADIUS + 2
             ) {
                 return
             }
         }
-        val wantFull = !host.preferPreviewQuality()
+        val wantFull = !activity.preferPreviewQuality()
         val hit = cache.bitmapCache.get(pageIndex)
         if (hit != null && !hit.isRecycled) {
             // 宽与任务目标差太多（旋转前后缓存）→ 不复用，重渲
@@ -164,7 +136,7 @@ class PdfRenderPipeline(
             }
         }
         if (task.cancelled) return
-        val r = host.renderer() ?: return
+        val r = activity.renderer ?: return
         if (pageIndex !in 0 until r.pageCount) return
         val renderW = if (wantFull) {
             task.targetWidth
@@ -173,17 +145,17 @@ class PdfRenderPipeline(
                 .coerceIn(320, task.targetWidth)
         }
         val bmp = try {
-            synchronized(host.renderLock()) {
+            synchronized(activity.renderLock) {
                 if (task.cancelled) return
-                host.getOpenPage()?.close()
-                host.setOpenPage(null)
+                activity.currentPage?.close()
+                activity.currentPage = null
                 val page = r.openPage(pageIndex)
-                host.setOpenPage(page)
+                activity.currentPage = page
                 try {
-                    host.renderFullPage(page, renderW, pageIndex)
+                    activity.renderPageBitmap(page, renderW, pageIndexForMirror = pageIndex)
                 } finally {
                     page.close()
-                    host.setOpenPage(null)
+                    activity.currentPage = null
                 }
             }
         } catch (t: Throwable) {
@@ -202,46 +174,46 @@ class PdfRenderPipeline(
 
     fun runTileTask(task: PdfRenderTask.Tile) {
         if (task.cancelled) return
-        val cacheKey = host.tileCacheKey(task.page, task.tileIndex, task.targetWidth)
+        val cacheKey = activity.tileCacheKey(task.page, task.tileIndex, task.targetWidth)
         val hit = cache.tileCache.get(cacheKey)
         if (hit != null && !hit.isRecycled) {
             postTile(task, hit)
             return
         }
         if (task.cancelled) return
-        if (!host.isPageInRenderWindow(task.page) &&
-            kotlin.math.abs(task.page - host.currentPageIndex()) >
+        if (!activity.isPageInRenderWindow(task.page) &&
+            kotlin.math.abs(task.page - activity.pageIndex) >
             PdfRenderConfig.CACHE_KEEP_RADIUS + 2
         ) {
             return
         }
-        val r = host.renderer() ?: return
+        val r = activity.renderer ?: return
         if (task.page !in 0 until r.pageCount) return
         val (pw, ph) = try {
-            host.ensurePageSize(task.page)
+            activity.ensurePageSize(task.page)
         } catch (t: Throwable) {
             ReaderLog.e(ReaderLog.Module.PDF, "tile ensurePageSize p=${task.page}", t)
             return
         }
         if (task.cancelled) return
-        val margins = host.cropForPage(task.page)
-        val displayH = host.logicalDisplayHeight(pw, ph, margins, task.targetWidth)
+        val margins = activity.cropForPage(task.page)
+        val displayH = PdfLayoutMetrics.logicalDisplayHeight(pw, ph, margins, task.targetWidth)
             .toFloat().coerceAtLeast(1f)
         val srcH = ph * (1f - margins[1] - margins[3]).coerceAtLeast(0.2f)
         val srcY0 = (task.tileTopPx / displayH) * srcH
         val srcY1 = (task.tileBottomPx / displayH) * srcH
         val bmp = try {
-            synchronized(host.renderLock()) {
+            synchronized(activity.renderLock) {
                 if (task.cancelled) return
-                host.getOpenPage()?.close()
-                host.setOpenPage(null)
+                activity.currentPage?.close()
+                activity.currentPage = null
                 val page = r.openPage(task.page)
-                host.setOpenPage(page)
+                activity.currentPage = page
                 try {
-                    host.renderStrip(page, task.targetWidth, srcY0, srcY1, task.page)
+                    activity.renderPageStripBitmap(page, task.targetWidth, srcY0, srcY1, pageIndexForMirror = task.page)
                 } finally {
                     page.close()
-                    host.setOpenPage(null)
+                    activity.currentPage = null
                 }
             }
         } catch (t: Throwable) {
@@ -255,22 +227,22 @@ class PdfRenderPipeline(
         if (bmp.isRecycled) return
         if (task.cancelled) return
         cache.tileCache.put(cacheKey, bmp)
-        host.pinTile(bmp)
+        activity.pinTileBitmap(bmp)
         postTile(task, bmp)
     }
 
     private fun postFullBitmap(task: PdfRenderTask.Full, bmp: Bitmap) {
         if (bmp.isRecycled) return
-        host.runOnUi {
-            if (!host.isAlive() || bmp.isRecycled || task.cancelled) return@runOnUi
+        activity.runOnUiThread {
+            if (!activity.isAlive() || bmp.isRecycled || task.cancelled) return@runOnUiThread
             // 只贴到发起任务时的 bindGen。旋转/ rebind 后禁止「找新 Surface 硬贴」，
             // 否则旧 targetWidth 位图会画进新宽高比容器 → 压扁/拉长。
             val surf = task.surface
             if (surf.pageIndex != task.page || surf.bindGeneration != task.bindGen) {
-                return@runOnUi
+                return@runOnUiThread
             }
-            if (!surfaceWidthMatchesTask(surf, task.targetWidth)) return@runOnUi
-            host.enqueueUiAttach(
+            if (!surfaceWidthMatchesTask(surf, task.targetWidth)) return@runOnUiThread
+            activity.enqueueUiAttach(
                 PdfUiAttach(
                     surface = surf,
                     page = task.page,
@@ -284,24 +256,24 @@ class PdfRenderPipeline(
 
     private fun postTile(task: PdfRenderTask.Tile, bmp: Bitmap) {
         if (bmp.isRecycled) {
-            host.unpinTile(bmp)
+            activity.unpinTileBitmap(bmp)
             return
         }
-        host.runOnUi {
-            if (!host.isAlive() || bmp.isRecycled || task.cancelled) {
-                host.unpinTile(bmp)
-                return@runOnUi
+        activity.runOnUiThread {
+            if (!activity.isAlive() || bmp.isRecycled || task.cancelled) {
+                activity.unpinTileBitmap(bmp)
+                return@runOnUiThread
             }
             val surf = task.surface
             if (surf.pageIndex != task.page || surf.bindGeneration != task.bindGen) {
-                host.unpinTile(bmp)
-                return@runOnUi
+                activity.unpinTileBitmap(bmp)
+                return@runOnUiThread
             }
             if (!surfaceWidthMatchesTask(surf, task.targetWidth)) {
-                host.unpinTile(bmp)
-                return@runOnUi
+                activity.unpinTileBitmap(bmp)
+                return@runOnUiThread
             }
-            host.enqueueUiAttach(
+            activity.enqueueUiAttach(
                 PdfUiAttach(
                     surface = surf,
                     page = task.page,

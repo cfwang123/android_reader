@@ -34,9 +34,21 @@ object VoiceLocaleOrder {
         }
     }
 
+    /** 中文组内：普通话 zh* 先于粤语 yue、吴语 wuu */
+    private fun chineseSubRank(languageTag: String): Int {
+        val lang = languageTag.substringBefore('_').substringBefore('-').lowercase(Locale.ROOT)
+        return when {
+            lang.startsWith("zh") -> 0
+            lang == "yue" -> 1
+            lang == "wuu" -> 2
+            else -> 3
+        }
+    }
+
     fun sortLangKeys(keys: Collection<String>): List<String> =
         keys.sortedWith(
             compareBy<String> { groupRank(it) }
+                .thenBy { chineseSubRank(it) }
                 .thenBy { it.lowercase(Locale.ROOT) },
         )
 }

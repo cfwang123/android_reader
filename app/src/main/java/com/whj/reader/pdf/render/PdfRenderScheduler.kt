@@ -1,4 +1,5 @@
 package com.whj.reader.pdf.render
+import com.whj.reader.PdfReadingActivity
 
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -8,18 +9,8 @@ import java.util.concurrent.Executors
  * 具体 Full/Tile/PageSize 执行由 [Host.executeTask] 完成（持有 PdfRenderer 等）。
  */
 class PdfRenderScheduler(
-    private val host: Host,
+    private val activity: PdfReadingActivity,
 ) {
-    interface Host {
-        /** 当前页（0-based），作任务优先级锚点 */
-        fun currentPageIndex(): Int
-
-        /** 执行任务（worker 线程）；PageSize 完成后由宿主切主线程 */
-        fun executeTask(task: PdfRenderTask)
-
-        /** 任务结束（含取消）时清 pending 映射 */
-        fun onTaskFinished(task: PdfRenderTask)
-    }
 
     private val renderQueueLock = Object()
     private val renderQueue = ArrayList<PdfRenderTask>(48)
@@ -47,13 +38,13 @@ class PdfRenderScheduler(
             while (!renderWorkerStop && !Thread.currentThread().isInterrupted) {
                 val task = pollBestRenderTask() ?: continue
                 if (task.cancelled || !isPageInRenderWindow(task.page)) {
-                    host.onTaskFinished(task)
+                    activity.onRenderTaskFinished(task)
                     continue
                 }
                 try {
-                    host.executeTask(task)
+                    activity.executeRenderTask(task)
                 } finally {
-                    host.onTaskFinished(task)
+                    activity.onRenderTaskFinished(task)
                 }
             }
         }
@@ -78,7 +69,7 @@ class PdfRenderScheduler(
         synchronized(renderQueueLock) {
             for (t in renderQueue) {
                 t.cancelled = true
-                host.onTaskFinished(t)
+                activity.onRenderTaskFinished(t)
             }
             renderQueue.clear()
             renderQueueLock.notifyAll()
@@ -98,7 +89,7 @@ class PdfRenderScheduler(
         val f = visFirst
         val l = visLast
         if (l < f) {
-            return kotlin.math.abs(page - host.currentPageIndex()) <=
+            return kotlin.math.abs(page - activity.pageIndex) <=
                 PdfRenderConfig.CACHE_KEEP_RADIUS
         }
         return page in (f - 1)..(l + 2)
@@ -120,7 +111,7 @@ class PdfRenderScheduler(
                     if (t.cancelled || !isPageInRenderWindow(t.page)) {
                         t.cancelled = true
                         it.remove()
-                        host.onTaskFinished(t)
+                        activity.onRenderTaskFinished(t)
                     }
                 }
                 if (renderQueue.isEmpty()) {
@@ -132,7 +123,7 @@ class PdfRenderScheduler(
                     }
                     continue
                 }
-                val anchor = host.currentPageIndex()
+                val anchor = activity.pageIndex
                 var bestIdx = 0
                 var bestScore = Int.MAX_VALUE
                 for (i in renderQueue.indices) {

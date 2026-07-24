@@ -2,14 +2,19 @@ package com.whj.reader.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.PixelFormat
 import android.graphics.Shader
+import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import com.whj.reader.R
+import com.whj.reader.model.BgImageScaleMode
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.sin
 import kotlin.random.Random
@@ -84,14 +89,103 @@ object BgTextures {
         return f.takeIf { it.isFile }
     }
 
-    fun importedDrawable(ctx: Context, fileName: String): Drawable? {
+    /**
+     * 导入背景图 Drawable。
+     * [scaleMode]：拉伸铺满，或等比适应居中（未覆盖区域由下层垫色显示）。
+     */
+    fun importedDrawable(
+        ctx: Context,
+        fileName: String,
+        scaleMode: BgImageScaleMode = BgImageScaleMode.STRETCH,
+    ): Drawable? {
         val f = importFile(ctx, fileName) ?: return null
         val bmp = runCatching {
-            android.graphics.BitmapFactory.decodeFile(f.absolutePath)
+            BitmapFactory.decodeFile(
+                f.absolutePath,
+                BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 },
+            )
         }.getOrNull() ?: return null
-        return BitmapDrawable(ctx.resources, bmp).apply {
-            gravity = android.view.Gravity.FILL
+        if (bmp.width <= 0 || bmp.height <= 0) {
+            runCatching { bmp.recycle() }
+            return null
         }
+        return when (scaleMode) {
+            BgImageScaleMode.STRETCH -> StretchBitmapDrawable(bmp)
+            BgImageScaleMode.FIT_CENTER -> FitCenterBitmapDrawable(bmp)
+        }
+    }
+
+    /** 将位图拉伸到 [Drawable.getBounds] 全区域绘制（不 tile） */
+    private class StretchBitmapDrawable(
+        private val bitmap: Bitmap,
+    ) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+        override fun draw(canvas: Canvas) {
+            if (bitmap.isRecycled) return
+            val b = bounds
+            if (b.width() <= 0 || b.height() <= 0) return
+            canvas.drawBitmap(bitmap, null, b, paint)
+        }
+
+        override fun setAlpha(alpha: Int) {
+            paint.alpha = alpha
+            invalidateSelf()
+        }
+
+        override fun setColorFilter(colorFilter: ColorFilter?) {
+            paint.colorFilter = colorFilter
+            invalidateSelf()
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+        override fun getIntrinsicWidth(): Int = -1
+
+        override fun getIntrinsicHeight(): Int = -1
+    }
+
+    /** 等比缩放至完整显示在 bounds 内并居中 */
+    private class FitCenterBitmapDrawable(
+        private val bitmap: Bitmap,
+    ) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        private val srcRect = Rect(0, 0, bitmap.width, bitmap.height)
+        private val dstRect = Rect()
+
+        override fun draw(canvas: Canvas) {
+            if (bitmap.isRecycled) return
+            val b = bounds
+            if (b.width() <= 0 || b.height() <= 0) return
+            val scale = minOf(
+                b.width().toFloat() / bitmap.width,
+                b.height().toFloat() / bitmap.height,
+            )
+            val dw = (bitmap.width * scale).toInt().coerceAtLeast(1)
+            val dh = (bitmap.height * scale).toInt().coerceAtLeast(1)
+            val left = b.left + (b.width() - dw) / 2
+            val top = b.top + (b.height() - dh) / 2
+            dstRect.set(left, top, left + dw, top + dh)
+            canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
+        }
+
+        override fun setAlpha(alpha: Int) {
+            paint.alpha = alpha
+            invalidateSelf()
+        }
+
+        override fun setColorFilter(colorFilter: ColorFilter?) {
+            paint.colorFilter = colorFilter
+            invalidateSelf()
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+        override fun getIntrinsicWidth(): Int = -1
+
+        override fun getIntrinsicHeight(): Int = -1
     }
 
     /**

@@ -4,11 +4,14 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.text.TextPaint
 import android.util.AttributeSet
@@ -22,12 +25,21 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.OverScroller
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.DrawableCompat
 import androidx.core.view.ViewCompat
 import com.whj.reader.R
 import com.whj.reader.data.HtmlRichParser
+import com.whj.reader.model.Highlight
+import com.whj.reader.model.HighlightKind
+import com.whj.reader.model.HighlightMode
+import com.whj.reader.model.SelectionRange
+import com.whj.reader.model.TextAnchor
+import com.whj.reader.model.UnderlineShape
 import com.whj.reader.model.Paragraph
 import com.whj.reader.model.ReadStyle
 import com.whj.reader.model.TextSpanStyle
+import com.whj.reader.util.ReaderTapZones
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.max
@@ -51,6 +63,8 @@ class VirtualReaderView @JvmOverloads constructor(
 
     var onZoneTap: ((zone: Int) -> Unit)? = null
     var onScrollChangedListener: ((firstVisibleParagraph: Int) -> Unit)? = null
+    /** 用户主动滑动/甩动/开始拖选时（不含程序定位滚动） */
+    var onUserInteract: (() -> Unit)? = null
     /** 选区菜单：从段内偏移起读到文末 */
     var onReadFromParagraph: ((paragraphIndex: Int, charOffset: Int) -> Unit)? = null
     /**
@@ -77,6 +91,10 @@ class VirtualReaderView @JvmOverloads constructor(
     var onImageLongPress: ((paraIndex: Int) -> Unit)? = null
     /** 点击超链接（href 原值） */
     var onLinkClick: ((href: String) -> Unit)? = null
+    /** 选区菜单：添加高亮 */
+    var onHighlightMenuClick: (() -> Unit)? = null
+    /** 点击高亮尾部笔记气泡 */
+    var onNoteBubbleClick: ((highlightId: String) -> Unit)? = null
     /**
      * 底部被遮挡高度（View 坐标 px），如 TTS 控制条 + 状态栏。
      * TTS 判可见 / 跟读滚动时从正文可视底边扣除。
@@ -107,6 +125,14 @@ class VirtualReaderView @JvmOverloads constructor(
     /** 合成导出范围高亮：段索引 inclusive，-1 表示无 */
     private var exportRangeStart: Int = -1
     private var exportRangeEnd: Int = -1
+    private var persistentHighlights: List<Highlight> = emptyList()
+    private val bubbleHitRects = ArrayList<Pair<String, RectF>>()
+    private var noteBubbleGesture = false
+    private var noteBubbleDrawable: Drawable? = null
+    private val persistentBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val persistentUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+    }
 
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         isSubpixelText = true
@@ -248,7 +274,9 @@ class VirtualReaderView @JvmOverloads constructor(
                 scrollYF = (scrollYF + step).coerceIn(0f, maxScrollY().toFloat())
                 updateSelectionAtFinger()
                 invalidate()
-                invalidateSelectionActionMode()
+                if (draggingHandle == null) {
+                    invalidateSelectionActionMode()
+                }
             }
             postOnAnimation(this)
         }
@@ -273,6 +301,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 }
                 // 空段：不进入选区
                 if (para.text.isEmpty()) return
+                onUserInteract?.invoke()
                 // 长按开始选区，不立刻弹菜单（否则会吃掉后续拖动手势）
                 parent?.requestDisallowInterceptTouchEvent(true)
                 selecting = true
@@ -317,6 +346,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 if (swipeHorizontal == true) {
                     return true
                 }
+                onUserInteract?.invoke()
                 scrollByInternal(distanceY)
                 return true
             }
@@ -341,6 +371,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 if (!moved) return false
                 if (swipeHorizontal == true) return true
                 markInteracting()
+                onUserInteract?.invoke()
                 scroller.fling(
                     0, scrollYF.toInt(), 0, -velocityY.toInt(),
                     0, 0, 0, maxScrollY(),
@@ -533,6 +564,31 @@ class VirtualReaderView @JvmOverloads constructor(
 
     fun clearHighlight() = setHighlightRange(-1, 0, 0)
     fun currentHighlight(): Int = highlightParagraph
+
+    fun setPersistentHighlights(highlights: List<Highlight>) {
+        persistentHighlights = highlights.filter { it.kind == HighlightKind.TXT }
+        if (noteBubbleDrawable == null) {
+            noteBubbleDrawable = ContextCompat.getDrawable(context, R.drawable.ic_note_bubble)
+        }
+        invalidate()
+    }
+
+    fun getSelectionRange(): SelectionRange? {
+        val n = normalizedSelection() ?: return null
+        return SelectionRange(
+            startParagraph = n.first.para,
+            startOffset = n.first.offset,
+            endParagraph = n.second.para,
+            endOffset = n.second.offset,
+            text = selectedText(),
+        )
+    }
+
+    fun dismissTextSelection() = clearSelection()
+
+    fun scrollToTextAnchor(anchor: TextAnchor) {
+        scrollToParagraph(anchor.startParagraph.coerceAtLeast(0))
+    }
 
     fun firstVisibleParagraph(): Int {
         if (paragraphs.isEmpty() || tops.isEmpty()) return 0
@@ -1213,12 +1269,14 @@ class VirtualReaderView @JvmOverloads constructor(
                 event.x >= w - ew && rightEdgeEnabled -> 2
                 else -> 0
             }
-            downZone = when {
-                event.x < w / 3f -> 0
-                event.x > w * 2f / 3f -> 2
-                else -> 1
-            }
+            downZone = ReaderTapZones.zone(event.x, w)
             draggingHandle = null
+            hitNoteBubble(event.x, event.y)?.let { id ->
+                noteBubbleGesture = true
+                onNoteBubbleClick?.invoke(id)
+                return true
+            }
+            noteBubbleGesture = false
             if (hasSelection() && !selecting) {
                 selectionHandleAnchors()?.let { (s, e) ->
                     draggingHandle = TextSelectionHandles.hitTest(
@@ -1233,6 +1291,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 }
             }
             if (draggingHandle != null) {
+                hideSelectionActionMode()
                 selectionDragActive = true
                 lastSelDragX = event.x
                 lastSelDragY = event.y
@@ -1255,7 +1314,10 @@ class VirtualReaderView @JvmOverloads constructor(
                     selectionDragActive = false
                     selectionEdgeScrollState.reset()
                     parent?.requestDisallowInterceptTouchEvent(false)
-                    invalidateSelectionActionMode()
+                    if (hasSelection()) {
+                        startTextActionMode()
+                    }
+                    invalidate()
                 }
             }
             return true
@@ -1320,6 +1382,15 @@ class VirtualReaderView @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_UP -> {
+                if (noteBubbleGesture) {
+                    noteBubbleGesture = false
+                    edgeSide = 0
+                    edgeAccum = 0f
+                    swipeHorizontal = null
+                    horizontalSwipeConsumed = false
+                    scheduleFill(8L)
+                    return true
+                }
                 if (!moved && !longPressFired) {
                     // 轻点：立刻响应，不再用长按超时卡死（避免侧边翻页像延时 0.5s）
                     if (hasSelection()) {
@@ -1331,11 +1402,16 @@ class VirtualReaderView @JvmOverloads constructor(
                         }
                     } else {
                         val hit = hitTest(event.x, event.y, allowBuild = true)
-                        val href = hit?.let { linkHrefAt(it) }
-                        if (!href.isNullOrBlank() && onLinkClick != null) {
-                            onLinkClick?.invoke(href)
+                        val highlightId = hit?.let { highlightIdAt(it.para, it.offset) }
+                        if (highlightId != null) {
+                            onNoteBubbleClick?.invoke(highlightId)
                         } else {
-                            onZoneTap?.invoke(downZone)
+                            val href = hit?.let { linkHrefAt(it) }
+                            if (!href.isNullOrBlank() && onLinkClick != null) {
+                                onLinkClick?.invoke(href)
+                            } else {
+                                onZoneTap?.invoke(downZone)
+                            }
                         }
                     }
                 } else if (edgeSide == 0 &&
@@ -1351,6 +1427,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 scheduleFill(8L)
             }
             MotionEvent.ACTION_CANCEL -> {
+                noteBubbleGesture = false
                 edgeSide = 0
                 edgeAccum = 0f
                 swipeHorizontal = null
@@ -1373,6 +1450,7 @@ class VirtualReaderView @JvmOverloads constructor(
             (absDx >= swipeMinDistance && absDx > absDy * 1.2f)
         if (!horizontal) return false
         if (absDx < swipeMinDistance) return false
+        onUserInteract?.invoke()
         // 右滑 dx>0 → 上一页；左滑 dx<0 → 下一页
         cb.invoke(dx < 0f)
         return true
@@ -1478,6 +1556,12 @@ class VirtualReaderView @JvmOverloads constructor(
         actionMode?.invalidateContentRect()
     }
 
+    /** 拖动手柄时收起浮动菜单，保留选区 */
+    private fun hideSelectionActionMode() {
+        actionMode?.finish()
+        actionMode = null
+    }
+
     private fun beginSelectionAt(hit: Hit) {
         val text = paragraphs.getOrNull(hit.para)?.text ?: return
         if (text.isEmpty()) return
@@ -1549,6 +1633,13 @@ class VirtualReaderView @JvmOverloads constructor(
         }
     }
 
+    /** 正文绘制区底边（View 坐标），扣除底栏叠层 */
+    private fun visibleClipBottom(): Float {
+        val top = contentPaddingV.toFloat()
+        return (height - contentPaddingV - bottomObscuredPx.coerceAtLeast(0f))
+            .coerceAtLeast(top + 1f)
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (paragraphs.isEmpty() || contentWidth <= 0 || tops.isEmpty()) return
@@ -1566,9 +1657,9 @@ class VirtualReaderView @JvmOverloads constructor(
         cp.color = textColor
 
         canvas.save()
-        // 裁剪到正文区：顶/底 padding 内不画字，避免翻页后「上一行」从标题下露出
+        // 裁剪到正文区：顶/底 padding 内不画字，底栏叠层区域也不画字
         val clipTop = contentPaddingV.toFloat()
-        val clipBottom = (height - contentPaddingV).toFloat().coerceAtLeast(clipTop + 1f)
+        val clipBottom = visibleClipBottom()
         canvas.clipRect(0f, clipTop, width.toFloat(), clipBottom)
         canvas.translate(contentPaddingH.toFloat(), contentPaddingV - scrollYF)
 
@@ -1580,7 +1671,7 @@ class VirtualReaderView @JvmOverloads constructor(
 
         // 正文区对应的 content Y 范围（与 clip 一致）
         var contentTop = scrollYF
-        var contentBottom = scrollYF + pageContentHeight()
+        var contentBottom = scrollYF + (clipBottom - contentPaddingV)
 
         while (i <= paragraphs.lastIndex) {
             if (i !in tops.indices) break
@@ -1603,7 +1694,7 @@ class VirtualReaderView @JvmOverloads constructor(
                         return
                     }
                     contentTop = scrollYF
-                    contentBottom = scrollYF + pageContentHeight()
+                    contentBottom = scrollYF + (visibleClipBottom() - contentPaddingV)
                 } else {
                     needMoreFill = true
                 }
@@ -1635,6 +1726,7 @@ class VirtualReaderView @JvmOverloads constructor(
                     if (i == highlightParagraph && highlightEnd > highlightStart) {
                         drawHighlightRange(canvas, i, layout, y)
                     }
+                    drawPersistentHighlightsForPara(canvas, i, layout, y)
                     if (hasSelection() && selectionOverlaps(i)) {
                         drawSelection(canvas, i, layout, y)
                     }
@@ -1690,6 +1782,7 @@ class VirtualReaderView @JvmOverloads constructor(
 
             i++
         }
+        drawNoteBubbles(canvas)
         canvas.restore()
 
         if (needMoreFill || hasVisibleBlank()) {
@@ -2667,6 +2760,191 @@ class VirtualReaderView @JvmOverloads constructor(
         drawCharRange(canvas, para, layout, paraTop, a, b, highlightPaint)
     }
 
+    private fun drawPersistentHighlightsForPara(
+        canvas: Canvas,
+        para: Int,
+        layout: ParaLayout,
+        paraTop: Float,
+    ) {
+        if (persistentHighlights.isEmpty()) return
+        val textLen = paragraphs[para].text.length
+        for (hl in persistentHighlights) {
+            val anchor = hl.anchor
+            if (para < anchor.startParagraph || para > anchor.endParagraph) continue
+            val start = if (para == anchor.startParagraph) anchor.startOffset else 0
+            val end = if (para == anchor.endParagraph) anchor.endOffset else textLen
+            if (start >= end) continue
+            when (hl.style.mode) {
+                HighlightMode.BACKGROUND -> {
+                    persistentBgPaint.color = applyOpacity(hl.style.colorArgb, hl.style.opacity)
+                    drawCharRange(canvas, para, layout, paraTop, start, end, persistentBgPaint)
+                }
+                HighlightMode.UNDERLINE -> {
+                    drawCharRangeUnderline(
+                        canvas,
+                        para,
+                        layout,
+                        paraTop,
+                        start,
+                        end,
+                        hl.style,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun applyOpacity(color: Int, opacity: Int): Int {
+        val a = ((opacity.coerceIn(0, 100) / 100f) * 255f).toInt().coerceIn(0, 255)
+        return (color and 0x00FFFFFF) or (a shl 24)
+    }
+
+    private fun highlightUiColor(style: com.whj.reader.model.HighlightStyle): Int =
+        when (style.mode) {
+            HighlightMode.UNDERLINE -> style.colorArgb or 0xFF000000.toInt()
+            HighlightMode.BACKGROUND -> applyOpacity(style.colorArgb, style.opacity)
+        }
+
+    private fun highlightIdAt(para: Int, offset: Int): String? {
+        if (persistentHighlights.isEmpty() || para !in paragraphs.indices) return null
+        val textLen = paragraphs[para].text.length
+        for (hl in persistentHighlights) {
+            val anchor = hl.anchor
+            if (para < anchor.startParagraph || para > anchor.endParagraph) continue
+            val start = if (para == anchor.startParagraph) anchor.startOffset else 0
+            val end = if (para == anchor.endParagraph) anchor.endOffset else textLen
+            if (offset >= start && offset < end) return hl.id
+        }
+        return null
+    }
+
+    private fun drawCharRangeUnderline(
+        canvas: Canvas,
+        para: Int,
+        layout: ParaLayout,
+        paraTop: Float,
+        rangeStart: Int,
+        rangeEnd: Int,
+        style: com.whj.reader.model.HighlightStyle,
+    ) {
+        val paint = if (paragraphs[para].isChapter) chapterPaint else textPaint
+        val text = paragraphs[para].text
+        persistentUnderlinePaint.color = style.colorArgb or 0xFF000000.toInt()
+        persistentUnderlinePaint.strokeWidth = 2f * density
+        persistentUnderlinePaint.pathEffect = when (style.underlineShape) {
+            UnderlineShape.DASHED -> DashPathEffect(floatArrayOf(8f * density, 6f * density), 0f)
+            else -> null
+        }
+        for (line in layout.lines) {
+            val a = maxOf(line.start, rangeStart)
+            val b = minOf(line.end, rangeEnd)
+            if (a >= b) continue
+            val x0 = if (a == line.start) 0f else paint.measureText(text, line.start, a)
+            val x1 = paint.measureText(text, line.start, b)
+            val y = paraTop + line.baseline + 2f * density
+            when (style.underlineShape) {
+                UnderlineShape.WAVY -> drawWavyLine(canvas, x0, x1, y, persistentUnderlinePaint)
+                else -> canvas.drawLine(x0, y, x1, y, persistentUnderlinePaint)
+            }
+        }
+    }
+
+    private fun drawWavyLine(
+        canvas: Canvas,
+        x0: Float,
+        x1: Float,
+        y: Float,
+        paint: Paint,
+    ) {
+        if (x1 <= x0) return
+        val path = Path()
+        val amp = 2f * density
+        val wave = 8f * density
+        var x = x0
+        path.moveTo(x, y)
+        var up = true
+        while (x < x1) {
+            val next = minOf(x + wave, x1)
+            val mid = (x + next) / 2f
+            path.quadTo(mid, y + if (up) -amp else amp, next, y)
+            x = next
+            up = !up
+        }
+        canvas.drawPath(path, paint)
+    }
+
+    private fun charOffsetToContentPoint(para: Int, offset: Int, atEnd: Boolean): PointF? {
+        if (para !in paragraphs.indices || tops.isEmpty()) return null
+        val layout = layoutCache.get(para) ?: buildAndCache(para)
+        if (layout.lines.isEmpty()) return null
+        val text = paragraphs[para].text
+        if (text.isEmpty()) return null
+        val paint = if (paragraphs[para].isChapter) chapterPaint else textPaint
+        val off = when {
+            atEnd && offset > 0 -> (offset - 1).coerceIn(0, text.length - 1)
+            else -> offset.coerceIn(0, (text.length - 1).coerceAtLeast(0))
+        }
+        val lineIdx = lineForOffset(layout, off)
+        if (lineIdx < 0 || lineIdx > layout.lines.lastIndex) return null
+        val line = layout.lines[lineIdx]
+        val x = if (atEnd) {
+            paint.measureText(text, line.start, (off + 1).coerceAtMost(text.length))
+        } else if (off <= line.start) {
+            0f
+        } else {
+            paint.measureText(text, line.start, off)
+        }
+        val lineBottom = tops[para] + line.top + lineHeight
+        return PointF(x, lineBottom)
+    }
+
+    private fun drawNoteBubbles(canvas: Canvas) {
+        if (persistentHighlights.isEmpty() || contentWidth <= 0) return
+        if (noteBubbleDrawable == null) {
+            noteBubbleDrawable = ContextCompat.getDrawable(context, R.drawable.ic_note_bubble)
+        }
+        val template = noteBubbleDrawable ?: return
+        val size = (11f * density).toInt().coerceAtLeast(9)
+        val gutter = contentPaddingH.toFloat()
+        val edgeX = contentWidth + ((gutter - size) / 2f).coerceAtLeast(0f)
+        bubbleHitRects.clear()
+        for (hl in persistentHighlights) {
+            val pt = charOffsetToContentPoint(
+                hl.anchor.endParagraph,
+                hl.anchor.endOffset,
+                atEnd = true,
+            ) ?: continue
+            val top = (pt.y - size * 0.85f).coerceAtLeast(tops.getOrElse(hl.anchor.endParagraph) { 0f })
+            val bubble = template.constantState?.newDrawable()?.mutate() ?: template.mutate()
+            DrawableCompat.setTint(bubble, highlightUiColor(hl.style))
+            bubble.setBounds(
+                edgeX.toInt(),
+                top.toInt(),
+                (edgeX + size).toInt(),
+                (top + size).toInt(),
+            )
+            bubble.draw(canvas)
+            val hitHalf = 24f * density
+            val cx = contentPaddingH + edgeX + size / 2f
+            val cy = contentPaddingV + top - scrollYF + size / 2f
+            bubbleHitRects.add(
+                hl.id to RectF(
+                    cx - hitHalf,
+                    cy - hitHalf,
+                    cx + hitHalf,
+                    cy + hitHalf,
+                ),
+            )
+        }
+    }
+
+    private fun hitNoteBubble(x: Float, y: Float): String? {
+        for ((id, rect) in bubbleHitRects) {
+            if (rect.contains(x, y)) return id
+        }
+        return null
+    }
+
     private fun drawCharRange(
         canvas: Canvas,
         para: Int,
@@ -2722,6 +3000,7 @@ class VirtualReaderView @JvmOverloads constructor(
                     menu.add(0, 1, 0, android.R.string.copy)
                     menu.add(0, 2, 1, R.string.select_all_paragraph)
                     menu.add(0, 3, 2, R.string.tts_read_from_here)
+                    menu.add(0, 4, 3, R.string.highlight_add)
                     return true
                 }
 
@@ -2764,6 +3043,12 @@ class VirtualReaderView @JvmOverloads constructor(
                             if (para in paragraphs.indices) {
                                 onReadFromParagraph?.invoke(para, off)
                             }
+                            return true
+                        }
+                        4 -> {
+                            onHighlightMenuClick?.invoke()
+                            mode.finish()
+                            clearSelection()
                             return true
                         }
                     }

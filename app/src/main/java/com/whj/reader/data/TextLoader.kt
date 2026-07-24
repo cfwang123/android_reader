@@ -51,14 +51,15 @@ data class BookOpenResult(
 
 /**
  * EPUB/MOBI 按需续载（不一次性后台扫完全书）。
+ * 抽象类（非 interface），子类直接继承。
  *
  * 用法：
  * 1. [start] 注册回调（不开始解析）
  * 2. 在 IO 线程反复调用 [loadNextBatchBlocking]；每批解析后触发 [onUpdate] / 完成时 [onComplete]
  * 3. 阅读页在「滑近已加载末尾 / 跳转目标尚未载入」时再请求下一批
  */
-interface BookStreamer {
-    fun start(
+abstract class BookStreamer {
+    abstract fun start(
         onUpdate: (LoadedBook) -> Unit,
         onComplete: (LoadedBook) -> Unit,
         onProgress: LoadProgressListener? = null,
@@ -68,14 +69,14 @@ interface BookStreamer {
      * 同步解析下一批（须在后台线程调用）。
      * @return true 表示可能还有更多；false 表示已完成或已取消
      */
-    fun loadNextBatchBlocking(): Boolean
+    abstract fun loadNextBatchBlocking(): Boolean
 
     /**
      * 连续解析直到段落数超过 [targetParaInclusive]（或全书结束）。
      * 用于恢复进度 / 目录跳转：中间少回调 UI，避免主线程反复 setContent。
      * @return true 表示可能还有更多
      */
-    fun loadUntilParagraphBlocking(targetParaInclusive: Int): Boolean {
+    open fun loadUntilParagraphBlocking(targetParaInclusive: Int): Boolean {
         var guard = 0
         var more = true
         while (more && guard < 256) {
@@ -85,7 +86,7 @@ interface BookStreamer {
         return more
     }
 
-    fun cancel()
+    abstract fun cancel()
 }
 
 object TextLoader {

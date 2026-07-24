@@ -1,4 +1,5 @@
 package com.whj.reader.pdf.render
+import com.whj.reader.PdfReadingActivity
 
 import android.view.Choreographer
 import com.whj.reader.ui.PdfPageSurface
@@ -8,14 +9,8 @@ import com.whj.reader.ui.PdfPageSurface
  * 解决快速滑时 onBind + 多任务同时 setFullBitmap 导致 UI 卡死。
  */
 class PdfUiAttachQueue(
-    private val host: Host,
+    private val activity: PdfReadingActivity,
 ) {
-    interface Host {
-        fun isAlive(): Boolean
-        fun nightMode(): Boolean
-        fun deliverTile(surface: PdfPageSurface, tileIndex: Int, bmp: android.graphics.Bitmap, bindGen: Long)
-        fun unpinTileBitmap(bmp: android.graphics.Bitmap?)
-    }
 
     private val pending = ArrayDeque<PdfUiAttach>()
     private var frameScheduled = false
@@ -40,7 +35,7 @@ class PdfUiAttachQueue(
         frameScheduled = true
         Choreographer.getInstance().postFrameCallback {
             frameScheduled = false
-            if (!host.isAlive()) {
+            if (!activity.isAlive()) {
                 synchronized(pending) { pending.clear() }
                 return@postFrameCallback
             }
@@ -51,12 +46,12 @@ class PdfUiAttachQueue(
                 } ?: break
                 if (a.bmp.isRecycled) continue
                 if (a.surface.pageIndex != a.page || a.surface.bindGeneration != a.bindGen) {
-                    if (a.isTile) host.unpinTileBitmap(a.bmp)
+                    if (a.isTile) activity.unpinTileBitmap(a.bmp)
                     continue
                 }
                 if (a.isTile) {
-                    host.deliverTile(a.surface, a.tileIndex, a.bmp, a.bindGen)
-                    a.surface.setNightMode(host.nightMode())
+                    activity.deliverTile(a.surface, a.tileIndex, a.bmp, a.bindGen)
+                    a.surface.setNightMode(activity.night)
                 } else {
                     a.surface.setFullBitmap(a.bmp)
                 }

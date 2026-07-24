@@ -238,6 +238,12 @@ object PdfTextExtractor {
     fun extractCharsByPage(context: Context, uri: Uri): Map<Int, List<PdfChar>> =
         extractAll(context, uri).pageChars
 
+    /** PDF 总页数；无会话时临时打开文档读取。 */
+    fun pageCount(context: Context, uri: Uri): Int {
+        ensureInit(context)
+        return withDocument(context, uri) { it.numberOfPages } ?: 0
+    }
+
     /**
      * 按切边过滤并重建段落。
      * [source.rawPageChars] 优先；若无则用 pageChars。

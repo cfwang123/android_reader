@@ -5,6 +5,9 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
+import com.whj.reader.model.HighlightMode
+import com.whj.reader.model.HighlightStyle
+import com.whj.reader.pdf.highlight.PdfHighlightPainter
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -18,6 +21,12 @@ class PdfSelectionOverlay @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
+    data class PersistentHighlightDraw(
+        val id: String,
+        val rects: List<RectF>,
+        val style: HighlightStyle,
+    )
+
     private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0x663B82F6
         style = Paint.Style.FILL
@@ -29,6 +38,7 @@ class PdfSelectionOverlay @JvmOverloads constructor(
 
     private val selectionRects = ArrayList<RectF>()
     private val highlightRects = ArrayList<RectF>()
+    private val persistentHighlights = ArrayList<PersistentHighlightDraw>()
     private val startHandle = PointF()
     private val endHandle = PointF()
     private var handlesVisible = false
@@ -75,6 +85,18 @@ class PdfSelectionOverlay @JvmOverloads constructor(
         invalidate()
     }
 
+    fun setPersistentHighlights(items: List<PersistentHighlightDraw>) {
+        persistentHighlights.clear()
+        persistentHighlights.addAll(items)
+        invalidate()
+    }
+
+    fun clearPersistentHighlights() {
+        if (persistentHighlights.isEmpty()) return
+        persistentHighlights.clear()
+        invalidate()
+    }
+
     fun clearSelection() {
         val had = selectionRects.isNotEmpty() || handlesVisible
         selectionRects.clear()
@@ -107,6 +129,9 @@ class PdfSelectionOverlay @JvmOverloads constructor(
     fun setRects(list: List<RectF>) = setSelectionRects(list)
 
     override fun onDraw(canvas: Canvas) {
+        for (item in persistentHighlights) {
+            drawPersistent(item, canvas)
+        }
         for (r in highlightRects) canvas.drawRect(r, highlightPaint)
         for (r in selectionRects) canvas.drawRect(r, selectionPaint)
         if (handlesVisible) {
@@ -162,5 +187,13 @@ class PdfSelectionOverlay @JvmOverloads constructor(
             }
         }
         return false
+    }
+
+    private fun drawPersistent(item: PersistentHighlightDraw, canvas: Canvas) {
+        PdfHighlightPainter.draw(
+            canvas,
+            listOf(PdfHighlightPainter.DrawItem(item.rects, item.style)),
+            density,
+        )
     }
 }

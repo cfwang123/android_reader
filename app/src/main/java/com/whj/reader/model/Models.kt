@@ -213,6 +213,14 @@ enum class ReadTheme {
     CUSTOM,
 }
 
+/** 导入背景图的缩放方式 */
+enum class BgImageScaleMode {
+    /** 拉伸铺满（可能变形） */
+    STRETCH,
+    /** 等比缩放，完整显示并居中 */
+    FIT_CENTER,
+}
+
 data class ReadStyle(
     /** 兼容旧版；界面已改为纹理 + 字色，夜间快捷仍可能写 NIGHT */
     val theme: ReadTheme = ReadTheme.DEFAULT,
@@ -236,6 +244,10 @@ data class ReadStyle(
     val textColor: Int = 0xFF2C2C2C.toInt(),
     /** 导入背景图文件名（位于 app filesDir/bg/），仅 [bgTextureId]=import 时有效 */
     val customBgImageFile: String = "",
+    /** 导入背景图不透明度 0~100（100=完全不透明），仅导入图时有效 */
+    val customBgImageAlpha: Int = 100,
+    /** 导入背景图缩放方式，仅导入图时有效 */
+    val customBgImageScaleMode: BgImageScaleMode = BgImageScaleMode.STRETCH,
 )
 
 /** 阅读页屏幕常亮 */
