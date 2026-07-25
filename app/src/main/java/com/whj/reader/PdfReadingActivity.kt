@@ -76,7 +76,6 @@ import com.whj.reader.util.OrientationHelper
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
 
-import com.whj.reader.pdf.highlight.PdfHighlightController
 import com.whj.reader.pdf.mode.PdfModeController
 import com.whj.reader.pdf.textload.PdfTextLoadController
 import com.whj.reader.pdf.bind.PdfPageBindController
@@ -292,7 +291,6 @@ class PdfReadingActivity : AppCompatActivity() {
     private var textActionMode: ActionMode? = null
     private lateinit var selectionInteractor: PdfSelectionInteractor
     internal lateinit var navBookmarkController: PdfNavBookmarkController
-    internal lateinit var highlightController: PdfHighlightController
     private lateinit var ttsController: PdfTtsController
     private lateinit var ocrUiController: PdfOcrUiController
     private lateinit var chromeController: PdfChromeController
@@ -393,7 +391,6 @@ class PdfReadingActivity : AppCompatActivity() {
         pdfSettings = binding.pdfSettingsPanel
         selectionInteractor = PdfSelectionInteractor(this)
         navBookmarkController = PdfNavBookmarkController(this)
-        highlightController = PdfHighlightController(this)
         ttsController = PdfTtsController(this)
         ocrUiController = PdfOcrUiController(this)
         chromeController = PdfChromeController(this)
@@ -440,7 +437,6 @@ class PdfReadingActivity : AppCompatActivity() {
         setupPageTouch()
         setupRecycler()
         setupFastScroll()
-        binding.pdfNoteBubbleOverlay.onBubbleClick = { highlightController.showHighlightView(it) }
         setupBottomChromeInsets()
         hideChrome()
         updateClock()
@@ -1908,6 +1904,11 @@ class PdfReadingActivity : AppCompatActivity() {
                 force = OrientationHelper.isLargeScreen(this),
             )
             updateOrientMenuIcon()
+            val label = when (next) {
+                OrientationMode.LANDSCAPE -> getString(R.string.orient_landscape)
+                else -> getString(R.string.orient_portrait)
+            }
+            Toasts.show(this, getString(R.string.orient_switched, label))
         }
         readMenu.menuFullscreen.setOnClickListener {
             if (!immersive && hasDisplayCutout()) {
@@ -2043,10 +2044,12 @@ class PdfReadingActivity : AppCompatActivity() {
         if (!::pdfSettings.isInitialized) return
         val cont = pageMode == PdfPageMode.CONTINUOUS
         val primary = AppTheme.primary(this)
+        val soft = AppTheme.accentSoft(this)
         val white = 0xFFFFFFFF.toInt()
-        val cropBtn = pdfSettings.btnOpenCrop
-        // 选中：主题色实心；未选中：与「打开切边调整」一致的 Outlined 样式
+        val textPrimary = getColor(R.color.text_primary)
+        // 选中：主题色实心；未选中：主题浅底 + 主题描边
         fun styleSelected(btn: com.google.android.material.button.MaterialButton, selected: Boolean) {
+            val strokePx = (1.5f * resources.displayMetrics.density).toInt().coerceAtLeast(2)
             if (selected) {
                 btn.backgroundTintList = android.content.res.ColorStateList.valueOf(primary)
                 btn.setTextColor(white)
@@ -2054,10 +2057,10 @@ class PdfReadingActivity : AppCompatActivity() {
                 btn.strokeColor = android.content.res.ColorStateList.valueOf(primary)
                 btn.alpha = 1f
             } else {
-                btn.backgroundTintList = cropBtn.backgroundTintList
-                btn.setTextColor(cropBtn.textColors)
-                btn.strokeWidth = cropBtn.strokeWidth
-                btn.strokeColor = cropBtn.strokeColor
+                btn.backgroundTintList = android.content.res.ColorStateList.valueOf(soft)
+                btn.setTextColor(textPrimary)
+                btn.strokeWidth = strokePx
+                btn.strokeColor = android.content.res.ColorStateList.valueOf(primary)
                 btn.alpha = 1f
             }
         }
@@ -2573,20 +2576,6 @@ class PdfReadingActivity : AppCompatActivity() {
         return bestPage
     }
 
-    /** 视口可见页范围（连续模式首/末可见项；单页即当前页） */
-    internal fun viewportPageRange(): Pair<Int, Int> {
-        if (pageCount <= 0) return 0 to 0
-        if (pageMode == PdfPageMode.SINGLE) {
-            val p = pageIndex.coerceIn(0, pageCount - 1)
-            return p to p
-        }
-        val lm = binding.rvPdfPages.layoutManager as? LinearLayoutManager
-        val first = lm?.findFirstVisibleItemPosition() ?: pageIndex
-        val last = lm?.findLastVisibleItemPosition() ?: first
-        val max = pageCount - 1
-        return first.coerceIn(0, max) to last.coerceIn(0, max)
-    }
-
     private fun pdfBookmarkProgress(page: Int): Float {
         if (pageCount <= 1) return if (page > 0) 100f else 0f
         return ((page.toFloat() / (pageCount - 1).toFloat()) * 100f).coerceIn(0f, 100f)
@@ -2706,19 +2695,12 @@ class PdfReadingActivity : AppCompatActivity() {
     private fun normalizeSelectionOrder() = selectionInteractor.normalizeSelectionOrder()
 
     /** 选区覆盖的每一页上的字符闭区间 -> 容器矩形（跨页拼接） */
-    internal fun multiPageCharRangeToContainerRects(
+    private fun multiPageCharRangeToContainerRects(
         startPage: Int,
         startChar: Int,
         endPage: Int,
         endChar: Int,
     ): List<RectF> = selectionInteractor.multiPageCharRangeToContainerRects(startPage, startChar, endPage, endChar)
-
-    internal fun charRangeToSurfaceRects(
-        page: Int,
-        startIdx: Int,
-        endIdx: Int,
-        surfaceHint: PdfPageSurface? = null,
-    ): List<RectF> = selectionInteractor.charRangeToSurfaceRects(page, startIdx, endIdx, surfaceHint)
 
     internal fun beginTextSelection(containerX: Float, containerY: Float) =
         selectionInteractor.beginTextSelection(containerX, containerY)
@@ -2817,7 +2799,7 @@ class PdfReadingActivity : AppCompatActivity() {
         always: Boolean = false,
     ): Int? = selectionInteractor.nearestCharIndex(chars, pageX, pageY, always)
 
-    internal fun selectedText(): String = selectionInteractor.selectedText()
+    private fun selectedText(): String = selectionInteractor.selectedText()
 
     internal fun refreshSelectionOverlay() = selectionInteractor.refreshSelectionOverlay()
 
@@ -2886,12 +2868,7 @@ class PdfReadingActivity : AppCompatActivity() {
                 1 -> {
                     if (fileKey.isNotBlank()) {
                         searchLauncher.launch(
-                            BookSearchActivity.intentPdf(
-                                this,
-                                fileKey,
-                                displayTitle,
-                                currentPage = pageIndex,
-                            ),
+                            BookSearchActivity.intentPdf(this, fileKey, displayTitle),
                         )
                     }
                     true

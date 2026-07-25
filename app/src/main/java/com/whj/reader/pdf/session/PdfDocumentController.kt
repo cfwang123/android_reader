@@ -136,7 +136,6 @@ class PdfDocumentController(
                             setPdfContentHidden(false)
                             b.tvLoading.isVisible = false
                             activity.allowProgressSave = true
-                            activity.highlightController.reloadBookHighlights()
                             activity.updateProgressLabel()
                             activity.updateFastScrollEnabled()
                             // 布局/滚动稳定后再刷一次长图条带，避免首帧空白

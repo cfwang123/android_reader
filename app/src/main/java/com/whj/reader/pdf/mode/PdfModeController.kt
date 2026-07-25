@@ -70,7 +70,6 @@ class PdfModeController(
             // TTS 高亮随缩放更新屏幕位置
             if (activity.hasTtsHighlight()) activity.refreshHighlightOverlay()
             activity.refreshSelectionOverlay()
-            activity.highlightController.refreshOverlays()
             // 页码角标反缩放，视觉大小不随 zoom 变
             updatePageBadgeZoomCompensation()
             // 缩小后列表视口变高，补拉可见/预取 tile
@@ -87,9 +86,6 @@ class PdfModeController(
                 b.pdfContainer.postDelayed(activity.saveZoomRunnable, 280L)
             }
         }
-        zoomLayout.onPinchBegin = {
-            if (activity.hasTextSelection()) activity.clearTextSelection()
-        }
         // 平移/缩放时：关菜单 + 刷新高亮位置；捏合过程中也要即时切换黑底
         zoomLayout.onTransformChanged = {
             activity.updatePdfZoomChrome()
@@ -100,7 +96,6 @@ class PdfModeController(
             }
             if (activity.hasTtsHighlight()) activity.refreshHighlightOverlay()
             if (activity.hasTextSelection()) activity.refreshSelectionOverlay()
-            activity.highlightController.refreshOverlays()
             updatePageBadgeZoomCompensation()
             if (activity.pageMode == PdfPageMode.CONTINUOUS) {
                 val now = android.os.SystemClock.uptimeMillis()
@@ -180,10 +175,6 @@ class PdfModeController(
         zoomLayout.onSingleTap = tap@{ x, y ->
             if (activity.hasTextSelection()) {
                 activity.clearTextSelection()
-                return@tap
-            }
-            activity.highlightController.hitTestHighlight(x, y)?.let { id ->
-                activity.highlightController.showHighlightView(id)
                 return@tap
             }
             if (b.settingsPanelContainer.isVisible) {
@@ -386,7 +377,6 @@ class PdfModeController(
                 host.setTransform(host.contentZoom, host.getPanX(), panY, notify = false)
                 updatePageBadge()
                 activity.updateProgressLabel()
-                activity.highlightController.refreshPersistentHighlightOverlay()
                 if (activity.allowProgressSave) activity.saveProgress(activity.pageIndex)
                 finishSinglePageRender(gen)
             }
@@ -490,6 +480,7 @@ class PdfModeController(
                     "est=${est.detail}",
             )
             if (after == before) {
+                Toasts.show(ctx, if (forward) R.string.page_bottom else R.string.page_top)
                 return
             }
             if (first >= 0) activity.pageIndex = first
@@ -548,6 +539,7 @@ class PdfModeController(
             }
             val next = if (forward) activity.pageIndex + 1 else activity.pageIndex - 1
             if (next !in 0 until activity.pageCount) {
+                Toasts.show(ctx, if (forward) R.string.page_bottom else R.string.page_top)
                 return
             }
             ReaderLog.i(ReaderLog.Module.PDF_PAGE_TURN,
@@ -565,6 +557,7 @@ class PdfModeController(
                 "screen=${dm.widthPixels}x${dm.heightPixels} dens=${dm.densityDpi}",
         )
         if (next !in 0 until activity.pageCount) {
+            Toasts.show(ctx, if (forward) R.string.page_bottom else R.string.page_top)
             return
         }
         showSinglePage(next, PdfReadingActivity.TallPanSnap.TOP)
@@ -636,20 +629,6 @@ class PdfModeController(
                 }
                 PdfPageMode.CONTINUOUS -> {
                     // 连续：保持 zoom 与水平 pan 比例；竖向滚动位置由页高表保留
-                    // 可见项若仍握旧宽位图，bind 的 skip 会误判；先摘掉再 notify
-                    val lmPre = b.rvPdfPages.layoutManager as? LinearLayoutManager
-                    if (lmPre != null) {
-                        val f = lmPre.findFirstVisibleItemPosition()
-                        val l = lmPre.findLastVisibleItemPosition()
-                        if (f != RecyclerView.NO_POSITION) {
-                            for (pos in f..l.coerceAtLeast(f)) {
-                                val surf = lmPre.findViewByPosition(pos)
-                                    ?.findViewById<PdfPageSurface>(R.id.ivPage) ?: continue
-                                for (t in surf.drainTiles()) activity.unpinTileBitmap(t)
-                                surf.drainFullBitmap()
-                            }
-                        }
-                    }
                     b.rvPdfPages.adapter?.notifyDataSetChanged()
                     b.rvPdfPages.post {
                         if (activity.isFinishing || activity.isDestroyed) return@post

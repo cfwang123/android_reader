@@ -19,7 +19,6 @@ import com.whj.reader.model.PdfPageMode
 import com.whj.reader.pdf.link.PdfLinkNavigator
 import com.whj.reader.ui.PdfPageSurface
 import com.whj.reader.util.ReaderLog
-import com.whj.reader.util.ReaderTapZones
 import com.whj.reader.util.Toasts
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -193,14 +192,7 @@ class PdfNavBookmarkController(
         val sheet = com.whj.reader.databinding.SheetTocBinding.inflate(activity.layoutInflater)
         dialog.setContentView(sheet.root)
 
-        val (viewportTop, viewportBottom) = activity.viewportPageRange()
-        val bodyPage = activity.currentVisiblePage()
-        val currentLeaf = com.whj.reader.data.PdfOutlineLoader.resolveCurrentLeaf(
-            roots,
-            viewportTop,
-            viewportBottom,
-            bodyPage,
-        )
+        val cur = activity.mostVisiblePage()
         fun jumpPage(page: Int) {
             dialog.dismiss()
             navigateToPageWithHistory(page.coerceIn(0, (activity.pageCount - 1).coerceAtLeast(0)))
@@ -209,11 +201,8 @@ class PdfNavBookmarkController(
         val outlineAdapter = if (roots.isNotEmpty()) {
             com.whj.reader.ui.PdfTocAdapter(
                 roots = roots,
-                expanded = com.whj.reader.data.PdfOutlineLoader.defaultExpandedForLeaf(
-                    roots,
-                    currentLeaf,
-                ),
-                currentLeaf = currentLeaf,
+                expanded = com.whj.reader.data.PdfOutlineLoader.defaultExpanded(roots, cur),
+                currentPage = cur,
                 onOpenPage = { page -> jumpPage(page) },
             )
         } else {
@@ -231,7 +220,7 @@ class PdfNavBookmarkController(
                 com.whj.reader.data.BookmarkStore.remove(ctx, bm.fileKey, bm.paragraphIndex)
                 val items = com.whj.reader.data.BookmarkStore.list(ctx, activity.fileKey)
                     .map { com.whj.reader.ui.TocItem.BookmarkItem(it) }
-                bookmarkAdapter.submit(items, bodyPage, activity.pageCount)
+                bookmarkAdapter.submit(items, cur, activity.pageCount)
                 activity.updatePdfBookmarkButton()
                 Toasts.show(ctx, R.string.bookmark_removed)
             },
@@ -241,45 +230,13 @@ class PdfNavBookmarkController(
         bookmarkAdapter.submit(
             com.whj.reader.data.BookmarkStore.list(ctx, activity.fileKey)
                 .map { com.whj.reader.ui.TocItem.BookmarkItem(it) },
-            bodyPage,
+            cur,
             activity.pageCount,
         )
 
-        lateinit var notesAdapter: com.whj.reader.ui.TocAdapter
-        notesAdapter = com.whj.reader.ui.TocAdapter(
-            onClick = { item ->
-                val hl = (item as? com.whj.reader.ui.TocItem.HighlightItem)?.highlight
-                    ?: return@TocAdapter
-                dialog.dismiss()
-                activity.highlightController.scrollToHighlight(hl)
-                b.pdfContainer.post { activity.highlightController.showHighlightView(hl.id) }
-            },
-            onDeleteHighlight = { hl ->
-                activity.highlightController.applyHighlightList(
-                    activity.highlightController.bookHighlights.filter { it.id != hl.id },
-                )
-                activity.highlightController.saveBookHighlights()
-                notesAdapter.submit(
-                    activity.highlightController.highlightTocItems(),
-                    bodyPage,
-                    activity.pageCount,
-                )
-                Toasts.show(ctx, R.string.highlight_deleted)
-            },
-        )
-        notesAdapter.submit(
-            activity.highlightController.highlightTocItems(),
-            bodyPage,
-            activity.pageCount,
-        )
-
-        val titles = listOf(
-            ctx.getString(R.string.toc),
-            ctx.getString(R.string.bookmark),
-            ctx.getString(R.string.notes),
-        )
+        val titles = listOf(ctx.getString(R.string.toc), ctx.getString(R.string.bookmark))
         sheet.vpToc.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-            override fun getItemCount(): Int = 3
+            override fun getItemCount(): Int = 2
 
             override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
                 val page = activity.layoutInflater.inflate(R.layout.page_toc_list, parent, false)
@@ -305,7 +262,7 @@ class PdfNavBookmarkController(
                         rv.isVisible = false
                         empty.setText(R.string.pdf_toc_empty)
                     }
-                } else if (position == 1) {
+                } else {
                     rv.adapter = bookmarkAdapter
                     fun sync() {
                         val n = bookmarkAdapter.itemCount
@@ -317,23 +274,6 @@ class PdfNavBookmarkController(
                     if (page.getTag(R.id.rvList) !== bookmarkAdapter) {
                         page.setTag(R.id.rvList, bookmarkAdapter)
                         bookmarkAdapter.registerAdapterDataObserver(
-                            object : RecyclerView.AdapterDataObserver() {
-                                override fun onChanged() = sync()
-                            },
-                        )
-                    }
-                } else {
-                    rv.adapter = notesAdapter
-                    fun sync() {
-                        val n = notesAdapter.itemCount
-                        empty.isVisible = n == 0
-                        rv.isVisible = n > 0
-                        empty.setText(R.string.notes_empty)
-                    }
-                    sync()
-                    if (page.getTag(R.id.rvList) !== notesAdapter) {
-                        page.setTag(R.id.rvList, notesAdapter)
-                        notesAdapter.registerAdapterDataObserver(
                             object : RecyclerView.AdapterDataObserver() {
                                 override fun onChanged() = sync()
                             },
@@ -363,31 +303,8 @@ class PdfNavBookmarkController(
                 behavior.state =
                     com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
             }
-            outlineAdapter?.let { adapter ->
-                sheet.vpToc.post {
-                    scrollTocToCurrentRow(sheet, adapter)
-                }
-            }
         }
         dialog.show()
-    }
-
-    /** 目录列表滚到当前最深子章节行（居中偏上） */
-    private fun scrollTocToCurrentRow(
-        sheet: com.whj.reader.databinding.SheetTocBinding,
-        adapter: com.whj.reader.ui.PdfTocAdapter,
-    ) {
-        val idx = adapter.currentRowIndex()
-        if (idx < 0) return
-        val pager = sheet.vpToc
-        if (pager.currentItem != 0) pager.setCurrentItem(0, false)
-        pager.post {
-            val page = pager.getChildAt(0) ?: return@post
-            val rv = page.findViewById<RecyclerView>(R.id.rvList) ?: return@post
-            val lm = rv.layoutManager as? LinearLayoutManager ?: return@post
-            val offset = (rv.height * 0.25f).toInt().coerceAtLeast(0)
-            lm.scrollToPositionWithOffset(idx, offset)
-        }
     }
 
     // ─── 触摸 ─────────────────────────────────────────────
@@ -397,7 +314,6 @@ class PdfNavBookmarkController(
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                 if (activity.hasTextSelection()) activity.refreshSelectionOverlay()
                 if (activity.hasTtsHighlight()) activity.refreshHighlightOverlay()
-                activity.highlightController.refreshOverlays()
             }
         })
 
@@ -414,7 +330,6 @@ class PdfNavBookmarkController(
                 activity.showSinglePage(activity.pageIndex)
             }
             activity.refreshSelectionOverlay()
-            activity.highlightController.refreshOverlays()
         }
     }
 
@@ -429,14 +344,14 @@ class PdfNavBookmarkController(
             return
         }
         when {
-            ReaderTapZones.isLeft(x, width) -> {
+            x < width / 3f -> {
                 if (activity.chromeVisible) {
                     activity.hideChrome()
                     return
                 }
                 activity.pageTurn(false)
             }
-            ReaderTapZones.isRight(x, width) -> {
+            x > width * 2f / 3f -> {
                 if (activity.chromeVisible) {
                     activity.hideChrome()
                     return

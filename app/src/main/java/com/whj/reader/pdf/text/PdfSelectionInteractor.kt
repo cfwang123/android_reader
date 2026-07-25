@@ -79,7 +79,6 @@ class PdfSelectionInteractor(
         textActionMode = null
         selCtrl.clear()
         b.pdfSelectionOverlay.clearSelection()
-        b.pdfContainer.endSelectionGesture()
     }
 
     fun setSelectionFromAnchorAndHit(hitPage: Int, hitChar: Int) {
@@ -759,7 +758,6 @@ class PdfSelectionInteractor(
         b.pdfSelectionOverlay.bringToFront()
         b.pdfSelectionOverlay.invalidate()
         invalidateTextSelectionActionMode()
-        activity.highlightController.refreshBubbleOverlay()
     }
 
     fun fillTextSelectionContentRect(out: Rect): Boolean {
@@ -858,55 +856,6 @@ class PdfSelectionInteractor(
         }
     }
 
-    /** 页内字符区间 -> 页表面本地坐标（用于页图下方绘制持久高亮）。 */
-    fun charRangeToSurfaceRects(
-        page: Int,
-        startIdx: Int,
-        endIdx: Int,
-        surfaceHint: PdfPageSurface? = null,
-    ): List<RectF> {
-        val chars = textCache.pageChars[page] ?: return emptyList()
-        var selected = chars.filter {
-            it.indexOnPage in startIdx..endIdx && !it.char.isWhitespace()
-        }
-        if (selected.isEmpty()) {
-            selected = chars.filter { it.indexOnPage in startIdx..endIdx }
-            if (selected.isEmpty()) {
-                val nearest = chars.minByOrNull { abs(it.indexOnPage - startIdx) }
-                if (nearest != null) selected = listOf(nearest)
-            }
-        }
-        if (selected.isEmpty()) return emptyList()
-        val out = ArrayList<RectF>()
-        when (activity.pageMode) {
-            PdfPageMode.SINGLE -> {
-                if (activity.singlePageUsesTiles) {
-                    val surface = surfaceHint ?: activity.singlePageSurface ?: return emptyList()
-                    for (line in mergeLineRects(selected)) {
-                        out.add(mapPdfCharRectToSurfaceView(surface, page, line, selected))
-                    }
-                } else {
-                    val iv = b.ivPdfPage
-                    for (line in mergeLineRects(selected)) {
-                        pageRectToContent(iv, page, line, 0f, 0f)?.let { out.add(it) }
-                    }
-                }
-            }
-            PdfPageMode.CONTINUOUS -> {
-                val surface = surfaceHint ?: run {
-                    val lm = b.rvPdfPages.layoutManager as? LinearLayoutManager
-                        ?: return emptyList()
-                    val child = lm.findViewByPosition(page) ?: return emptyList()
-                    child.findViewById<PdfPageSurface>(R.id.ivPage) ?: return emptyList()
-                }
-                for (line in mergeLineRects(selected)) {
-                    out.add(mapPdfCharRectToSurfaceView(surface, page, line, selected))
-                }
-            }
-        }
-        return out
-    }
-
     /**
      * PDF 页坐标矩形 -> [PdfPageSurface] 本地坐标。
      * 页宽高优先用字符自带的 PDFBox 尺寸（与抽字一致）。
@@ -987,7 +936,6 @@ class PdfSelectionInteractor(
             override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
                 menu.add(0, 1, 0, R.string.pdf_select_copy)
                 menu.add(0, 2, 1, R.string.pdf_select_read)
-                menu.add(0, 3, 2, R.string.highlight_add)
                 return true
             }
 
@@ -1007,13 +955,8 @@ class PdfSelectionInteractor(
                         return true
                     }
                     2 -> {
+                        mode.finish()
                         activity.startTtsFromSelection()
-                        mode.finish()
-                        return true
-                    }
-                    3 -> {
-                        activity.highlightController.addHighlightFromSelection()
-                        mode.finish()
                         return true
                     }
                 }

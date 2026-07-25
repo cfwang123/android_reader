@@ -219,19 +219,19 @@ class PdfTtsController(
 
     fun startTtsFromSelection() {
         if (!activity.hasTextSelection()) return
-        val page = textSelCtrl.state.startPage
-        val charIdx = textSelCtrl.state.startChar
-        if (page < 0 || charIdx < 0) return
+        val state = textSelCtrl.state
+        val page = state.startPage
+        val charIdx = state.startChar
         activity.chromeVisible = false
         activity.ttsBarOpen = true
         activity.applyChromeVisibility()
-        b.ttsBar.post { activity.syncPdfContentBottomInset() }
         activity.ensurePagesExtracted(
             pages = activity.pagesNear(page, before = 1, after = 2),
             showToast = true,
             preserveTtsPosition = false,
         ) {
             if (activity.isFinishing || activity.isDestroyed) return@ensurePagesExtracted
+            activity.clampSelectionToLoadedChars()
             val p = page.coerceIn(0, (activity.pageCount - 1).coerceAtLeast(0))
             val c = textCache.pageChars[p]?.let { chars ->
                 if (chars.isEmpty()) charIdx
@@ -245,21 +245,19 @@ class PdfTtsController(
                     "linkPage=${link?.pageIndex} paras=${textCache.paragraphs.size} " +
                     "linksOnPage=${textCache.paraLinks.count { it.pageIndex == p }}",
             )
-            if (mapped == null || link == null) {
+            if (mapped == null || link == null || link.pageIndex != p) {
                 activity.showToast(R.string.pdf_tts_sel_map_fail)
                 activity.clearTextSelection()
                 return@ensurePagesExtracted
             }
             tts.setDocument(textCache.paragraphs)
             tts.setSessionTitle(activity.displayTitle)
-            withTtsNotificationPermission {
-                if (!tts.isReady()) {
-                    tts.reinit()
-                    updateTtsUi(tts.currentState())
-                }
-                tts.playFromParagraphOffset(mapped.first, mapped.second)
-                activity.clearTextSelection()
+            if (!tts.isReady()) {
+                tts.reinit()
+                updateTtsUi(tts.currentState())
             }
+            tts.playFromParagraphOffset(mapped.first, mapped.second)
+            activity.clearTextSelection()
         }
     }
 

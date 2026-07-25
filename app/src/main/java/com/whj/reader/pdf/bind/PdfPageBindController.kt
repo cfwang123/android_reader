@@ -43,19 +43,7 @@ class PdfPageBindController(
         val expectedH = activity.logicalDisplayHeight(pw, ph, margins, tw)
         // 宽对且有内容，但高度与当前宽度宽高比差很多 → 旋转后串台，必须重 bind
         val heightOk = abs(surface.logicalHeight - expectedH) <= max(4, expectedH / 50)
-        val fullBmp = surface.peekFullBitmap()
-        val renderWidthOk = when {
-            surface.isTileMode || surface.tileCount > 0 ->
-                surface.boundTargetWidth == tw
-            surface.isFullMode && fullBmp != null ->
-                surface.boundTargetWidth == tw &&
-                    isBitmapAspectUsable(fullBmp, expectedH, tw) &&
-                    isBitmapFullQuality(fullBmp, tw)
-            else -> surface.boundTargetWidth == tw
-        }
-        if (surface.pageIndex == index && curW == tw && surface.boundTargetWidth == tw &&
-            !surface.needsContent() && heightOk && renderWidthOk
-        ) {
+        if (surface.pageIndex == index && curW == tw && !surface.needsContent() && heightOk) {
             logPdfZoom(
                 "bind skip page=$index mode=${surface.debugModeLabel()} " +
                     "tiles=${surface.installedTileCount()}/${surface.tileCount} " +
@@ -157,14 +145,12 @@ class PdfPageBindController(
                     )
                 }
                 surf.isFullMode -> {
-                    val onSurface = surf.peekFullBitmap()
                     val cached = activity.pdfRenderCache.bitmapCache.get(page)
-                    val bmp = onSurface ?: cached
-                    if (bmp == null || bmp.isRecycled ||
-                        surf.boundTargetWidth != tw ||
-                        !isBitmapAspectUsable(bmp, surf.logicalHeight, tw) ||
-                        !isBitmapFullQuality(bmp, tw)
+                    if (cached == null || cached.isRecycled ||
+                        !isBitmapAspectUsable(cached, surf.logicalHeight, tw)
                     ) {
+                        enqueueFullPageRender(page, surf, tw, surf.bindGeneration)
+                    } else if (!isBitmapFullQuality(cached, tw)) {
                         enqueueFullPageRender(page, surf, tw, surf.bindGeneration)
                     }
                 }

@@ -32,9 +32,7 @@ class PdfPageAdapter(
         holder.binding.tvPageBadge.text = "${position + 1}"
         holder.binding.tvPageBadge.pivotX = 0f
         holder.binding.tvPageBadge.pivotY = 0f
-        val rv = holder.itemView.parent as? RecyclerView
-        val w = rv?.width?.takeIf { it > 0 }
-            ?: holder.itemView.width.takeIf { it > 0 }
+        val w = holder.itemView.width.takeIf { it > 0 }
             ?: holder.itemView.resources.displayMetrics.widthPixels
         onBindPage(position, holder.binding.ivPage, w)
     }
