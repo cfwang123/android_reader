@@ -10,8 +10,6 @@
 - **Imported background image**: **opacity** slider (0–100%); **background color** as a solid underlay beneath the image; **Stretch** vs **Fit center** scale mode
 - **Highlight colors**: 8 presets (red / green / blue / yellow / purple / orange / black / pink) + **custom HSV picker**
 - **Notes list**: sequence number, add time, reading progress; sorted by progress; title format `N. excerpt…`
-- **PDF highlights & notes**: long-press to select text → **Highlight** in the menu; background or underline styles; optional note; **note bubbles** fixed on the **right edge** of the screen (vertical position follows the highlight)
-- **PDF notes list**: TOC sheet adds a **Notes** tab (TOC / bookmarks / notes); tap to jump and open the note
 
 #### Changed / fixed
 - **Imported background image**: stretch to **full screen** (no vertical tiling / double image); only drawn on the root reading layout
@@ -19,10 +17,6 @@
 - **Imported background image**: bottom status bar (battery, clock, progress) uses the underlay color so body text no longer shows through
 - **Tap zones**: left/right page-turn areas **25%** each (was 33%); **note bubble** has a larger hit area and no longer triggers page turn; tap highlight text opens note preview; bubble tint matches highlight color
 - **Highlight underline**: drawn closer to the text baseline
-- **PDF highlight background**: semi-transparent overlay on page content (PDF page bitmap is opaque; highlight tints text area); tighter rects so text stays inside the highlight
-- **PDF highlight underline**: thinner line, closer to the baseline
-- **PDF note bubble**: sticks to the screen right edge (not offset inward)
-- **PDF after adding highlight**: fix bottom **black bar** until the menu is opened (bottom inset / chrome sync after note dialog)
 - **PDF pinch-zoom**: second finger cancels long-press selection; pinch clears an active text selection (easier zoom on text pages)
 - **Style toggle buttons**: remove stray `?` before selected labels (encoding / checkmark)
 - **PDF open crash**: initialize TTS **before** export panel setup (`tts` lateinit)
@@ -40,8 +34,6 @@
 - **导入背景图**：可调 **图片透明度**（0–100%）；**背景颜色** 作为图片下层垫色；**拉伸** / **适应居中** 缩放模式
 - **高亮颜色**：红 / 绿 / 蓝 / 黄 / 紫 / 橙 / 黑 / 粉 8 种纯色 + **自定义 HSV 取色**
 - **笔记列表**：显示序号、添加时间、正文进度；按正文进度排序；标题 `序号. 摘录…`
-- **PDF 高亮与笔记**：长按选字 → 菜单 **高亮**；背景色 / 下划线样式；可写备注；**备注气泡** 固定在屏幕 **右侧**（纵向跟随高亮位置）
-- **PDF 笔记列表**：目录面板增加 **笔记** Tab（目录 / 书签 / 笔记）；点击跳转并打开备注
 
 #### 修改 / 修复
 - **导入背景图**：拉伸铺满 **全屏**（不再竖向平铺成两张）；仅画在阅读根布局
@@ -49,10 +41,6 @@
 - **导入背景图**：底栏（电量、时钟、进度）使用垫色不透明背景，正文不再透出遮挡
 - **点击区域**：左右翻页区各 **25%**（原 1/3）；**备注气泡** 扩大命中区、点击不翻页；点高亮文本直接打开备注；气泡颜色与高亮一致
 - **高亮下划线**：贴近文字基线绘制
-- **PDF 高亮背景**：半透明叠加在页面上（PDF 页图为不透明位图）；矩形更贴字形，避免文字超出色块
-- **PDF 高亮下划线**：更细，更贴近基线
-- **PDF 备注气泡**：贴屏幕右缘（不再偏左）
-- **PDF 添加高亮后**：修复底部 **黑条**（需呼出菜单才恢复）— 备注对话框关闭后同步底栏 inset
 - **PDF 双指缩放**：第二指落下取消长按选区；捏合时清除文字选区（有字页更容易缩放）
 - **样式切换按钮**：去掉选中项前乱码 `?`（勾选符编码问题）
 - **打开 PDF 闪退**：TTS 在导出面板初始化之前创建（`tts` 未初始化）

@@ -11,7 +11,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 | **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history; long-press clear local records |
 | **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then **prefetch the rest in the background** |
 | **MOBI** | Text body; **view modes**: text / single image / continuous strip; image-only books auto-enter image mode; improved UTF-8 Chinese MOBI |
-| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, **highlights & notes**, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
+| **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
 | **TTS / export** | System speech, rate control (e.g. `1×`), sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
 | **OCR** | Gallery or camera; on-device; scanned PDFs (long pages split into strips) |
 | **Other** | UI color themes (16); **portrait / landscape lock** (menu can stay open); fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
@@ -55,8 +55,8 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **Fast scroll**: right-edge thumb in continuous mode (drag to jump; shows while scrolling, hides ~1s after stop)
 - **TOC** prepared in the background after open
 - **Links**: page jump; external links need confirm; back / forward
-- Select text when available; **handles** to adjust the range; **Highlight** + notes (background/underline, optional remark; **bubbles on the right**; tap to open; **Notes** tab in TOC); **OCR scanned pages** (tall pages tiled; **partial results re-scanned** in strips; page range, cancelable)
-- **TTS / export** after text or OCR; highlight follows scroll and stays above the TTS bar; export by page range
+- Select text when available; **handles** to adjust the range; **OCR scanned pages** (tall pages tiled; **partial results re-scanned** in strips; page range, cancelable)
+- **TTS / export** after text or OCR; sentence highlight follows scroll and stays above the TTS bar; export by page range
 - Side-tap page turn; center-tap opens the menu; **orientation change can keep the 2×4 menu open**; **continuous mode** keeps zoom and horizontal pan ratio when rotating
 
 ### TTS & export
