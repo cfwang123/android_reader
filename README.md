@@ -12,7 +12,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 | **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then **prefetch the rest in the background** |
 | **MOBI** | Text body; **view modes**: text / single image / continuous strip; image-only books auto-enter image mode; improved UTF-8 Chinese MOBI |
 | **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, **highlights & notes**, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
-| **TTS / export** | System speech, sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
+| **TTS / export** | System speech, rate control (e.g. `1×`), sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
 | **OCR** | Gallery or camera; on-device; scanned PDFs (long pages split into strips) |
 | **Other** | UI color themes (16); **portrait / landscape lock** (menu can stay open); fullscreen; app language; keep screen on / idle screen-off; volume-key page turn |
 
@@ -45,7 +45,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter; vertical list scroll does not steal horizontal tab swipe
 - **In-book search**: live results, tap to jump
 - **Gestures**: side-tap page turn, scroll; **volume keys** page turn (default on); **left/right screen edge** (10px) adjusts font size in 0.5sp steps; back can stop TTS only
-- **TTS**: sentence highlight; lock-screen / background continue (below); sleep timer
+- **TTS**: rate on the control bar (e.g. `1×`); sentence highlight; lock-screen / background continue (below); sleep timer; when the bar closes, body text under it redraws immediately
 - **Export speech**: full book or line range; MP3 / M4A / WAV + bitrate
 
 ### PDF reading
@@ -63,7 +63,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 
 | Item | Detail |
 |------|--------|
-| System TTS | Engine, language, voice, rate, highlight, sleep timer |
+| System TTS | Engine, language, voice, rate label (e.g. `1×`), highlight, sleep timer |
 | Continuity | Prepares the next sentences to reduce gaps |
 | Lock-screen | See below |
 | Export | Build audio in chunks, then merge; prefer MP3, else M4A / WAV; live progress dialog |

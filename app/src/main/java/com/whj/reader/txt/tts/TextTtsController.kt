@@ -747,7 +747,7 @@ class TextTtsController(
         } else {
             String.format(java.util.Locale.US, "%.2f", rate).trimEnd('0').trimEnd('.')
         }
-        return body + "Ã"
+        return "$body×"
     }
 
 

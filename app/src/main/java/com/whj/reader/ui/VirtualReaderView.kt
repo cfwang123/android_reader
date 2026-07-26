@@ -104,6 +104,8 @@ class VirtualReaderView @JvmOverloads constructor(
             val v = value.coerceAtLeast(0f)
             if (field == v) return
             field = v
+            // TTS 条/底栏显隐会改变 clip 底边；不重绘时关闭控制条后底部文字仍空白，需滚动才出现
+            invalidate()
         }
 
     private var paragraphs: List<Paragraph> = emptyList()

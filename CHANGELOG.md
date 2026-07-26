@@ -1,6 +1,6 @@
 # Changelog / 更新日志
 
-## 1.0.5 — 2026-07-24 ~ 2026-07-25
+## 1.0.5 — 2026-07-24 ~ 2026-07-26
 
 ### English
 
@@ -29,6 +29,8 @@
 - **PDF modularization**: more controllers (document load/close, page bind/tiles, text extract, chrome/mode/OCR UI); Activity slimmed; submodules hold **Activity references** (no Host narrow interfaces)
 - **TXT modularization**: `ReadingActivity` split into `txt/` controllers (highlight, chrome, nav/bookmarks, TTS, settings, load, manga) — same pattern as PDF
 - **Architecture**: remove remaining custom **interface**s — use function callbacks / `abstract class` / `Callbacks` data holders (system Android listeners unchanged)
+- **TTS rate label** (TXT bar): fix garbled characters after the rate (e.g. `1×` showed mojibake) — multiplication sign encoding
+- **TTS bar dismiss** (TXT / EPUB / MOBI): when speech ends and the control bar hides, body text under the former bar **redraws immediately** (no blank strip until you scroll)
 
 ### 中文
 
@@ -57,6 +59,8 @@
 - **PDF 模块化**：文档打开/关闭、页绑定与 tile、文字抽取、chrome/模式/OCR UI 等控制器接入；Activity 瘦身；子模块直接持有 **Activity 引用**（去掉 Host 窄接口）
 - **TXT 模块化**：`ReadingActivity` 拆分为 `txt/` 下多控制器（高亮、chrome、目录/书签、TTS、设置、加载、漫画），结构与 PDF 一致
 - **架构**：去掉剩余自定义 **interface**，改用函数回调 / `abstract class` / `Callbacks` 持有回调（系统 Android 监听接口不变）
+- **TTS 语速标签**（电子书控制条）：修复 `1×` 后乱码（乘号编码错误）
+- **结束朗读收起控制条**（TXT / EPUB / MOBI）：原控制条遮挡区域的正文 **立即重绘显示**（无需再滚动一下）
 
 ---
 
