@@ -557,6 +557,13 @@
     <string name="settings_idle_screen_off_hint">始终常亮时，无操作超过该时间后允许系统锁屏（0=禁用）</string>
     <string name="settings_idle_screen_off_value">%1$d 分钟</string>
     <string name="settings_idle_screen_off_never">禁用</string>
+    <string name="settings_auto_close">自动关闭时间</string>
+    <string name="settings_auto_close_hint">界面无操作超过该时间后退出朗读并关闭程序（0=禁用）；通知栏/耳机暂停继续会重新计时</string>
+    <string name="settings_auto_close_value_min">%1$d 分钟</string>
+    <string name="settings_auto_close_value_hour">%1$d 小时</string>
+    <string name="settings_auto_close_value_hour_min">%1$d 小时 %2$d 分钟</string>
+    <string name="settings_auto_close_never">禁用</string>
+    <string name="auto_close_triggered">无操作超时，已自动关闭</string>
     <string name="settings_auto_scroll">朗读时：当前句未完整显示则滚到屏顶</string>
     <string name="settings_default_rate">默认语速</string>
     <string name="settings_section_gesture">手势</string>

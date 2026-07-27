@@ -550,6 +550,13 @@
     <string name="settings_idle_screen_off_hint">In always-on mode, allow system sleep after this idle time (0 = never)</string>
     <string name="settings_idle_screen_off_value">%1$d min</string>
     <string name="settings_idle_screen_off_never">Disabled</string>
+    <string name="settings_auto_close">Auto-close</string>
+    <string name="settings_auto_close_hint">After this idle time, stop TTS and close the app (0 = never). Notification / headset pause-resume resets the timer</string>
+    <string name="settings_auto_close_value_min">%1$d min</string>
+    <string name="settings_auto_close_value_hour">%1$d h</string>
+    <string name="settings_auto_close_value_hour_min">%1$d h %2$d min</string>
+    <string name="settings_auto_close_never">Disabled</string>
+    <string name="auto_close_triggered">Idle timeout — closed automatically</string>
     <string name="settings_auto_scroll">While speaking: scroll sentence to top if not fully visible</string>
     <string name="settings_default_rate">Default speech rate</string>
     <string name="settings_section_gesture">Gestures</string>

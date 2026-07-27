@@ -1758,9 +1758,13 @@ class PdfReadingActivity : AppCompatActivity() {
 
     /**
      * 音量键翻页：减=向下/下一页，加=向上/上一页（默认开启）。
+     * TTS 朗读/暂停中不拦截，交给系统调音量。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val ttsActive = ::tts.isInitialized &&
+            tts.currentState().state != TtsManager.State.IDLE
         if (AppSettings.volumeKeyPageTurn(this) &&
+            !ttsActive &&
             event.action == KeyEvent.ACTION_DOWN &&
             event.repeatCount == 0
         ) {

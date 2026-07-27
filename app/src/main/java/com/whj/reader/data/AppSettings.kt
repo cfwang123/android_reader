@@ -128,6 +128,17 @@ object AppSettings {
         prefs(ctx).edit().putInt("idleScreenOffMinutes", minutes.coerceIn(0, 120)).apply()
     }
 
+    /**
+     * 自动关闭时间（分钟）：界面无操作超过该时间后退出 TTS 并关闭程序。
+     * 0 = 禁用；默认 60 分钟。通知栏/耳机暂停继续等操作会重新计时。
+     */
+    fun autoCloseMinutes(ctx: Context): Int =
+        prefs(ctx).getInt("autoCloseMinutes", 60).coerceIn(0, 720)
+
+    fun setAutoCloseMinutes(ctx: Context, minutes: Int) {
+        prefs(ctx).edit().putInt("autoCloseMinutes", minutes.coerceIn(0, 720)).apply()
+    }
+
     fun autoScroll(ctx: Context): Boolean =
         prefs(ctx).getBoolean("autoScroll", true)
 

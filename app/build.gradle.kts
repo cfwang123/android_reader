@@ -13,8 +13,8 @@ android {
         applicationId = "com.whj.reader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.0.5"
+        versionCode = 8
+        versionName = "1.0.6"
     }
 
     // 与 krdict-android 相同：项目根目录 keystore.properties + release.keystore

@@ -17,6 +17,7 @@ import com.whj.reader.model.KeepScreenMode
 import com.whj.reader.ui.AppTheme
 import com.whj.reader.ui.AppThemeSkin
 import com.whj.reader.util.AppUpdate
+import com.whj.reader.util.AutoCloseController
 import com.whj.reader.util.Toasts
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +65,42 @@ class SettingsActivity : AppCompatActivity() {
     private fun formatIdleScreenOff(minutes: Int): String =
         if (minutes <= 0) getString(R.string.settings_idle_screen_off_never)
         else getString(R.string.settings_idle_screen_off_value, minutes)
+
+    /**
+     * 自动关闭可选分钟数（SeekBar 索引 → 分钟）。
+     * 0=禁用；默认 60（索引 4）。
+     */
+    private val autoCloseOptions =
+        intArrayOf(0, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720)
+
+    private fun autoCloseProgressToMinutes(p: Int): Int =
+        autoCloseOptions.getOrElse(p.coerceIn(0, autoCloseOptions.lastIndex)) { 60 }
+
+    private fun autoCloseMinutesToProgress(m: Int): Int {
+        if (m <= 0) return 0
+        var best = 1
+        var bestDiff = Int.MAX_VALUE
+        for (i in 1 until autoCloseOptions.size) {
+            val d = kotlin.math.abs(autoCloseOptions[i] - m)
+            if (d < bestDiff) {
+                bestDiff = d
+                best = i
+            }
+        }
+        return best
+    }
+
+    private fun formatAutoClose(minutes: Int): String =
+        when {
+            minutes <= 0 -> getString(R.string.settings_auto_close_never)
+            minutes < 60 -> getString(R.string.settings_auto_close_value_min, minutes)
+            minutes % 60 == 0 -> getString(R.string.settings_auto_close_value_hour, minutes / 60)
+            else -> getString(
+                R.string.settings_auto_close_value_hour_min,
+                minutes / 60,
+                minutes % 60,
+            )
+        }
 
     private fun keepScreenLabel(mode: KeepScreenMode): String =
         when (mode) {
@@ -224,6 +261,23 @@ class SettingsActivity : AppCompatActivity() {
                 val m = progressToMinutes(progress)
                 binding.tvIdleScreenOff.text = formatIdleScreenOff(m)
                 if (fromUser) AppSettings.setIdleScreenOffMinutes(this@SettingsActivity, m)
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        val autoCloseMin = AppSettings.autoCloseMinutes(this)
+        binding.seekAutoClose.progress = autoCloseMinutesToProgress(autoCloseMin)
+        binding.tvAutoClose.text = formatAutoClose(autoCloseMin)
+        binding.seekAutoClose.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val m = autoCloseProgressToMinutes(progress)
+                binding.tvAutoClose.text = formatAutoClose(m)
+                if (fromUser) {
+                    AppSettings.setAutoCloseMinutes(this@SettingsActivity, m)
+                    AutoCloseController.reloadFromSettings()
+                }
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}

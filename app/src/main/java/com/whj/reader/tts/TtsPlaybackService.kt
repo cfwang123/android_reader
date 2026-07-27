@@ -26,6 +26,7 @@ import androidx.media.app.NotificationCompat as MediaNotificationCompat
 import androidx.media.session.MediaButtonReceiver
 import com.whj.reader.MainActivity
 import com.whj.reader.R
+import com.whj.reader.util.AutoCloseController
 import java.lang.ref.WeakReference
 
 /**
@@ -125,30 +126,36 @@ class TtsPlaybackService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_PLAY_PAUSE -> {
+                // 通知栏暂停/继续：重新计时自动关闭
+                AutoCloseController.onUserActivity("notif_play_pause")
                 TtsManager.playPauseFromExternal()
                 enterForegroundIfNeeded()
                 refreshChrome()
                 return START_STICKY
             }
             ACTION_PAUSE -> {
+                AutoCloseController.onUserActivity("notif_pause")
                 TtsManager.pauseFromExternal()
                 enterForegroundIfNeeded()
                 refreshChrome()
                 return START_STICKY
             }
             ACTION_PLAY -> {
+                AutoCloseController.onUserActivity("notif_play")
                 TtsManager.resumeFromExternal()
                 enterForegroundIfNeeded()
                 refreshChrome()
                 return START_STICKY
             }
             ACTION_PREV -> {
+                AutoCloseController.onUserActivity("notif_prev")
                 TtsManager.previousSentenceFromExternal()
                 enterForegroundIfNeeded()
                 refreshChrome()
                 return START_STICKY
             }
             ACTION_NEXT -> {
+                AutoCloseController.onUserActivity("notif_next")
                 TtsManager.nextSentenceFromExternal()
                 enterForegroundIfNeeded()
                 refreshChrome()
@@ -254,6 +261,8 @@ class TtsPlaybackService : Service() {
             setCallback(
                 object : MediaSessionCompat.Callback() {
                     override fun onPlay() {
+                        // 耳机/锁屏继续：重新计时自动关闭
+                        AutoCloseController.onUserActivity("headset_play")
                         TtsManager.resumeFromExternal()
                         refreshChrome()
                     }
@@ -266,16 +275,19 @@ class TtsPlaybackService : Service() {
                             updateSessionState(playing = true, active = true)
                             return
                         }
+                        AutoCloseController.onUserActivity("headset_pause")
                         TtsManager.pauseFromExternal()
                         refreshChrome()
                     }
 
                     override fun onSkipToNext() {
+                        AutoCloseController.onUserActivity("headset_next")
                         TtsManager.nextSentenceFromExternal()
                         refreshChrome()
                     }
 
                     override fun onSkipToPrevious() {
+                        AutoCloseController.onUserActivity("headset_prev")
                         TtsManager.previousSentenceFromExternal()
                         refreshChrome()
                     }

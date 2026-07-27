@@ -683,9 +683,15 @@ class ReadingActivity : AppCompatActivity() {
         )
     }
 
-    /** 音量键翻页：减=下一页，加=上一页（默认开启） */
+    /**
+     * 音量键翻页：减=下一页，加=上一页（默认开启）。
+     * TTS 朗读/暂停中不拦截，交给系统调音量。
+     */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val ttsActive = ::tts.isInitialized &&
+            tts.currentState().state != TtsManager.State.IDLE
         if (AppSettings.volumeKeyPageTurn(this) &&
+            !ttsActive &&
             event.action == KeyEvent.ACTION_DOWN &&
             event.repeatCount == 0
         ) {

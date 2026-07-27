@@ -194,6 +194,46 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/settings_auto_close"
+                android:textColor="@color/text_primary" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_auto_close_hint"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <SeekBar
+                    android:id="@+id/seekAutoClose"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="11"
+                    android:progress="4" />
+
+                <TextView
+                    android:id="@+id/tvAutoClose"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="72dp"
+                    android:gravity="end"
+                    android:paddingStart="8dp"
+                    android:text="1 小时"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
             <com.google.android.material.switchmaterial.SwitchMaterial
                 android:id="@+id/switchAutoScroll"
                 android:layout_width="match_parent"

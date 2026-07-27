@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 1.0.6 — 2026-07-27
+
+### English
+
+#### New
+- **Auto-close**: settings option (default **1 hour**; 0 = off). After idle UI time, stop TTS and close the app. Touch / keys, notification pause-resume, and headset pause-resume **reset the timer**
+
+#### Changed / fixed
+- **Volume keys while TTS is active** (speaking or paused): adjust system media volume instead of page turn (TXT / EPUB / MOBI / PDF)
+
+### 中文
+
+#### 新增
+- **自动关闭时间**：设置项（默认 **1 小时**；0 = 禁用）。界面无操作超时后退出朗读并关闭程序。触摸/按键、通知栏暂停继续、耳机暂停继续会 **重新计时**
+
+#### 修改 / 修复
+- **TTS 朗读/暂停中**：音量键改为调节系统音量，不再翻页（电子书与 PDF）
+
+---
+
 ## 1.0.5 — 2026-07-24 ~ 2026-07-26
 
 ### English
