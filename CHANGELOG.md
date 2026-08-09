@@ -1,6 +1,6 @@
 # Changelog / 更新日志
 
-## 1.0.6 — 2026-07-27
+## 1.0.6 — 2026-07-27 ~ 2026-07-28
 
 ### English
 
@@ -8,7 +8,12 @@
 - **Auto-close**: settings option (default **1 hour**; 0 = off). After idle UI time, stop TTS and close the app. Touch / keys, notification pause-resume, and headset pause-resume **reset the timer**
 
 #### Changed / fixed
+- **PDF single-page mode**: left/right side tap (and swipe / volume keys) always turns **one full page**, even on tall pages — no in-page screen scroll first (vertical pan still works for reading long pages)
+- **PDF pinch-zoom**: start scaling as soon as the second finger lands (bypass system min-span dead zone that ignored the first part of the pinch)
 - **Volume keys while TTS is active** (speaking or paused): adjust system media volume instead of page turn (TXT / EPUB / MOBI / PDF)
+- **TTS volume pumping**: use media/music audio attributes (avoid SPEECH AGC); pin `volume=1.0` and `STREAM_MUSIC` on every utterance
+- **PDF long-press vs pan**: hold still **1 s** to select text; **any move before long-press is pan** (cancels pending select); after a short hold then drag, continuous mode scrolls **immediately** (no hitch)
+- **TTS “read from selection” while speaking**: interrupt current sentence and **jump to the selected paragraph / offset** (ebook “Read from here”; PDF “Read selection”)
 
 ### 中文
 
@@ -16,7 +21,12 @@
 - **自动关闭时间**：设置项（默认 **1 小时**；0 = 禁用）。界面无操作超时后退出朗读并关闭程序。触摸/按键、通知栏暂停继续、耳机暂停继续会 **重新计时**
 
 #### 修改 / 修复
+- **PDF 单页模式**：左右侧点（及滑动/音量键）始终 **整页翻 1 页**，超长图也不再先页内滚屏（页内浏览仍可用竖向拖动）
+- **PDF 双指缩放**：第二指落下即开始缩放（绕过系统 minSpan 死区，避免前半段捏合无反应）
 - **TTS 朗读/暂停中**：音量键改为调节系统音量，不再翻页（电子书与 PDF）
+- **TTS 音量时大时小**：朗读属性改为媒体音乐流（避免 SPEECH 路径 AGC）；每次 speak 固定 `volume=1.0` 与 `STREAM_MUSIC`
+- **PDF 长按选字与 pan**：需**静止按住 1 秒**才选字；**长按触发前移动一律 pan**（取消待选字）；按住片刻再拖时连续模式**立即跟手滚动**（消除顿挫）
+- **朗读中选区起读**：电子书「从本段开始朗读」、PDF「朗读选区」会**打断当前句并跳到选区起点**继续往下读
 
 ---
 

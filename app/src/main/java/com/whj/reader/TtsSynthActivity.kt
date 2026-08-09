@@ -263,7 +263,8 @@ class TtsSynthActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     engine.setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            // 与朗读一致：MUSIC 避免 SPEECH 路径 AGC 导致音量起伏
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                             .build(),
                     )
                 }

@@ -183,6 +183,10 @@ class PdfModeController(
                 activity.handleTap(x, zoomLayout.width.toFloat().coerceAtLeast(1f))
             }
         }
+        zoomLayout.isSelectionLive = { activity.hasTextSelection() }
+        zoomLayout.onSelectionGestureCancel = {
+            activity.cancelPendingTextSelectionGesture()
+        }
         zoomLayout.onLongPress = { x, y -> activity.beginTextSelection(x, y) }
         zoomLayout.onSelectionDrag = { x, y, ended ->
             activity.textSelCtrl.dragX = x
@@ -349,37 +353,25 @@ class PdfModeController(
         activity.rebindZoomTarget()
         val old = activity.singleBitmap
         activity.singleBitmap = result.bitmap
-        b.ivPdfPage.layoutParams?.let { lp ->
-            lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-            lp.height = ViewGroup.LayoutParams.MATCH_PARENT
-            b.ivPdfPage.layoutParams = lp
-        }
+        // 勿先强制 MATCH_PARENT：放大态下会先把加高内容压回视口高度，翻页时整页「跳一下」
         b.ivPdfPage.setImageBitmap(result.bitmap)
         activity.applyNightFilter(b.ivPdfPage)
         val container = b.pdfContainer
         ReaderLog.i(ReaderLog.Module.PDF_ORIENT,
             "showSinglePage page=$i container=${activity.lastRenderW}x${activity.lastRenderH} " +
                 "fitByWidth=${result.fitByWidth} bmp=${result.bitmap.width}x${result.bitmap.height} " +
-                "zoom=${container.contentZoom} pan=(${container.getPanX()},${container.getPanY()})",
+                "zoom=${container.contentZoom} pan=(${container.getPanX()},${container.getPanY()}) " +
+                "snap=$tallPanSnap",
         )
+        // 同帧：矩阵 + 落点（保留 zoom）；layout 变更后再校正一次，避免双 post 中间帧乱 pan
+        applySinglePageImageMatrix(panSnap = tallPanSnap)
         b.ivPdfPage.post {
             if (gen != activity.singlePageRenderGen || activity.isFinishing || activity.isDestroyed) return@post
-            applySinglePageImageMatrix()
-            b.pdfContainer.post {
-                if (gen != activity.singlePageRenderGen || activity.isFinishing || activity.isDestroyed) return@post
-                val host = b.pdfContainer
-                val (minY, maxY) = host.verticalPanLimits()
-                val panY = when (tallPanSnap) {
-                    PdfReadingActivity.TallPanSnap.PRESERVE -> host.getPanY()
-                    PdfReadingActivity.TallPanSnap.TOP -> maxY
-                    PdfReadingActivity.TallPanSnap.BOTTOM -> minY
-                }
-                host.setTransform(host.contentZoom, host.getPanX(), panY, notify = false)
-                updatePageBadge()
-                activity.updateProgressLabel()
-                if (activity.allowProgressSave) activity.saveProgress(activity.pageIndex)
-                finishSinglePageRender(gen)
-            }
+            applyHostPanSnap(tallPanSnap)
+            updatePageBadge()
+            activity.updateProgressLabel()
+            if (activity.allowProgressSave) activity.saveProgress(activity.pageIndex)
+            finishSinglePageRender(gen)
         }
         if (old != null && old !== result.bitmap) {
             b.ivPdfPage.post {
@@ -388,6 +380,27 @@ class PdfModeController(
                 }
             }
         }
+    }
+
+    /**
+     * 换页/重渲后落点：保留 zoom。
+     * - TOP/BOTTOM：竖向顶/底；放大时水平靠左（阅读起点），避免继承上一页 pan 导致跳动
+     * - PRESERVE：夹紧到新页边界内
+     */
+    private fun applyHostPanSnap(tallPanSnap: PdfReadingActivity.TallPanSnap) {
+        val host = b.pdfContainer
+        val (minY, maxY) = host.verticalPanLimits()
+        val panY = when (tallPanSnap) {
+            PdfReadingActivity.TallPanSnap.PRESERVE -> host.getPanY()
+            PdfReadingActivity.TallPanSnap.TOP -> maxY
+            PdfReadingActivity.TallPanSnap.BOTTOM -> minY
+        }
+        val panX = when (tallPanSnap) {
+            PdfReadingActivity.TallPanSnap.PRESERVE -> host.getPanX()
+            // 放大翻页：回到内容左上/左下，不沿用上一页偏移
+            else -> if (host.isZoomed()) 0f else host.getPanX()
+        }
+        host.setTransform(host.contentZoom, panX, panY, notify = false)
     }
 
     fun finishSinglePageRender(completedGen: Long) {
@@ -489,78 +502,25 @@ class PdfModeController(
             rv.post { activity.refreshVisiblePageTiles(forceRender = true) }
             return
         }
-        if (activity.needsTallSinglePageZoomHost()) {
-            activity.ensureSinglePageTallPanReady()
-            val host = b.pdfContainer
-            val viewportH = host.height.coerceAtLeast(1)
-            val step = viewportH * 0.8f
-            val dy = if (forward) -step else step
-            val panYBefore = host.getPanY()
-            val (_, movedY) = host.panContentBy(0f, dy)
-            val panY = host.getPanY()
-            val (minY, maxY) = host.verticalPanLimits()
-            val canPanVert = minY < maxY - 1f
-            val scrollRange = (maxY - minY).coerceAtLeast(1f)
-            val viewFrac = kotlin.math.abs(movedY) / viewportH
-            val contentFrac = kotlin.math.abs(movedY) / scrollRange
-            val atBottom = canPanVert && panY <= minY + 2f
-            val atTop = canPanVert && panY >= maxY - 2f
-            ReaderLog.i(ReaderLog.Module.PDF_PAGE_TURN,
-                "singleTall src=$source fwd=$forward page=${activity.pageIndex} " +
-                    "screen=${dm.widthPixels}x${dm.heightPixels} host=${host.width}x$viewportH " +
-                    "step=$step dy=$dy movedY=$movedY pan $panYBefore->$panY " +
-                    "bounds=$minY..$maxY canPan=$canPanVert atTop=$atTop atBottom=$atBottom " +
-                    "viewFrac=${"%.2f".format(viewFrac)} contentFrac=${"%.3f".format(contentFrac)} " +
-                    "zoom=${host.contentZoom} iv=${b.ivPdfPage.width}x${b.ivPdfPage.height}",
-            )
-            if (kotlin.math.abs(movedY) > 0.5f) {
-                activity.updateProgressLabel()
-                activity.refreshSinglePageTiles(forceRender = true)
-                return
-            }
-            if (!canPanVert) {
-                ReaderLog.w(ReaderLog.Module.PDF_PAGE_TURN,
-                    "singleTall blocked: vertical pan range collapsed, skip flip",
-                )
-                return
-            }
-            if (forward) {
-                if (!atBottom) {
-                    ReaderLog.w(ReaderLog.Module.PDF_PAGE_TURN,
-                        "singleTall blocked: not at bottom (panY=$panY minY=$minY)",
-                    )
-                    return
-                }
-            } else if (!atTop) {
-                ReaderLog.w(ReaderLog.Module.PDF_PAGE_TURN,
-                    "singleTall blocked: not at top (panY=$panY maxY=$maxY)",
-                )
-                return
-            }
-            val next = if (forward) activity.pageIndex + 1 else activity.pageIndex - 1
-            if (next !in 0 until activity.pageCount) {
-                Toasts.show(ctx, if (forward) R.string.page_bottom else R.string.page_top)
-                return
-            }
-            ReaderLog.i(ReaderLog.Module.PDF_PAGE_TURN,
-                "singleTall flip page=${activity.pageIndex} -> $next src=$source",
-            )
-            showSinglePage(
-                next,
-                if (forward) PdfReadingActivity.TallPanSnap.TOP else PdfReadingActivity.TallPanSnap.BOTTOM,
-            )
-            return
-        }
+        // 单页模式（含超长图）：侧点/滑动/音量键始终整页翻，不在页内滚屏。
+        // 超长图页内浏览靠竖向拖动 pan；换页后前进落页首、后退落页末。
         val next = if (forward) activity.pageIndex + 1 else activity.pageIndex - 1
+        val tall = activity.needsTallSinglePageZoomHost()
+        val snap = if (tall && !forward) {
+            PdfReadingActivity.TallPanSnap.BOTTOM
+        } else {
+            PdfReadingActivity.TallPanSnap.TOP
+        }
         ReaderLog.i(ReaderLog.Module.PDF_PAGE_TURN,
             "single src=$source fwd=$forward page=${activity.pageIndex} -> $next " +
+                "tall=$tall snap=$snap " +
                 "screen=${dm.widthPixels}x${dm.heightPixels} dens=${dm.densityDpi}",
         )
         if (next !in 0 until activity.pageCount) {
             Toasts.show(ctx, if (forward) R.string.page_bottom else R.string.page_top)
             return
         }
-        showSinglePage(next, PdfReadingActivity.TallPanSnap.TOP)
+        showSinglePage(next, snap)
     }
 
     fun relayoutAfterOrientationChange() {
@@ -752,7 +712,9 @@ class PdfModeController(
         )
     }
 
-    fun applySinglePageImageMatrix() {
+    internal fun applySinglePageImageMatrix(
+        panSnap: PdfReadingActivity.TallPanSnap? = null,
+    ) {
         val iv = b.ivPdfPage
         val host = b.pdfContainer
         val d = iv.drawable ?: return
@@ -809,11 +771,15 @@ class PdfModeController(
                 "iv=${iv.width}x${iv.height} lpH=$layoutH dx=$dx dy=$dy " +
                 "canPan=${host.canPanContent()} zoom=${host.contentZoom} " +
                 "pan=(${host.getPanX()},${host.getPanY()}) " +
-                "bounds=${host.verticalPanLimits()}",
+                "bounds=${host.verticalPanLimits()} snap=$panSnap",
         )
         activity.updateSinglePageTallHostFlag()
         activity.updatePdfZoomLimitsForSinglePage()
-        // 边界变更后重夹 pan，避免旧 panY 落在错误区间
-        host.setTransform(host.contentZoom, host.getPanX(), host.getPanY(), notify = false)
+        // 换页指定落点时直接 snap，避免先 preserve 再 TOP 造成双跳
+        if (panSnap != null) {
+            applyHostPanSnap(panSnap)
+        } else {
+            host.setTransform(host.contentZoom, host.getPanX(), host.getPanY(), notify = false)
+        }
     }
 }

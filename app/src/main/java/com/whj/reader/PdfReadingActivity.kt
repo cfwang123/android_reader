@@ -995,14 +995,18 @@ class PdfReadingActivity : AppCompatActivity() {
         val host = binding.pdfContainer
         val vh = host.height.toFloat().coerceAtLeast(1f)
         host.allowTallZoomTarget = surface.logicalHeight > vh + 1f
-        host.setTransform(host.contentZoom, host.getPanX(), host.getPanY(), notify = false)
+        // 一次落点：放大时水平回左上/左下，避免 preserve 旧 pan 再 clamp 造成跳动
         val (minY, maxY) = host.verticalPanLimits()
         val panY = when (tallPanSnap) {
             TallPanSnap.PRESERVE -> host.getPanY()
             TallPanSnap.TOP -> maxY
             TallPanSnap.BOTTOM -> minY
         }
-        host.setTransform(host.contentZoom, host.getPanX(), panY, notify = false)
+        val panX = when (tallPanSnap) {
+            TallPanSnap.PRESERVE -> host.getPanX()
+            else -> if (host.isZoomed()) 0f else host.getPanX()
+        }
+        host.setTransform(host.contentZoom, panX, panY, notify = false)
     }
 
     /**
@@ -2708,6 +2712,10 @@ class PdfReadingActivity : AppCompatActivity() {
 
     internal fun beginTextSelection(containerX: Float, containerY: Float) =
         selectionInteractor.beginTextSelection(containerX, containerY)
+
+    /** 滑动改 pan / 抬手未落字：作废进行中的长按选字 */
+    internal fun cancelPendingTextSelectionGesture() =
+        selectionInteractor.cancelPendingTextSelectionGesture()
 
     /** 文字已就绪（或确认无字）后进入选区，禁止再触发提取递归 */
     private fun beginTextSelectionAfterReady(containerX: Float, containerY: Float) =

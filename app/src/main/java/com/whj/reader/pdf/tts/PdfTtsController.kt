@@ -219,6 +219,7 @@ class PdfTtsController(
 
     fun startTtsFromSelection() {
         if (!activity.hasTextSelection()) return
+        // 立即拷贝选区坐标：随后 ActionMode.finish 会清 UI 选区
         val state = textSelCtrl.state
         val page = state.startPage
         val charIdx = state.startChar
@@ -228,10 +229,10 @@ class PdfTtsController(
         activity.ensurePagesExtracted(
             pages = activity.pagesNear(page, before = 1, after = 2),
             showToast = true,
+            // 朗读中从选区跳转：勿用 preserve 卡住旧句，直接重映射起播点
             preserveTtsPosition = false,
         ) {
             if (activity.isFinishing || activity.isDestroyed) return@ensurePagesExtracted
-            activity.clampSelectionToLoadedChars()
             val p = page.coerceIn(0, (activity.pageCount - 1).coerceAtLeast(0))
             val c = textCache.pageChars[p]?.let { chars ->
                 if (chars.isEmpty()) charIdx
@@ -243,19 +244,27 @@ class PdfTtsController(
                 ReaderLog.Module.PDF_SELECT,
                 "ttsFromSel page=$p char=$c mapped=$mapped " +
                     "linkPage=${link?.pageIndex} paras=${textCache.paragraphs.size} " +
-                    "linksOnPage=${textCache.paraLinks.count { it.pageIndex == p }}",
+                    "wasSpeaking=${tts.currentState().state}",
             )
             if (mapped == null || link == null || link.pageIndex != p) {
                 activity.showToast(R.string.pdf_tts_sel_map_fail)
                 activity.clearTextSelection()
                 return@ensurePagesExtracted
             }
-            tts.setDocument(textCache.paragraphs)
+            // 已有文档且在朗读中：update 保索引；否则 setDocument（会 stop）
+            if (textCache.paragraphs.isNotEmpty() &&
+                tts.currentState().state != TtsManager.State.IDLE
+            ) {
+                tts.updateDocumentKeepPosition(textCache.paragraphs)
+            } else {
+                tts.setDocument(textCache.paragraphs)
+            }
             tts.setSessionTitle(activity.displayTitle)
             if (!tts.isReady()) {
                 tts.reinit()
                 updateTtsUi(tts.currentState())
             }
+            // 从选区字符偏移起播到文末（打断当前句并跳转）
             tts.playFromParagraphOffset(mapped.first, mapped.second)
             activity.clearTextSelection()
         }

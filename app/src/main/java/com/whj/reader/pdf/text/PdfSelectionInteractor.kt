@@ -49,6 +49,12 @@ class PdfSelectionInteractor(
     private val textCache get() = activity.textCache
     private val density get() = ctx.resources.displayMetrics.density
 
+    /**
+     * 长按选字代数：滑动改 pan / 失败 / 显式取消时递增，丢弃过期的异步抽字回调，
+     * 避免「已开始拖页却又弹出选区」。
+     */
+    private var selectionGestureGen = 0
+
     private var textActionMode: ActionMode? = null
 
     fun compareDocPos(pageA: Int, charA: Int, pageB: Int, charB: Int): Int =
@@ -116,13 +122,24 @@ class PdfSelectionInteractor(
         return out
     }
 
+    /**
+     * 取消尚未落字的选字手势（滑动改 pan / 抬手 / 抽字失败）。
+     * 已有选区时不清除，仅递增代数作废进行中的 begin。
+     */
+    fun cancelPendingTextSelectionGesture() {
+        selectionGestureGen++
+        b.pdfContainer.cancelSelectingGesture()
+        ReaderLog.d(ReaderLog.Module.PDF_SELECT, "cancelPendingSelection gen=$selectionGestureGen")
+    }
+
     fun beginTextSelection(containerX: Float, containerY: Float) {
+        val gen = ++selectionGestureGen
         val vis = activity.currentVisiblePage()
         val est = pageIndexAtContainerY(containerY) ?: vis
         ReaderLog.i(
             ReaderLog.Module.PDF_SELECT,
             "longPress xy=(${"%.0f".format(containerX)},${"%.0f".format(containerY)}) " +
-                "mode=${activity.pageMode} vis=$vis est=$est " +
+                "mode=${activity.pageMode} vis=$vis est=$est gen=$gen " +
                 "rawKeys=${textCache.rawPageCache.keys.sorted()} " +
                 "textCache.pageChars=${textCache.pageChars.mapValues { it.value.size }.toSortedMap()} " +
                 "rawSize(est)=${textCache.rawPageCache[est]?.size} textCache.pageChars(est)=${textCache.pageChars[est]?.size}",
@@ -131,20 +148,25 @@ class PdfSelectionInteractor(
         val uncached = need.filter { it !in textCache.rawPageCache }
         fun afterExtract() {
             if (activity.isFinishing || activity.isDestroyed) return
+            if (gen != selectionGestureGen) {
+                ReaderLog.d(ReaderLog.Module.PDF_SELECT, "begin stale afterExtract gen=$gen now=$selectionGestureGen")
+                return
+            }
             if (textCache.pageChars[est].isNullOrEmpty() && textCache.rawPageCache.isNotEmpty()) {
                 runCatching { activity.rebuildTextFromCache(preserveTtsPosition = false) }
             }
-            beginTextSelectionAfterReady(containerX, containerY)
+            beginTextSelectionAfterReady(containerX, containerY, gen)
+            if (gen != selectionGestureGen) return
             if (!hasTextSelection()) {
                 val rawN = textCache.rawPageCache[est]?.size ?: -1
                 val pcN = textCache.pageChars[est]?.size ?: -1
                 ReaderLog.w(
                     ReaderLog.Module.PDF_SELECT,
-                    "begin failed after extract est=$est rawN=$rawN pageCharsN=$pcN",
+                    "begin failed after extract est=$est rawN=$rawN pageCharsN=$pcN " +
+                        "(no toast; press not on text or page has no text layer)",
                 )
-                if (rawN <= 0 || pcN <= 0) {
-                    Toasts.show(ctx, R.string.pdf_select_no_text)
-                }
+                // 无文字层 / 点位无字：静默取消，不弹 toast
+                b.pdfContainer.cancelSelectingGesture()
             }
         }
         if (uncached.isNotEmpty()) {
@@ -159,9 +181,19 @@ class PdfSelectionInteractor(
     }
 
     /** 文字已就绪（或确认无字）后进入选区，禁止再触发提取递归 */
-    fun beginTextSelectionAfterReady(containerX: Float, containerY: Float) {
+    fun beginTextSelectionAfterReady(
+        containerX: Float,
+        containerY: Float,
+        gestureGen: Int = selectionGestureGen,
+    ) {
+        if (gestureGen != selectionGestureGen) {
+            ReaderLog.d(ReaderLog.Module.PDF_SELECT, "beginAfterReady stale gen=$gestureGen now=$selectionGestureGen")
+            return
+        }
+        // 起选必须点在字上（距离阈值内）；空白处 / 无文字层不吸附最近字，不进入选区。
+        // 拖选扩展仍用 forSelection=true（放宽吸附，便于跨页拖）。
         val hit = runCatching {
-            hitTestChar(containerX, containerY, forSelection = true)
+            hitTestChar(containerX, containerY, forSelection = false)
         }.getOrNull() ?: run {
             ReaderLog.w(
                 ReaderLog.Module.PDF_SELECT,
@@ -170,6 +202,7 @@ class PdfSelectionInteractor(
                     "est=${pageIndexAtContainerY(containerY)} " +
                     "pageCharsKeys=${textCache.pageChars.keys.sorted()}",
             )
+            b.pdfContainer.cancelSelectingGesture()
             return
         }
         val page = hit.first
@@ -180,12 +213,20 @@ class PdfSelectionInteractor(
                 ReaderLog.Module.PDF_SELECT,
                 "begin hit p=$page char=$charIdx but textCache.pageChars empty raw=${textCache.rawPageCache[page]?.size}",
             )
+            b.pdfContainer.cancelSelectingGesture()
+            return
+        }
+        // 落字前再确认手势未取消（滑动改 pan 会递增 gen）
+        if (gestureGen != selectionGestureGen) {
+            ReaderLog.d(ReaderLog.Module.PDF_SELECT, "begin drop before commit gen=$gestureGen now=$selectionGestureGen")
             return
         }
         val lo = chars.minOf { it.indexOnPage }
         val hi = chars.maxOf { it.indexOnPage }
         charIdx = charIdx.coerceIn(lo, hi)
         val endIdx = (charIdx + 1).coerceAtMost(hi)
+        // 真正落字后再进入 selecting，避免抽字期间挡住 pan
+        b.pdfContainer.enterSelectingMode()
         textSel.anchorPage = page
         textSel.anchorChar = charIdx
         textSel.startPage = page
@@ -205,10 +246,15 @@ class PdfSelectionInteractor(
             showToast = false,
             preserveTtsPosition = true,
         ) {
+            if (gestureGen != selectionGestureGen) return@ensurePagesExtracted
             if (!activity.isFinishing && !activity.isDestroyed && hasTextSelection()) {
                 clampSelectionToLoadedChars()
                 refreshSelectionOverlay()
             }
+        }
+        if (gestureGen != selectionGestureGen) {
+            clearTextSelection()
+            return
         }
         runCatching {
             refreshSelectionOverlay()
@@ -955,8 +1001,10 @@ class PdfSelectionInteractor(
                         return true
                     }
                     2 -> {
-                        mode.finish()
+                        // 先起播再 finish：onDestroy 会清选区；startTtsFromSelection
+                        // 在异步抽字前已捕获 page/char，朗读中也可跳到选区起点续读
                         activity.startTtsFromSelection()
+                        mode.finish()
                         return true
                     }
                 }

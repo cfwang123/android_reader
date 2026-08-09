@@ -386,13 +386,14 @@ class ReadingActivity : AppCompatActivity() {
         }
         reader.onReadFromParagraph = { paraIndex, charOffset ->
             clearSearchHighlight()
-            // 关闭菜单，打开 TTS 条并从选区起点读到文末
+            // 关闭菜单，打开 TTS 条；朗读中也会打断当前句并跳到选区段落
             chromeVisible = false
             ttsBarOpen = true
             applyChromeVisibility()
             if (!tts.isReady()) {
                 tts.reinit()
             }
+            // playFromParagraphOffset 内部会 stop 队列再从新偏移起播
             tts.playFromParagraphOffset(paraIndex, charOffset)
         }
         reader.onHighlightMenuClick = { addHighlightFromSelection() }

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -440,12 +441,9 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             runCatching {
-                engine.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build(),
-                )
+                // 用 MUSIC 而非 SPEECH：有声书式连续朗读。
+                // SPEECH 在部分 OEM 上会走语音增强/AGC，导致句间音量时大时小。
+                engine.setAudioAttributes(mediaPlaybackAudioAttributes())
             }
         }
         // 先恢复发音人；成功则不必再 setLanguage（避免冲掉已选 voice）
@@ -836,6 +834,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     /**
      * speak 参数。rate/pitch 必须是 **Int**（TextToSpeechService.getIntParam）。
      * 会与 setSpeechRate 写入的 mParams 合并；这里显式写入，避免系统默认 600 等异常值盖过。
+     * volume 固定 1.0：部分引擎句间 volume 未初始化会忽大忽小。
      */
     private fun buildSpeakParams(): Bundle {
         val params = Bundle()
@@ -844,14 +843,25 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         val pitchParam = pitchToEngineParam(pitch)
         params.putInt(KEY_PARAM_RATE, rateParam)
         params.putInt(KEY_PARAM_PITCH, pitchParam)
+        // 相对当前媒体流满音量；必须用 Float，引擎 getFloatParam
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        // 固定走音乐流，与音量键/AudioFocus 一致，避免落到通知流等
+        params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
         Log.i(
             TAG,
             "speak params rateInt=$rateParam (speed=$speed) pitchInt=$pitchParam " +
-                "uiRate=$speechRate uiPitch=$pitch xiaomi=${isXiaomiEngine()} " +
+                "vol=1.0 uiRate=$speechRate uiPitch=$pitch xiaomi=${isXiaomiEngine()} " +
                 "sysRate=${systemTtsDefaultRate()} eng=${boundEnginePackage()}",
         )
         return params
     }
+
+    /** 有声书式媒体播放属性（连续朗读，避免 SPEECH 路径 AGC） */
+    private fun mediaPlaybackAudioAttributes(): AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
 
     fun getVoices(): List<Voice> {
         val engine = tts ?: return emptyList()
@@ -985,6 +995,13 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             notifyState()
             return
         }
+        // 朗读中/暂停中「从选区起读」：先打断当前管道与引擎，再从新位置起播
+        // （与 nextSentence / jumpToParagraph 一致，避免旧 onDone 抢进度）
+        clearQueueState()
+        runCatching { tts?.stop() }
+        waitingForMoreContent = false
+        pendingPlay = null
+
         paraIndex = paragraphIndex.coerceIn(0, paragraphs.lastIndex)
         sentIndex = sentenceIndex.coerceAtLeast(0)
         val sents = sentences.getOrNull(paraIndex).orEmpty()
@@ -996,7 +1013,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         }
         if (sentIndex > sents.lastIndex) sentIndex = sents.lastIndex
         state = State.SPEAKING
-        speakCurrent()
+        speakCurrent(flush = true)
     }
 
     fun playPauseToggle() {
@@ -1376,6 +1393,10 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         // 小米等引擎：每次 speak 前重设；rate 必须在引擎允许范围内
         applySpeechRateToEngine(engine)
         engine.setPitch(effectivePitchForEngine())
+        // 起播/FLUSH 时再钉一次 AudioAttributes，防止 OEM 异步改回 SPEECH 路径
+        if (flush && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            runCatching { engine.setAudioAttributes(mediaPlaybackAudioAttributes()) }
+        }
         val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         val result = engine.speak(unit.text, mode, buildSpeakParams(), unit.id)
         if (result == TextToSpeech.ERROR) {

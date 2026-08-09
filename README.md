@@ -40,12 +40,12 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **TXT**: auto or manual encoding; simplified↔traditional Chinese
 - **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; long-press image → gallery
 - **MOBI view modes** (Style → View mode): **Text** (normal reading); **Single image** (one picture at a time, pinch-zoom, side-tap / swipe); **Continuous strip** (vertical image stream). Image-only MOBI auto-enters image mode; progress **image n / total** in image modes. **Portrait ↔ landscape** keeps zoom and horizontal pan ratio in continuous strip
-- **Text selection**: long-press to select; **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / read-from-here menu
+- **Text selection**: long-press to select (ebooks use system long-press; **PDF needs ~1 s still hold** — any move before that is pan/scroll); **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / **read from here** (also jumps mid-TTS to the selection)
 - **Highlights & notes** (TXT / EPUB / MOBI): **Highlight** from the selection menu; background or underline; optional note; **note bubbles** on the right; tap highlight or bubble to view/edit; **Notes** tab in the TOC sheet
 - **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter; vertical list scroll does not steal horizontal tab swipe
 - **In-book search**: live results, tap to jump
 - **Gestures**: side-tap page turn, scroll; **volume keys** page turn (default on; **media volume while TTS is speaking/paused**); **left/right screen edge** (10px) adjusts font size in 0.5sp steps; back can stop TTS only
-- **TTS**: rate on the control bar (e.g. `1×`); sentence highlight; lock-screen / background continue (below); sleep timer; **auto-close** (default 1 h idle → stop TTS and close app; notification / headset pause-resume resets the timer); when the bar closes, body text under it redraws immediately
+- **TTS**: rate on the control bar (e.g. `1×`); sentence highlight; lock-screen / background continue (below); sleep timer; **auto-close** (default 1 h idle → stop TTS and close app; notification / headset pause-resume resets the timer); while speaking, **read-from-selection jumps to that offset** and continues; when the bar closes, body text under it redraws immediately
 - **Export speech**: full book or line range; MP3 / M4A / WAV + bitrate
 
 ### PDF reading
@@ -56,14 +56,14 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **TOC** prepared in the background after open
 - **Links**: page jump; external links need confirm; back / forward
 - Select text when available; **handles** to adjust the range; **OCR scanned pages** (tall pages tiled; **partial results re-scanned** in strips; page range, cancelable)
-- **TTS / export** after text or OCR; sentence highlight follows scroll and stays above the TTS bar; export by page range
-- Side-tap page turn; center-tap opens the menu; **orientation change can keep the 2×4 menu open**; **continuous mode** keeps zoom and horizontal pan ratio when rotating
+- **TTS / export** after text or OCR; sentence highlight follows scroll and stays above the TTS bar; **read selection** (also jumps mid-TTS to the selection start); export by page range
+- Side-tap page turn; center-tap opens the menu; pinch-zoom then one-finger pan; **~1 s still long-press to select text** (move before that is pan/scroll, no fight with selection); **orientation change can keep the 2×4 menu open**; **continuous mode** keeps zoom and horizontal pan ratio when rotating
 
 ### TTS & export
 
 | Item | Detail |
 |------|--------|
-| System TTS | Engine, language, voice, rate label (e.g. `1×`), highlight, sleep timer, auto-close (default 1 h) |
+| System TTS | Engine, language, voice, rate label (e.g. `1×`), highlight, sleep timer, auto-close (default 1 h), jump via read-from-selection |
 | Continuity | Prepares the next sentences to reduce gaps |
 | Lock-screen | See below |
 | Export | Build audio in chunks, then merge; prefer MP3, else M4A / WAV; live progress dialog |
@@ -196,7 +196,7 @@ Use **OCR scanned PDF pages**; tall pages are split into strips. If only the top
 
 ### Select and copy text
 
-Long-press a word (English expands to the whole word). Drag to extend, or use the **handles** after release. Drag a handle to the screen edge to scroll and extend. PDF needs extractable or OCR text.
+Long-press a word (English expands to the whole word). Drag to extend, or use the **handles** after release. Drag a handle to the screen edge to scroll and extend. PDF needs extractable or OCR text; **PDF requires ~1 s still hold** to select — moving earlier pans/scrolls.
 
 ### PDF blank or squashed pages
 

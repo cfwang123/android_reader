@@ -412,9 +412,10 @@ class TtsPlaybackService : Service() {
         val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
+                    // 与 TtsManager 一致：有声书式 MEDIA+MUSIC，避免 SPEECH 被当语音增强
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build(),
                 )
                 .setOnAudioFocusChangeListener(audioFocusListener, mainHandler)
