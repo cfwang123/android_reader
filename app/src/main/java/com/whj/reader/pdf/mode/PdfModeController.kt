@@ -237,10 +237,9 @@ class PdfModeController(
                 if (activity.hasTextSelection()) activity.refreshSelectionOverlay()
             }
         }
-        // 缩放后松手：列表 fling 惯性（与未缩放时一致）
+        // 缩放后松手：列表 fling 惯性（对齐 MOBI 连续图）
         zoomLayout.onFlingScroll = fling@{ _, velocityY ->
             if (activity.pageMode != PdfPageMode.CONTINUOUS) return@fling
-            if (!zoomLayout.isZoomed()) return@fling
             val z = zoomLayout.contentZoom.coerceAtLeast(0.01f)
             // 屏幕速度 → 内容速度；手指上滑 vy<0 → fling 向下（正）
             val vy = (-velocityY / z).toInt()

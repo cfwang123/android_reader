@@ -12,8 +12,8 @@
 - **PDF pinch-zoom**: start scaling as soon as the second finger lands (bypass system min-span dead zone that ignored the first part of the pinch)
 - **Volume keys while TTS is active** (speaking or paused): adjust system media volume instead of page turn (TXT / EPUB / MOBI / PDF)
 - **TTS volume pumping**: use media/music audio attributes (avoid SPEECH AGC); pin `volume=1.0` and `STREAM_MUSIC` on every utterance
-- **PDF long-press vs pan**: hold still **1 s** to select text **only when the page has text and the press hits a glyph** (scan / empty / blank press does not fire); **any move before long-press is pan**; continuous unzoomed uses **RecyclerView native** scroll; RV touch restart only after a **long** still hold (~320 ms+), so quick pause-and-flick pans no longer hitch
-- **PDF fast-scroll thumb**: at document top the thumb sits at the **top** of the track (progress = scrollY / scrollable range; was wrongly using viewport-bottom / total height)
+- **PDF continuous pan/zoom**: align with **MOBI continuous strip** — unzoomed single-finger scroll is always **native RecyclerView** (removed `RV_RESTART` / CANCEL+new-DOWN); hold ~50 ms only clears system long-press; PDF text long-press still ~1 s **on a glyph only**
+- **PDF fast-scroll thumb**: at document top the thumb sits at the **top** of the track (progress = scrollY / scrollable range)
 - **TTS “read from selection” while speaking**: interrupt current sentence and **jump to the selected paragraph / offset** (ebook “Read from here”; PDF “Read selection”)
 
 ### 中文
@@ -26,8 +26,8 @@
 - **PDF 双指缩放**：第二指落下即开始缩放（绕过系统 minSpan 死区，避免前半段捏合无反应）
 - **TTS 朗读/暂停中**：音量键改为调节系统音量，不再翻页（电子书与 PDF）
 - **TTS 音量时大时小**：朗读属性改为媒体音乐流（避免 SPEECH 路径 AGC）；每次 speak 固定 `volume=1.0` 与 `STREAM_MUSIC`
-- **PDF 长按选字与 pan**：静止约 1 秒才选字，且 **仅当页有文字且按在字上**（扫描无字 / 空白处不触发）；**长按前移动一律 pan**；连续未缩放原生跟手；仅 **按住约 ≥320ms** 再拖才重启 RV 触摸（短暂停顿连滑不再卡）
-- **PDF 右侧滚动条**：滚到顶时拇指在轨道 **顶部**（进度改为 scrollY/可滚区间；原先用视口底边/总高，到顶仍偏下）
+- **PDF 连续 pan/zoom**：对齐 **MOBI 连续图**——未放大单指滚动一律 **RecyclerView 原生**（去掉 `RV_RESTART` / CANCEL+新 DOWN）；约 50ms 只清系统长按；选字仍为约 1 秒且 **仅按在字上**
+- **PDF 右侧滚动条**：滚到顶时拇指在轨道 **顶部**（进度 = scrollY/可滚区间）
 - **朗读中选区起读**：电子书「从本段开始朗读」、PDF「朗读选区」会**打断当前句并跳到选区起点**继续往下读
 
 ---
