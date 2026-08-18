@@ -187,6 +187,12 @@ class PdfModeController(
         zoomLayout.onSelectionGestureCancel = {
             activity.cancelPendingTextSelectionGesture()
         }
+        zoomLayout.onLongPressPrepare = { x, y ->
+            activity.selectionInteractor.prepareLongPress(x, y)
+        }
+        zoomLayout.onLongPressEligible = { x, y ->
+            activity.selectionInteractor.shouldFireLongPress(x, y)
+        }
         zoomLayout.onLongPress = { x, y -> activity.beginTextSelection(x, y) }
         zoomLayout.onSelectionDrag = { x, y, ended ->
             activity.textSelCtrl.dragX = x

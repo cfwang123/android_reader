@@ -30,6 +30,12 @@ class PdfPageSurface @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
+    init {
+        // 系统长按交给外层 ZoomableFrameLayout（1s 选字）；避免 ~500ms 后拖动顿挫
+        isLongClickable = false
+        isClickable = false
+    }
+
     var pageIndex: Int = -1
         private set
 

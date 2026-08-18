@@ -132,7 +132,81 @@ class PdfSelectionInteractor(
         ReaderLog.d(ReaderLog.Module.PDF_SELECT, "cancelPendingSelection gen=$selectionGestureGen")
     }
 
+    /**
+     * 是否应触发长按选字：无文字层 / 点在空白处返回 false（不进入选字、不抽字占手势）。
+     * 文字尚未入缓存时也返回 false（由 [prepareLongPress] 静默预热，下次或到期前再判）。
+     */
+    fun shouldFireLongPress(containerX: Float, containerY: Float): Boolean {
+        val est = pageIndexAtContainerY(containerY) ?: activity.currentVisiblePage()
+        if (est !in 0 until activity.pageCount) return false
+        val pageChars = textCache.pageChars[est]
+        val raw = textCache.rawPageCache[est]
+        when {
+            !pageChars.isNullOrEmpty() -> {
+                val hit = runCatching {
+                    hitTestChar(containerX, containerY, forSelection = false)
+                }.getOrNull()
+                val ok = hit != null
+                if (!ok) {
+                    ReaderLog.d(
+                        ReaderLog.Module.PDF_SELECT,
+                        "LP eligible=false blank hit est=$est xy=(${"%.0f".format(containerX)},${"%.0f".format(containerY)})",
+                    )
+                }
+                return ok
+            }
+            raw != null && raw.isEmpty() -> {
+                ReaderLog.d(ReaderLog.Module.PDF_SELECT, "LP eligible=false empty page est=$est")
+                return false
+            }
+            raw != null && raw.isNotEmpty() -> {
+                // 有 raw 尚未铺 pageChars：先重建再命中
+                if (textCache.pageChars[est].isNullOrEmpty()) {
+                    runCatching { activity.rebuildTextFromCache(preserveTtsPosition = true) }
+                }
+                val chars2 = textCache.pageChars[est]
+                if (chars2.isNullOrEmpty()) {
+                    // raw 可能全是空白符
+                    val hasGlyph = raw.any { !it.char.isWhitespace() }
+                    if (!hasGlyph) return false
+                    // 仍无 pageChars：允许 begin 再试一次命中
+                    return true
+                }
+                return runCatching {
+                    hitTestChar(containerX, containerY, forSelection = false)
+                }.getOrNull() != null
+            }
+            else -> {
+                // 未抽取：不触发长按（扫描页无字层 / 尚未预热）
+                ReaderLog.d(ReaderLog.Module.PDF_SELECT, "LP eligible=false uncached est=$est")
+                return false
+            }
+        }
+    }
+
+    /** DOWN/长按计时开始：静默预热附近页文字，不 toast、不进选区 */
+    fun prepareLongPress(@Suppress("UNUSED_PARAMETER") containerX: Float, containerY: Float) {
+        val est = pageIndexAtContainerY(containerY) ?: activity.currentVisiblePage()
+        if (est !in 0 until activity.pageCount) return
+        val need = activity.pagesNear(est, before = 1, after = 1)
+        if (need.all { it in textCache.rawPageCache }) return
+        activity.ensurePagesExtracted(
+            pages = need,
+            showToast = false,
+            preserveTtsPosition = true,
+        ) { /* 仅预热 */ }
+    }
+
     fun beginTextSelection(containerX: Float, containerY: Float) {
+        // 无字 / 空白：直接忽略，避免抽字与选字状态打断后续 pan
+        if (!shouldFireLongPress(containerX, containerY)) {
+            b.pdfContainer.cancelSelectingGesture()
+            ReaderLog.i(
+                ReaderLog.Module.PDF_SELECT,
+                "begin skip (not eligible) xy=(${"%.0f".format(containerX)},${"%.0f".format(containerY)})",
+            )
+            return
+        }
         val gen = ++selectionGestureGen
         val vis = activity.currentVisiblePage()
         val est = pageIndexAtContainerY(containerY) ?: vis
@@ -155,6 +229,12 @@ class PdfSelectionInteractor(
             if (textCache.pageChars[est].isNullOrEmpty() && textCache.rawPageCache.isNotEmpty()) {
                 runCatching { activity.rebuildTextFromCache(preserveTtsPosition = false) }
             }
+            // 抽完仍无字 / 不在字上：不进选区
+            if (!shouldFireLongPress(containerX, containerY)) {
+                b.pdfContainer.cancelSelectingGesture()
+                ReaderLog.i(ReaderLog.Module.PDF_SELECT, "begin abort afterExtract not eligible est=$est")
+                return
+            }
             beginTextSelectionAfterReady(containerX, containerY, gen)
             if (gen != selectionGestureGen) return
             if (!hasTextSelection()) {
@@ -170,9 +250,10 @@ class PdfSelectionInteractor(
             }
         }
         if (uncached.isNotEmpty()) {
+            // 长按路径不 toast，避免抽字提示干扰拖动
             activity.ensurePagesExtracted(
                 pages = need,
-                showToast = true,
+                showToast = false,
                 preserveTtsPosition = false,
             ) { afterExtract() }
             return

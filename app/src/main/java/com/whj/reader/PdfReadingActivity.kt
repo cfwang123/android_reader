@@ -128,6 +128,8 @@ class PdfReadingActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_URI = "uri"
         const val EXTRA_TITLE = "title"
+        /** adb: am broadcast -a com.whj.reader.DEBUG_PDF_HOLD_PAN -p com.whj.reader --ei hold_ms 500 --ei dy -400 */
+        const val ACTION_DEBUG_PDF_HOLD_PAN = "com.whj.reader.DEBUG_PDF_HOLD_PAN"
     }
 
     /** 单页超长图换页后竖向 pan 落点 */
@@ -289,7 +291,7 @@ class PdfReadingActivity : AppCompatActivity() {
     internal val textSelCtrl = PdfTextSelectionController()
     private val textSel get() = textSelCtrl.state
     private var textActionMode: ActionMode? = null
-    private lateinit var selectionInteractor: PdfSelectionInteractor
+    internal lateinit var selectionInteractor: PdfSelectionInteractor
     internal lateinit var navBookmarkController: PdfNavBookmarkController
     private lateinit var ttsController: PdfTtsController
     private lateinit var ocrUiController: PdfOcrUiController
@@ -331,6 +333,47 @@ class PdfReadingActivity : AppCompatActivity() {
         override fun run() {
             updateClock()
             clockHandler.postDelayed(this, 30_000L)
+        }
+    }
+
+    private var debugHoldPanRegistered = false
+    private val debugHoldPanReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            if (intent?.action != ACTION_DEBUG_PDF_HOLD_PAN) return
+            if (!::binding.isInitialized) return
+            // 任务栈里可能叠多个 PdfReadingActivity，只让有焦点的响应
+            if (!hasWindowFocus()) return
+            val holdMs = intent.getIntExtra("hold_ms", 500).toLong().coerceIn(0L, 3000L)
+            val dy = intent.getIntExtra("dy", -400).toFloat()
+            val steps = intent.getIntExtra("steps", 16).coerceIn(4, 60)
+            val stepMs = intent.getIntExtra("step_ms", 8).toLong().coerceIn(1L, 50L)
+            // 默认复位 1x，否则放大态走 pan 路径，测不到连续列表原生滚动
+            val resetZoom = intent.getBooleanExtra("reset_zoom", true)
+            val scrollTop = intent.getBooleanExtra("scroll_top", true)
+            binding.pdfContainer.post {
+                if (resetZoom && binding.pdfContainer.isZoomed()) {
+                    binding.pdfContainer.resetZoom(notify = true)
+                }
+                if (scrollTop) {
+                    binding.rvPdfPages.scrollToPosition(0)
+                    binding.rvPdfPages.scrollBy(0, -binding.rvPdfPages.computeVerticalScrollOffset())
+                }
+                android.util.Log.i(
+                    "ZFrame",
+                    "broadcast SIM hold_ms=$holdMs dy=$dy " +
+                        "cont=${binding.pdfContainer.continuousScrollWhenZoomed} " +
+                        "zoomed=${binding.pdfContainer.isZoomed()} " +
+                        "z=${binding.pdfContainer.contentZoom} " +
+                        "scrollY=${binding.rvPdfPages.computeVerticalScrollOffset()} " +
+                        "title=$displayTitle",
+                )
+                binding.pdfContainer.debugSimulateHoldThenPan(
+                    holdMs = holdMs,
+                    dyPx = dy,
+                    steps = steps,
+                    stepMs = stepMs,
+                )
+            }
         }
     }
 
@@ -424,6 +467,7 @@ class PdfReadingActivity : AppCompatActivity() {
         }
         keepScreen.apply()
 
+        registerDebugHoldPan()
         binding.btnBack.setOnClickListener { finish() }
         binding.btnHistBack.setOnClickListener { navigateHistoryBack() }
         binding.btnHistForward.setOnClickListener { navigateHistoryForward() }
@@ -543,6 +587,7 @@ class PdfReadingActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        unregisterDebugHoldPan()
         if (allowProgressSave) savePdfViewAndProgress()
         stopClockAndBattery()
         if (::keepScreen.isInitialized) keepScreen.onDestroy()
@@ -765,6 +810,10 @@ class PdfReadingActivity : AppCompatActivity() {
                     binding.ivPdfPage
                 }
             }
+        }
+        // 连续列表禁用系统长按，避免 ~500ms 后拖动顿挫；选字由 ZoomableFrameLayout 自管 1s
+        if (pageMode == PdfPageMode.CONTINUOUS) {
+            binding.rvPdfPages.isLongClickable = false
         }
         // 连续模式缩放后竖滑 = 滚列表（可到下面页）；单页模式仍用 pan
         zoomLayout.continuousScrollWhenZoomed = pageMode == PdfPageMode.CONTINUOUS
@@ -1210,13 +1259,30 @@ class PdfReadingActivity : AppCompatActivity() {
     }
 
     /**
-     * 进度 0..1 = **视口底边在全书中的纵向位置 / 内容总高度**（页高表）。
+     * 阅读进度 0..1 = **视口底边在全书中的纵向位置 / 内容总高度**（页高表）。
+     * 用于页码旁百分比；到顶时约为 视口高/总高，不是 0。
      */
     private fun progressFromHeightTable(): Float {
         if (pageCount <= 0) return 0f
         val total = totalContentHeightPx().coerceAtLeast(1L)
         val bottom = visibleBottomScrollY().coerceIn(0L, total)
         return (bottom.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+    }
+
+    /**
+     * 右侧滚动条拇指位置 0..1：与 [seekByHeightTable] 一致，
+     * **scrollY / max(total - extent, 1)**。到顶=0、到底=1。
+     */
+    private fun scrollBarProgressFromHeightTable(): Float {
+        if (pageCount <= 0) return 0f
+        if (pageMode != PdfPageMode.CONTINUOUS || !::binding.isInitialized) {
+            return progressFromHeightTable()
+        }
+        val total = totalContentHeightPx()
+        val extent = binding.rvPdfPages.height.toLong().coerceAtLeast(1L)
+        val scrollable = (total - extent).coerceAtLeast(1L)
+        val y = heightTableScrollY().toLong().coerceIn(0L, scrollable)
+        return (y.toFloat() / scrollable.toFloat()).coerceIn(0f, 1f)
     }
 
     /** 连续模式：按页高表累计的绝对滚动 Y（与列表项真高一致） */
@@ -1627,7 +1693,8 @@ class PdfReadingActivity : AppCompatActivity() {
             val rv = binding.rvPdfPages
             val total = totalContentHeightPx().toFloat().coerceAtLeast(1f)
             val extent = rv.height.toFloat().coerceAtLeast(1f)
-            val progress = progressFromHeightTable()
+            // 拇指位置用可滚区间比例（到顶=0）；勿用视口底边/总高（到顶仍偏下）
+            val progress = scrollBarProgressFromHeightTable()
             // 拇指长度 ≈ 视口/总内容（长文档拇指短）
             val fraction = (extent / total).coerceIn(0.04f, 1f)
             binding.pdfFastScroll.setScrollMetrics(progress, fraction)
@@ -3006,7 +3073,7 @@ class PdfReadingActivity : AppCompatActivity() {
             ::binding.isInitialized &&
             !binding.pdfFastScroll.isDragging
         ) {
-            binding.pdfFastScroll.progress = pct / 100f
+            binding.pdfFastScroll.progress = scrollBarProgressFromHeightTable()
         }
     }
 
@@ -3027,7 +3094,7 @@ class PdfReadingActivity : AppCompatActivity() {
             ::binding.isInitialized &&
             !binding.pdfFastScroll.isDragging
         ) {
-            binding.pdfFastScroll.progress = pct / 100f
+            binding.pdfFastScroll.progress = scrollBarProgressFromHeightTable()
         }
         if (allowProgressSave && !isScrollFlinging()) {
             prefetchNearbyText(visible)
@@ -3051,6 +3118,24 @@ class PdfReadingActivity : AppCompatActivity() {
     private fun updateBattery(intent: Intent) {
         if (!::binding.isInitialized) return
         PdfStatusBarHelper.formatBattery(intent)?.let { binding.tvBattery.text = it }
+    }
+
+    private fun registerDebugHoldPan() {
+        if (debugHoldPanRegistered) return
+        val filter = IntentFilter(ACTION_DEBUG_PDF_HOLD_PAN)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(debugHoldPanReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(debugHoldPanReceiver, filter)
+        }
+        debugHoldPanRegistered = true
+    }
+
+    private fun unregisterDebugHoldPan() {
+        if (!debugHoldPanRegistered) return
+        runCatching { unregisterReceiver(debugHoldPanReceiver) }
+        debugHoldPanRegistered = false
     }
 
     private fun registerBattery() {

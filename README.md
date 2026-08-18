@@ -40,7 +40,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **TXT**: auto or manual encoding; simplified↔traditional Chinese
 - **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; long-press image → gallery
 - **MOBI view modes** (Style → View mode): **Text** (normal reading); **Single image** (one picture at a time, pinch-zoom, side-tap / swipe); **Continuous strip** (vertical image stream). Image-only MOBI auto-enters image mode; progress **image n / total** in image modes. **Portrait ↔ landscape** keeps zoom and horizontal pan ratio in continuous strip
-- **Text selection**: long-press to select (ebooks use system long-press; **PDF needs ~1 s still hold** — any move before that is pan/scroll); **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / **read from here** (also jumps mid-TTS to the selection)
+- **Text selection**: long-press to select (ebooks use system long-press; **PDF needs ~1 s still hold on a glyph** — no text / blank press does not select; any move before that is pan/scroll); **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / **read from here** (also jumps mid-TTS to the selection)
 - **Highlights & notes** (TXT / EPUB / MOBI): **Highlight** from the selection menu; background or underline; optional note; **note bubbles** on the right; tap highlight or bubble to view/edit; **Notes** tab in the TOC sheet
 - **TOC / bookmarks / jump**; battery and clock in the status bar; TOC opens scrolled to the current chapter; vertical list scroll does not steal horizontal tab swipe
 - **In-book search**: live results, tap to jump
@@ -196,7 +196,7 @@ Use **OCR scanned PDF pages**; tall pages are split into strips. If only the top
 
 ### Select and copy text
 
-Long-press a word (English expands to the whole word). Drag to extend, or use the **handles** after release. Drag a handle to the screen edge to scroll and extend. PDF needs extractable or OCR text; **PDF requires ~1 s still hold** to select — moving earlier pans/scrolls.
+Long-press a word (English expands to the whole word). Drag to extend, or use the **handles** after release. Drag a handle to the screen edge to scroll and extend. PDF needs extractable or OCR text; **PDF requires ~1 s still hold** to select — moving earlier pans/scrolls (continuous unzoomed uses native list tracking).
 
 ### PDF blank or squashed pages
 
