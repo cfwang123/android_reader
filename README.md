@@ -200,7 +200,7 @@ Long-press a word (English expands to the whole word). Drag to extend, or use th
 
 ### PDF blank or squashed pages
 
-Use the latest build; continuous mode previews while scrolling, then sharpens when idle. Reopen the book if it persists.
+Use the latest build; continuous mode previews while scrolling, then sharpens when idle. Reopen the book if it persists. If pages below the current one look flattened after zooming in portrait and rotating to landscape, that was a layout-width bug and should be fixed in the current build.
 
 ### MP3 unavailable
 

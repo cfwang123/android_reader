@@ -1804,6 +1804,9 @@ class PdfReadingActivity : AppCompatActivity() {
     /** 遍历可见 item：贴缓存 + 排队缺失（拖动/惯性/停下都调用） */
     internal fun refreshVisiblePageTiles(forceRender: Boolean = true) = pageBindController.refreshVisiblePageTiles(forceRender)
 
+    internal fun syncAttachedPdfPageHeights(reason: String = "") =
+        pageBindController.syncAttachedPageHeights(reason)
+
     private fun enqueueTileRender(
         pageIndex: Int,
         surface: PdfPageSurface,

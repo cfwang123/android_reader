@@ -169,7 +169,8 @@ class PdfPageSurface @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w <= 0 || pageIndex < 0) return
-        if (w == heightSyncedForWidth) return
+        // 宽已同步时仍要核对高度：竖屏缩放后再转横屏，item 宽可能已是新宽，
+        // 但 lp.height 仍按旧宽计算 → 整页被横向拉扁。
         syncHeightToLaidOutWidth(w)
     }
 

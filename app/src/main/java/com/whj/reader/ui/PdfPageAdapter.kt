@@ -32,7 +32,10 @@ class PdfPageAdapter(
         holder.binding.tvPageBadge.text = "${position + 1}"
         holder.binding.tvPageBadge.pivotX = 0f
         holder.binding.tvPageBadge.pivotY = 0f
-        val w = holder.itemView.width.takeIf { it > 0 }
+        // 旋转后 itemView.width 可能仍是旧屏宽；优先用已 layout 的 RV 宽度。
+        val parentW = (holder.itemView.parent as? ViewGroup)?.width?.takeIf { it > 0 }
+        val w = parentW
+            ?: holder.itemView.width.takeIf { it > 0 }
             ?: holder.itemView.resources.displayMetrics.widthPixels
         onBindPage(position, holder.binding.ivPage, w)
     }

@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## unreleased
+
+### English
+
+#### Changed / fixed
+- **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
+
+### 中文
+
+#### 修改 / 修复
+- **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）
+
+---
+
 ## 1.0.6 — 2026-07-27 ~ 2026-08-19
 
 ### English
@@ -13,6 +27,7 @@
 - **Volume keys while TTS is active** (speaking or paused): adjust system media volume instead of page turn (TXT / EPUB / MOBI / PDF)
 - **TTS volume pumping**: use media/music audio attributes (avoid SPEECH AGC); pin `volume=1.0` and `STREAM_MUSIC` on every utterance
 - **PDF continuous pan/zoom**: align with **MOBI continuous strip** — unzoomed single-finger scroll is always **native RecyclerView** (removed `RV_RESTART` / CANCEL+new-DOWN); hold ~50 ms only clears system long-press; PDF text long-press still ~1 s **on a glyph only**
+- **PDF continuous zoom-in**: add bottom padding `vh*(z-1)/z` so the list can scroll to the **true content bottom** (was limited to `contentH-vh` while the visible window is only `vh/z`)
 - **PDF fast-scroll thumb**: at document top the thumb sits at the **top** of the track (progress = scrollY / scrollable range)
 - **TTS “read from selection” while speaking**: interrupt current sentence and **jump to the selected paragraph / offset** (ebook “Read from here”; PDF “Read selection”)
 
@@ -27,6 +42,7 @@
 - **TTS 朗读/暂停中**：音量键改为调节系统音量，不再翻页（电子书与 PDF）
 - **TTS 音量时大时小**：朗读属性改为媒体音乐流（避免 SPEECH 路径 AGC）；每次 speak 固定 `volume=1.0` 与 `STREAM_MUSIC`
 - **PDF 连续 pan/zoom**：对齐 **MOBI 连续图**——未放大单指滚动一律 **RecyclerView 原生**（去掉 `RV_RESTART` / CANCEL+新 DOWN）；约 50ms 只清系统长按；选字仍为约 1 秒且 **仅按在字上**
+- **PDF 连续放大**：给列表加底 padding `vh*(z-1)/z`，放大后可滚到 **内容真正底部**（原先可滚上限仍按整屏 vh，而可视只有 vh/z）
 - **PDF 右侧滚动条**：滚到顶时拇指在轨道 **顶部**（进度 = scrollY/可滚区间）
 - **朗读中选区起读**：电子书「从本段开始朗读」、PDF「朗读选区」会**打断当前句并跳到选区起点**继续往下读
 

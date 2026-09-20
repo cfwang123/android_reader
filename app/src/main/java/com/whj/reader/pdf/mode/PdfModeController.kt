@@ -595,38 +595,27 @@ class PdfModeController(
                 PdfPageMode.CONTINUOUS -> {
                     // 连续：保持 zoom 与水平 pan 比例；竖向滚动位置由页高表保留
                     b.rvPdfPages.adapter?.notifyDataSetChanged()
-                    b.rvPdfPages.post {
-                        if (activity.isFinishing || activity.isDestroyed) return@post
-                        // 可见页立刻按真实 layout 宽校正高度（notify 时 item 宽可能仍旧）
-                        val lm = b.rvPdfPages.layoutManager as? LinearLayoutManager
-                        if (lm != null) {
-                            val first = lm.findFirstVisibleItemPosition()
-                            val last = lm.findLastVisibleItemPosition()
-                            if (first != RecyclerView.NO_POSITION) {
-                                for (pos in first..last.coerceAtLeast(first)) {
-                                    val child = lm.findViewByPosition(pos) ?: continue
-                                    val surface = child.findViewById<PdfPageSurface>(R.id.ivPage)
-                                        ?: continue
-                                    if (surface.pageIndex == pos) {
-                                        surface.syncHeightToLaidOutWidth(
-                                            surface.width.takeIf { it > 0 } ?: child.width,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                    b.rvPdfPages.post(fun() {
+                        if (activity.isFinishing || activity.isDestroyed) return
+                        // notify 时 item 宽可能仍旧；先按当前 RV 宽校正已挂载页
+                        activity.syncAttachedPdfPageHeights("orientRelayout-preRestore")
                         continuousSnap?.let { b.pdfContainer.restoreContinuousTransform(it) }
-                        activity.refreshVisiblePageTiles(forceRender = true)
-                        activity.updatePdfZoomChrome()
-                        activity.syncPdfContentBottomInset()
-                        ReaderLog.i(ReaderLog.Module.PDF_ORIENT,
-                            "relayout continuous done " +
-                                "container=${b.pdfContainer.width}x${b.pdfContainer.height} " +
-                                "rv=${b.rvPdfPages.width}x${b.rvPdfPages.height} " +
-                                "zoom=${b.pdfContainer.contentZoom} " +
-                                "pan=(${b.pdfContainer.getPanX()},${b.pdfContainer.getPanY()})",
-                        )
-                    }
+                        // 缩小态会把 RV 加高，下面几页这时才 layout，必须再校一次
+                        b.rvPdfPages.post(fun() {
+                            if (activity.isFinishing || activity.isDestroyed) return
+                            activity.syncAttachedPdfPageHeights("orientRelayout-postRestore")
+                            activity.refreshVisiblePageTiles(forceRender = true)
+                            activity.updatePdfZoomChrome()
+                            activity.syncPdfContentBottomInset()
+                            ReaderLog.i(ReaderLog.Module.PDF_ORIENT,
+                                "relayout continuous done " +
+                                    "container=${b.pdfContainer.width}x${b.pdfContainer.height} " +
+                                    "rv=${b.rvPdfPages.width}x${b.rvPdfPages.height} " +
+                                    "zoom=${b.pdfContainer.contentZoom} " +
+                                    "pan=(${b.pdfContainer.getPanX()},${b.pdfContainer.getPanY()})",
+                            )
+                        })
+                    })
                 }
             }
             activity.sanitizeBottomChrome()

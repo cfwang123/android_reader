@@ -35,15 +35,18 @@ class PdfPageBindController(
     fun bindPageSurface(index: Int, surface: PdfPageSurface, targetWidth: Int) {
         val r = activity.renderer ?: return
         if (index !in 0 until r.pageCount) return
-        val tw = targetWidth.coerceAtLeast(1)
-            .coerceAtMost(activity.pdfMaxRenderWidth())
+        // 页高必须按列表实际 layout 宽算；渲染分辨率可另有上限。
+        val rvW = b.rvPdfPages.width.takeIf { it > 0 } ?: 0
+        val layoutW = (if (rvW > 0) rvW else targetWidth).coerceAtLeast(1)
+        val tw = layoutW.coerceAtMost(activity.pdfMaxRenderWidth())
         val curW = surface.width.takeIf { it > 0 }
         val (pw, ph) = activity.pageSizeForBind(index)
         val margins = activity.cropForPage(index)
-        val expectedH = activity.logicalDisplayHeight(pw, ph, margins, tw)
+        val expectedH = activity.logicalDisplayHeight(pw, ph, margins, layoutW)
         // 宽对且有内容，但高度与当前宽度宽高比差很多 → 旋转后串台，必须重 bind
         val heightOk = abs(surface.logicalHeight - expectedH) <= max(4, expectedH / 50)
-        if (surface.pageIndex == index && curW == tw && !surface.needsContent() && heightOk) {
+        val widthOk = curW != null && abs(curW - layoutW) <= 2
+        if (surface.pageIndex == index && widthOk && !surface.needsContent() && heightOk) {
             logPdfZoom(
                 "bind skip page=$index mode=${surface.debugModeLabel()} " +
                     "tiles=${surface.installedTileCount()}/${surface.tileCount} " +
@@ -57,11 +60,11 @@ class PdfPageBindController(
         }
         logPdfZoom(
             "bind clear page=$index was=${surface.pageIndex} mode=${surface.debugModeLabel()} " +
-                "tiles=${surface.installedTileCount()} tw=$tw curW=$curW " +
+                "tiles=${surface.installedTileCount()} layoutW=$layoutW tw=$tw curW=$curW " +
                 "h=${surface.logicalHeight} expH=$expectedH",
             force = true,
         )
-        val tall = activity.isTallPage(pw, ph, margins, tw)
+        val tall = activity.isTallPage(pw, ph, margins, layoutW)
         val tileH = tileHeightForDevice()
         // 固定列表项高度表，供手柄定位
         activity.recordPageItemHeight(index, pw, ph)
@@ -75,7 +78,7 @@ class PdfPageBindController(
             cropT = margins[1],
             cropR = margins[2],
             cropB = margins[3],
-            targetWidth = tw,
+            targetWidth = layoutW,
             tileHeightPx = tileH,
             useTiles = tall,
         )
@@ -88,7 +91,7 @@ class PdfPageBindController(
 
         if (tall) {
             hydrateTilesFromCache(surface, index, tw)
-            val displayH = activity.logicalDisplayHeight(pw, ph, margins, tw)
+            val displayH = activity.logicalDisplayHeight(pw, ph, margins, layoutW)
             val pref = if (activity.preferPreviewQuality()) 1 else PdfRenderConfig.TILE_PREFETCH
             ensureTallPageTilesForItem(surface, displayH, tw, pref)
             return
@@ -96,7 +99,9 @@ class PdfPageBindController(
 
         val cached = activity.pdfRenderCache.bitmapCache.get(index)
         val gen = surface.bindGeneration
-        if (cached != null && !cached.isRecycled && isBitmapAspectUsable(cached, expectedH, tw)) {
+        if (cached != null && !cached.isRecycled &&
+            isBitmapAspectUsable(cached, expectedH, layoutW)
+        ) {
             // 绝不在 onBind 同步 setFullBitmap（会卡 RV 布局 ~300ms）→ 帧回调贴
             activity.enqueueUiAttach(
                 PdfUiAttach(surface, index, gen, cached, isTile = false),
@@ -234,6 +239,38 @@ class PdfPageBindController(
         b.rvPdfPages.post(r)
     }
 
+    /**
+     * 按当前 layout 宽校正所有已挂载页的高度。
+     * 缩小后 RV 变高会露出「下面几页」；它们若仍按竖屏宽定高，横屏会被压扁。
+     */
+    internal fun syncAttachedPageHeights(reason: String = "") {
+        if (activity.pageMode != PdfPageMode.CONTINUOUS) return
+        val rv = b.rvPdfPages
+        val layoutW = rv.width.takeIf { it > 0 } ?: return
+        var n = 0
+        var changed = 0
+        for (i in 0 until rv.childCount) {
+            val child = rv.getChildAt(i) ?: continue
+            val surface = child.findViewById<PdfPageSurface>(R.id.ivPage) ?: continue
+            if (surface.pageIndex < 0) continue
+            n++
+            val w = surface.width.takeIf { it > 0 } ?: child.width.takeIf { it > 0 } ?: layoutW
+            if (surface.syncHeightToLaidOutWidth(w)) {
+                changed++
+                val page = surface.pageIndex
+                val (pw, ph) = activity.pageSizeForBind(page)
+                activity.recordPageItemHeight(page, pw, ph)
+            }
+        }
+        if (reason.isNotEmpty()) {
+            logPdfZoom(
+                "syncAttachedHeights reason=$reason children=$n changed=$changed " +
+                    "layoutW=$layoutW z=${b.pdfContainer.contentZoom} rv=${rv.width}x${rv.height}",
+                force = true,
+            )
+        }
+    }
+
     internal fun refreshVisiblePageTiles(forceRender: Boolean = true) {
         if (activity.pageMode != PdfPageMode.CONTINUOUS) return
         val rv = b.rvPdfPages
@@ -241,6 +278,8 @@ class PdfPageBindController(
         val first = lm.findFirstVisibleItemPosition()
         val last = lm.findLastVisibleItemPosition()
         if (first == RecyclerView.NO_POSITION) return
+        // 缩放/旋转后新露出来的页可能仍是旧宽高度，先校正再渲
+        syncAttachedPageHeights()
         activity.pdfRenderScheduler.visFirst = first
         activity.pdfRenderScheduler.visLast = last.coerceAtLeast(first)
         val viewportH = rv.height.coerceAtLeast(1)
