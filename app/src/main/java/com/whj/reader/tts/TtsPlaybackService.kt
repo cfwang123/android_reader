@@ -20,7 +20,6 @@ import android.os.SystemClock
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media.app.NotificationCompat as MediaNotificationCompat
 import androidx.media.session.MediaButtonReceiver
@@ -28,6 +27,7 @@ import com.whj.reader.MainActivity
 import com.whj.reader.R
 import com.whj.reader.util.AutoCloseController
 import java.lang.ref.WeakReference
+import com.whj.reader.util.AppLog
 
 /**
  * TTS 前台服务：通知栏 + 锁屏媒体控制器（对齐 music-player）。
@@ -71,27 +71,27 @@ class TtsPlaybackService : Service() {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // 部分 OEM 锁屏会误发 LOSS；灭屏时忽略，亮屏才真正让出
                 if (isScreenInteractive()) {
-                    Log.i(TAG, "audio focus LOSS (screen on) → pause TTS")
+                    AppLog.i(TAG, "audio focus LOSS (screen on) → pause TTS")
                     TtsManager.pauseFromExternal()
                     refreshChrome()
                 } else {
-                    Log.w(TAG, "ignore AUDIOFOCUS_LOSS while screen off (OEM quirk)")
+                    AppLog.w(TAG, "ignore AUDIOFOCUS_LOSS while screen off (OEM quirk)")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 if (isScreenInteractive()) {
-                    Log.i(TAG, "audio focus LOSS_TRANSIENT → pause TTS")
+                    AppLog.i(TAG, "audio focus LOSS_TRANSIENT → pause TTS")
                     TtsManager.pauseFromExternal()
                     refreshChrome()
                 } else {
-                    Log.w(TAG, "ignore AUDIOFOCUS_LOSS_TRANSIENT while screen off")
+                    AppLog.w(TAG, "ignore AUDIOFOCUS_LOSS_TRANSIENT while screen off")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // 朗读不 duck、不停播
-                Log.i(TAG, "AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ignored")
+                AppLog.i(TAG, "AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ignored")
             }
-            AudioManager.AUDIOFOCUS_GAIN -> Log.i(TAG, "audio focus gain")
+            AudioManager.AUDIOFOCUS_GAIN -> AppLog.i(TAG, "audio focus gain")
         }
     }
 
@@ -222,7 +222,7 @@ class TtsPlaybackService : Service() {
             }
             isForeground = true
         } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed", e)
+            AppLog.e(TAG, "startForeground failed", e)
         }
         val playing = TtsManager.sessionInfo().playing
         if (playing) {
@@ -270,7 +270,7 @@ class TtsPlaybackService : Service() {
                     override fun onPause() {
                         // 部分机型锁屏会向 MediaSession 发 pause，勿误停朗读
                         if (!isScreenInteractive()) {
-                            Log.w(TAG, "ignore MediaSession onPause while screen off")
+                            AppLog.w(TAG, "ignore MediaSession onPause while screen off")
                             // 立刻把状态推回 Playing，避免系统媒体面板显示已暂停
                             updateSessionState(playing = true, active = true)
                             return
@@ -434,7 +434,7 @@ class TtsPlaybackService : Service() {
             )
         }
         hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        Log.i(TAG, "requestAudioFocus result=$result granted=$hasAudioFocus")
+        AppLog.i(TAG, "requestAudioFocus result=$result granted=$hasAudioFocus")
         return hasAudioFocus
     }
 
@@ -569,7 +569,7 @@ class TtsPlaybackService : Service() {
                     context.startService(i)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "startForegroundService failed", e)
+                AppLog.e(TAG, "startForegroundService failed", e)
             }
         }
 
@@ -590,7 +590,7 @@ class TtsPlaybackService : Service() {
                         context.startService(i)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "refresh start failed", e)
+                    AppLog.e(TAG, "refresh start failed", e)
                 }
             }
         }
@@ -604,7 +604,7 @@ class TtsPlaybackService : Service() {
             try {
                 context.stopService(Intent(context, TtsPlaybackService::class.java))
             } catch (e: Exception) {
-                Log.w(TAG, "stopService failed", e)
+                AppLog.w(TAG, "stopService failed", e)
             }
         }
     }

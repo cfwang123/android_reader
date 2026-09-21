@@ -7,13 +7,13 @@ import android.os.Looper
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.util.Log
 import com.whj.reader.data.AppSettings
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import com.whj.reader.util.AppLog
 
 /**
  * 长文 TTS 分段 synthesizeToFile → 合并 WAV → 可选编码 M4A。
@@ -178,11 +178,11 @@ class TtsExportHelper(private val context: Context) {
                 applyVoiceSettings(engine)
                 engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
-                        Log.i(TAG, "onStart id=$utteranceId")
+                        AppLog.i(TAG, "onStart id=$utteranceId")
                     }
 
                     override fun onDone(utteranceId: String?) {
-                        Log.i(TAG, "onDone id=$utteranceId wait=$waitingUtterance")
+                        AppLog.i(TAG, "onDone id=$utteranceId wait=$waitingUtterance")
                         main.post { tryAdvanceFromCallback(utteranceId) }
                     }
 
@@ -209,7 +209,7 @@ class TtsExportHelper(private val context: Context) {
         // 绑定超时
         initTimeoutRunnable = Runnable {
             if (working && chunks.isEmpty() && partFiles.isEmpty()) {
-                Log.e(TAG, "init timeout")
+                AppLog.e(TAG, "init timeout")
                 finishError("tts init timeout")
             }
         }
@@ -222,7 +222,7 @@ class TtsExportHelper(private val context: Context) {
                 TextToSpeech(app, initListener)
             }
         }.onFailure { t ->
-            Log.e(TAG, "create tts", t)
+            AppLog.e(TAG, "create tts", t)
             finishError(t.message ?: "create tts failed")
         }
     }
@@ -231,7 +231,7 @@ class TtsExportHelper(private val context: Context) {
         chunks = chunkText(body, MAX_CHUNK)
         totalChars = body.length
         doneChars = 0
-        Log.i(TAG, "chunks=${chunks.size} totalChars=${body.length}")
+        AppLog.i(TAG, "chunks=${chunks.size} totalChars=${body.length}")
         if (chunks.isEmpty()) {
             finishError("empty chunks")
             return
@@ -270,7 +270,7 @@ class TtsExportHelper(private val context: Context) {
         waitingUtterance = id
         waitingPart = part
         advancing = false
-        Log.i(TAG, "synthesize i=$i/${total - 1} len=${text.length} id=$id")
+        AppLog.i(TAG, "synthesize i=$i/${total - 1} len=${text.length} id=$id")
 
         val params = Bundle()
         // 部分引擎读 Bundle 里的 utterance id
@@ -278,7 +278,7 @@ class TtsExportHelper(private val context: Context) {
         val code = try {
             engine.synthesizeToFile(text, params, part, id)
         } catch (t: Throwable) {
-            Log.e(TAG, "synthesizeToFile throw", t)
+            AppLog.e(TAG, "synthesizeToFile throw", t)
             failCurrent(t.message ?: "synthesize throw")
             return
         }
@@ -319,7 +319,7 @@ class TtsExportHelper(private val context: Context) {
                         if (sz == lastSize && sz > 44L) {
                             stableTicks++
                             if (stableTicks >= 2) {
-                                Log.i(TAG, "part ready by poll size=$sz id=$id")
+                                AppLog.i(TAG, "part ready by poll size=$sz id=$id")
                                 tryAdvanceFromFile(id)
                                 return
                             }
@@ -331,7 +331,7 @@ class TtsExportHelper(private val context: Context) {
                 }
                 reportSynthSoft(frac)
                 if (elapsed > timeoutMs) {
-                    Log.e(TAG, "part timeout id=$id exists=${part.exists()} size=${part.length()}")
+                    AppLog.e(TAG, "part timeout id=$id exists=${part.exists()} size=${part.length()}")
                     failCurrent("timeout part $chunkIndex")
                     return
                 }
@@ -357,7 +357,7 @@ class TtsExportHelper(private val context: Context) {
         // id 不一致时，若文件已就绪仍推进（OEM 回调 id 异常）
         if (utteranceId != null && utteranceId != wait) {
             if (!(part.exists() && part.length() >= 44L)) {
-                Log.w(TAG, "ignore done id=$utteranceId wait=$wait")
+                AppLog.w(TAG, "ignore done id=$utteranceId wait=$wait")
                 return
             }
         }
@@ -436,7 +436,7 @@ class TtsExportHelper(private val context: Context) {
             releaseEngine()
             callbacks.onSuccess(finalFile)
         } catch (t: Throwable) {
-            Log.e(TAG, "merge", t)
+            AppLog.e(TAG, "merge", t)
             finishError(t.message ?: "merge failed")
         }
     }
@@ -456,14 +456,14 @@ class TtsExportHelper(private val context: Context) {
                 val dest = File(outDir, "${prefix}_$stamp.mp3")
                 Mp3Encoder.wavToMp3(merged, dest, bitRateKbps = kbps)
                 if (dest.exists() && dest.length() > 0) {
-                    Log.i(TAG, "encoded mp3 ${dest.length()} bytes")
+                    AppLog.i(TAG, "encoded mp3 ${dest.length()} bytes")
                     return dest
                 }
             } catch (t: Throwable) {
-                Log.e(TAG, "mp3 encode failed, fallback m4a", t)
+                AppLog.e(TAG, "mp3 encode failed, fallback m4a", t)
             }
         } else {
-            Log.i(TAG, "mp3 not available on this device, fallback m4a")
+            AppLog.i(TAG, "mp3 not available on this device, fallback m4a")
         }
         return encodePreferM4a(merged, outDir, prefix, stamp, kbps * 1000)
     }
@@ -480,7 +480,7 @@ class TtsExportHelper(private val context: Context) {
             AacEncoder.wavToM4a(merged, dest, bitRate = bitRate)
             if (dest.exists() && dest.length() > 0) return dest
         } catch (t: Throwable) {
-            Log.e(TAG, "aac encode", t)
+            AppLog.e(TAG, "aac encode", t)
         }
         val wavDest = File(outDir, "${prefix}_$stamp.wav")
         merged.copyTo(wavDest, overwrite = true)
@@ -488,7 +488,7 @@ class TtsExportHelper(private val context: Context) {
     }
 
     private fun failCurrent(msg: String) {
-        Log.e(TAG, "fail: $msg")
+        AppLog.e(TAG, "fail: $msg")
         clearPartWatch()
         val callbacks = cb
         cleanupTemp()

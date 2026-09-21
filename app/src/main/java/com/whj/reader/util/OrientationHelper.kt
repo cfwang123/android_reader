@@ -3,7 +3,6 @@ package com.whj.reader.util
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.os.Build
-import android.util.Log
 import android.view.Surface
 import android.view.View
 import com.whj.reader.R
@@ -36,14 +35,14 @@ object OrientationHelper {
         val fixed = if (mode == OrientationMode.AUTO) OrientationMode.PORTRAIT else mode
         val target = resolveSystemOrientation(fixed)
         val prev = activity.requestedOrientation
-        Log.i(TAG, "apply mode=$fixed prev=$prev target=$target force=$force")
+        AppLog.i(TAG, "apply mode=$fixed prev=$prev target=$target force=$force")
         if (!force && prev == target) {
-            Log.i(TAG, "apply skip same")
+            AppLog.i(TAG, "apply skip same")
             return false
         }
         // 直接设目标，禁止 UNSPECIFIED 中转（避免连闪）
         activity.requestedOrientation = target
-        Log.i(TAG, "apply done after=${activity.requestedOrientation}")
+        AppLog.i(TAG, "apply done after=${activity.requestedOrientation}")
         return true
     }
 

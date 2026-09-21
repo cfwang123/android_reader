@@ -1,6 +1,5 @@
 package com.whj.reader.data
 
-import android.util.Log
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionURI
@@ -9,6 +8,7 @@ import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.P
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
 import kotlin.math.max
 import kotlin.math.min
+import com.whj.reader.util.AppLog
 
 /**
  * PDF 书内链接（GoTo）与 URI 链接。
@@ -105,7 +105,7 @@ object PdfLinkIndex {
                         }
                     }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "link action page=$i", t)
+                    AppLog.w(TAG, "link action page=$i", t)
                 }
                 if (targetPage == null && uri.isNullOrBlank()) continue
                 // 目标页非法则丢弃
@@ -124,7 +124,7 @@ object PdfLinkIndex {
             }
         }
         val total = out.values.sumOf { it.size }
-        Log.i(TAG, "links extracted pages=${out.size} total=$total")
+        AppLog.i(TAG, "links extracted pages=${out.size} total=$total")
         return out
     }
 
@@ -166,7 +166,7 @@ object PdfLinkIndex {
                 else -> -1
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "resolveDestination", t)
+            AppLog.w(TAG, "resolveDestination", t)
             -1
         }
     }

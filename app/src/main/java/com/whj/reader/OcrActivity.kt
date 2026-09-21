@@ -10,7 +10,6 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -27,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.max
+import com.whj.reader.util.AppLog
 
 /**
  * 通用 OCR：相册 / 拍照 → 识别 → 文字叠加层 → 长按选中复制 / 一键复制全部。
@@ -92,18 +92,18 @@ class OcrActivity : AppCompatActivity() {
             showProgress(true)
             val ok = withContext(Dispatchers.Default) {
                 try {
-                    Log.i(TAG, "init engine preferred=$backendPref autoBench=$autoBench")
+                    AppLog.i(TAG, "init engine preferred=$backendPref autoBench=$autoBench")
                     engine = TfliteOcrEngine(this@OcrActivity, backendPref)
                     true
                 } catch (t: Throwable) {
-                    Log.e(TAG, "engine", t)
+                    AppLog.e(TAG, "engine", t)
                     false
                 }
             }
             showProgress(false)
             if (ok) {
                 val b = engine?.backendName.orEmpty()
-                Log.i(TAG, "OCR_BENCH_BACKEND=$b")
+                AppLog.i(TAG, "OCR_BENCH_BACKEND=$b")
                 setStatus(
                     getString(R.string.ocr_status_idle) +
                         if (b.isNotEmpty()) " · $b" else "",
@@ -113,7 +113,7 @@ class OcrActivity : AppCompatActivity() {
                 }
             } else {
                 setStatus(getString(R.string.ocr_load_fail))
-                Log.e(TAG, "OCR_BENCH_FAIL load_engine")
+                AppLog.e(TAG, "OCR_BENCH_FAIL load_engine")
             }
         }
 
@@ -147,13 +147,13 @@ class OcrActivity : AppCompatActivity() {
                     assets.open("ocr/bench.jpg").use { BitmapFactory.decodeStream(it) }
                         ?.let { scaleIfNeeded(it) }
                 } catch (t: Throwable) {
-                    Log.e(TAG, "bench decode", t)
+                    AppLog.e(TAG, "bench decode", t)
                     null
                 }
             }
             if (bmp == null) {
                 showProgress(false)
-                Log.e(TAG, "OCR_BENCH_FAIL no_bench_image")
+                AppLog.e(TAG, "OCR_BENCH_FAIL no_bench_image")
                 setStatus("AUTO_BENCH 失败：无 bench 图")
                 return@launch
             }
@@ -163,7 +163,7 @@ class OcrActivity : AppCompatActivity() {
             val eng = engine
             if (eng == null) {
                 showProgress(false)
-                Log.e(TAG, "OCR_BENCH_FAIL no_engine")
+                AppLog.e(TAG, "OCR_BENCH_FAIL no_engine")
                 return@launch
             }
             val result = withContext(Dispatchers.Default) {
@@ -186,13 +186,13 @@ class OcrActivity : AppCompatActivity() {
                 ),
             )
             // 便于 adb logcat 抓取的固定格式
-            Log.i(
+            AppLog.i(
                 TAG,
                 "OCR_BENCH_OK backend=${result.backend} detMs=${result.detMs} " +
                     "recMs=${result.recMs} totalMs=${result.totalMs} lines=${result.lines.size}",
             )
-            Log.i(TAG, "OCR_BENCH_INIT ${eng.initLog.replace("\n", " | ")}")
-            Log.i(TAG, "OCR_BENCH_LOG ${result.log.replace("\n", " | ")}")
+            AppLog.i(TAG, "OCR_BENCH_INIT ${eng.initLog.replace("\n", " | ")}")
+            AppLog.i(TAG, "OCR_BENCH_LOG ${result.log.replace("\n", " | ")}")
             // 写到 app 私有文件，命令行 run-as 可读
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -313,7 +313,7 @@ class OcrActivity : AppCompatActivity() {
             cameraUri = uri
             takePicture.launch(uri)
         } catch (t: Throwable) {
-            Log.e(TAG, "camera", t)
+            AppLog.e(TAG, "camera", t)
             Toasts.show(this, getString(R.string.ocr_camera_fail, t.message ?: ""))
         }
     }
@@ -341,7 +341,7 @@ class OcrActivity : AppCompatActivity() {
                 try {
                     TfliteOcrEngine(this@OcrActivity, TfliteOcrEngine.Backend.AUTO).also { engine = it }
                 } catch (t: Throwable) {
-                    Log.e(TAG, "engine late", t)
+                    AppLog.e(TAG, "engine late", t)
                     null
                 }
             }
@@ -434,7 +434,7 @@ class OcrActivity : AppCompatActivity() {
             } ?: return null
             scaleIfNeeded(raw)
         } catch (t: Throwable) {
-            Log.e(TAG, "decode", t)
+            AppLog.e(TAG, "decode", t)
             null
         }
     }

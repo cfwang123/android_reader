@@ -2,7 +2,6 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import com.whj.reader.model.Chapter
 import com.whj.reader.model.InlineImage
 import com.whj.reader.model.Paragraph
@@ -14,6 +13,7 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Locale
+import com.whj.reader.util.AppLog
 
 /**
  * 简易 MOBI/PRC 加载：PalmDOC 解压 + HTML 子集解析。
@@ -122,7 +122,7 @@ object MobiLoader {
         onProgress?.invoke("读取缓存…", 0, 0)
         if (parsedCache.isFile && parsedCache.length() in 1..MAX_FULL_CACHE_BYTES) {
             loadParsedCache(parsedCache, uriStr, sourceSize, sourceModified)?.let { cached ->
-                Log.i(TAG, "hit parse cache paras=${cached.paragraphs.size}")
+                AppLog.i(TAG, "hit parse cache paras=${cached.paragraphs.size}")
                 onProgress?.invoke("完成", 1, 1)
                 return BookOpenResult(cached.copy(isComplete = true), null)
             }
@@ -247,9 +247,9 @@ object MobiLoader {
         val beforeStrip = html.length
         html = stripMobiTrailingBinary(html)
         if (html.length < beforeStrip) {
-            Log.w(TAG, "strip binary: $beforeStrip -> ${html.length}")
+            AppLog.w(TAG, "strip binary: $beforeStrip -> ${html.length}")
         }
-        Log.i(
+        AppLog.i(
             TAG,
             "open compression=$compression textLen=$textLength records=$textCount " +
                 "html=${html.length} chunks~=${splitHtmlChunks(html).size}",
@@ -743,7 +743,7 @@ object MobiLoader {
                     true
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "stream batch fail at chunk $nextChunk", e)
+                AppLog.e(TAG, "stream batch fail at chunk $nextChunk", e)
                 if (nextChunk < chunks.size) {
                     nextChunk++
                     onUpdate?.invoke(snapshot(complete = false))
@@ -793,7 +793,7 @@ object MobiLoader {
                     chapters,
                     linkTargets,
                 )
-                Log.i(
+                AppLog.i(
                     TAG,
                     "seek load chunks=$loadedChunks paras=${paragraphs.size} " +
                         "target=$targetParaInclusive in ${System.currentTimeMillis() - t0}ms",
@@ -806,7 +806,7 @@ object MobiLoader {
                     true
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "seek load fail at chunk $nextChunk", e)
+                AppLog.e(TAG, "seek load fail at chunk $nextChunk", e)
                 loadNextBatchBlocking()
             }
         }
@@ -982,13 +982,13 @@ object MobiLoader {
 
         // 文件头标明 UTF-8：始终用 UTF-8（sanitize 后少量 U+FFFD 仍优于误用 GB18030）
         if (mobiEncoding == 65001) {
-            Log.i(TAG, "decode: UTF-8 (enc=65001 title=$titleHint repl=${utf8.count { it == '\uFFFD' }})")
+            AppLog.i(TAG, "decode: UTF-8 (enc=65001 title=$titleHint repl=${utf8.count { it == '\uFFFD' }})")
             return utf8
         }
 
         val gb = runCatching { String(rawBytes, charset("GB18030")) }.getOrNull()
         if (gb != null && shouldPreferGbk(utf8, gb, expectChinese, mobiEncoding)) {
-            Log.i(TAG, "decode: GB18030 (enc=$mobiEncoding title=$titleHint)")
+            AppLog.i(TAG, "decode: GB18030 (enc=$mobiEncoding title=$titleHint)")
             return gb
         }
 
@@ -996,14 +996,14 @@ object MobiLoader {
         if (!expectChinese && isMostlyLatin(html)) {
             val win = runCatching { String(rawBytes, charset("windows-1252")) }.getOrNull()
             if (win != null && shouldPreferWin1252(html, win)) {
-                Log.i(TAG, "decode: windows-1252 (latin MOBI enc=$mobiEncoding)")
+                AppLog.i(TAG, "decode: windows-1252 (latin MOBI enc=$mobiEncoding)")
                 return win
             }
         }
         val hasRepl = html.indexOf('\uFFFD') >= 0
         if (hasRepl || looksLikeGarbled(html)) {
             if (gb != null && !looksLikeGarbled(gb)) {
-                Log.i(TAG, "decode: GB18030 fallback (enc=$mobiEncoding)")
+                AppLog.i(TAG, "decode: GB18030 fallback (enc=$mobiEncoding)")
                 html = gb
             }
         }
@@ -1107,26 +1107,26 @@ object MobiLoader {
         val gb = runCatching { String(rawBytes, charset("GB18030")) }.getOrElse { "" }
         val big5 = runCatching { String(rawBytes, charset("Big5")) }.getOrElse { "" }
         val metaCs = sniffHtmlCharset(chosen)
-        Log.i(
+        AppLog.i(
             TAG,
             "probe title=$titleHint enc=$mobiEncoding meta=$metaCs rawLen=${rawBytes.size}",
         )
-        Log.i(
+        AppLog.i(
             TAG,
             "probe cjk utf8=${countCjkSample(utf8)} gb=${countCjkSample(gb)} " +
                 "big5=${countCjkSample(big5)} chosen=${countCjkSample(chosen)}",
         )
-        Log.i(TAG, "probe utf8=${sampleForLog(utf8)}")
-        Log.i(TAG, "probe gb=${sampleForLog(gb)}")
-        Log.i(TAG, "probe big5=${sampleForLog(big5)}")
-        Log.i(TAG, "probe chosen=${sampleForLog(chosen)}")
+        AppLog.i(TAG, "probe utf8=${sampleForLog(utf8)}")
+        AppLog.i(TAG, "probe gb=${sampleForLog(gb)}")
+        AppLog.i(TAG, "probe big5=${sampleForLog(big5)}")
+        AppLog.i(TAG, "probe chosen=${sampleForLog(chosen)}")
         val firstPara = Regex("""(?is)<p[^>]*>(.*?)</p>""")
             .find(chosen)
             ?.groupValues
             ?.getOrNull(1)
             ?.let { stripHtmlTags(it) }
-        Log.i(TAG, "probe firstPara=$firstPara")
-        Log.i(
+        AppLog.i(TAG, "probe firstPara=$firstPara")
+        AppLog.i(
             TAG,
             "probe rawHex=${rawBytes.take(48).joinToString("") { "%02x".format(it) }}",
         )
@@ -1258,13 +1258,13 @@ object MobiLoader {
         sourceModified: Long,
     ) {
         if (book.paragraphs.size > 12_000) {
-            Log.i(TAG, "skip save full cache paras=${book.paragraphs.size}")
+            AppLog.i(TAG, "skip save full cache paras=${book.paragraphs.size}")
             return
         }
         runCatching { saveParsedCache(file, book, sourceSize, sourceModified) }
-            .onFailure { Log.w(TAG, "save full cache fail", it) }
+            .onFailure { AppLog.w(TAG, "save full cache fail", it) }
         if (file.isFile && file.length() > MAX_FULL_CACHE_BYTES) {
-            Log.i(TAG, "full cache too large ${file.length()}B, delete")
+            AppLog.i(TAG, "full cache too large ${file.length()}B, delete")
             runCatching { file.delete() }
         }
     }
@@ -1355,7 +1355,7 @@ object MobiLoader {
                     imagePaths = imagePaths,
                 )
             }
-        }.onFailure { Log.w(TAG, "parse cache load fail: ${it.message}") }.getOrNull()
+        }.onFailure { AppLog.w(TAG, "parse cache load fail: ${it.message}") }.getOrNull()
     }
 
     private fun saveMobiChapterIndex(
@@ -1393,7 +1393,7 @@ object MobiLoader {
                 .put("chapters", chArr)
                 .put("linkTargets", ltObj)
             file.writeText(o.toString(), Charsets.UTF_8)
-        }.onFailure { Log.w(TAG, "save chapter index fail", it) }
+        }.onFailure { AppLog.w(TAG, "save chapter index fail", it) }
     }
 
     private fun loadMobiChapterIndex(
@@ -1454,7 +1454,7 @@ object MobiLoader {
                     writeParagraph(out, paragraphs[i])
                 }
             }
-        }.onFailure { Log.w(TAG, "save chunk cache $chunkIndex fail", it) }
+        }.onFailure { AppLog.w(TAG, "save chunk cache $chunkIndex fail", it) }
     }
 
     private fun loadChunkCache(

@@ -1,11 +1,11 @@
 package com.whj.reader.data
 
 import android.content.Context
-import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import com.whj.reader.util.AppLog
 
 /**
  * 按 PDF 文件持久化 OCR 结果（每页字符 + 坐标）。
@@ -143,7 +143,7 @@ object PdfOcrCacheStore {
                 }
             }
         }.getOrElse {
-            Log.w(TAG, "loadIndex fail", it)
+            AppLog.w(TAG, "loadIndex fail", it)
             emptyMap()
         }
     }
@@ -209,7 +209,7 @@ object PdfOcrCacheStore {
         )
         saveIndex(ctx, fileKey, idx)
         if (isTallPage(pw, ph) && coverFrac < MIN_COVER_FRAC && chars.isNotEmpty()) {
-            Log.w(
+            AppLog.w(
                 TAG,
                 "page $pageIndex tall OCR cover=$coverFrac < $MIN_COVER_FRAC " +
                     "(chars=${chars.size}) — may need retile",
@@ -245,7 +245,7 @@ object PdfOcrCacheStore {
                 }
             }
         }.getOrElse {
-            Log.w(TAG, "loadPage $pageIndex fail", it)
+            AppLog.w(TAG, "loadPage $pageIndex fail", it)
             null
         }
     }
@@ -279,6 +279,6 @@ object PdfOcrCacheStore {
         val dir = File(rootDir(ctx), hash)
         runCatching {
             if (dir.isDirectory) dir.deleteRecursively()
-        }.onFailure { Log.w(TAG, "removeBook $hash: ${it.message}") }
+        }.onFailure { AppLog.w(TAG, "removeBook $hash: ${it.message}") }
     }
 }

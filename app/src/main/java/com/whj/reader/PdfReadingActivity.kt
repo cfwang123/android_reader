@@ -75,6 +75,7 @@ import com.whj.reader.util.OpenFailGuide
 import com.whj.reader.util.OrientationHelper
 import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
+import com.whj.reader.util.AppLog
 
 import com.whj.reader.pdf.mode.PdfModeController
 import com.whj.reader.pdf.textload.PdfTextLoadController
@@ -358,7 +359,7 @@ class PdfReadingActivity : AppCompatActivity() {
                     binding.rvPdfPages.scrollToPosition(0)
                     binding.rvPdfPages.scrollBy(0, -binding.rvPdfPages.computeVerticalScrollOffset())
                 }
-                android.util.Log.i(
+                AppLog.i(
                     "ZFrame",
                     "broadcast SIM hold_ms=$holdMs dy=$dy " +
                         "cont=${binding.pdfContainer.continuousScrollWhenZoomed} " +

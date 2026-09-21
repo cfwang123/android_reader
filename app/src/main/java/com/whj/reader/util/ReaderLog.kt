@@ -1,11 +1,14 @@
 package com.whj.reader.util
 
 import android.util.Log
+import com.whj.reader.BuildConfig
 
 /**
  * 按模块开关的调试日志（默认全关，避免 logcat 刷屏）。
  *
- * ## 如何开关
+ * **release 包硬关闭**（[BuildConfig.DEBUG] == false），与 [AppLog] 一致。
+ *
+ * ## 如何开关（仅 debug）
  * 只改本文件底部的 [ENABLED_MODULES]：
  * - `emptySet()` / 不写任何项 → 全关
  * - `setOf(Module.ALL)` → 全开
@@ -86,6 +89,7 @@ object ReaderLog {
     fun moduleForTag(tag: String): Module = tagToModule[tag] ?: Module.MISC
 
     fun isEnabled(module: Module): Boolean {
+        if (!BuildConfig.DEBUG) return false
         val on = ENABLED_MODULES
         return Module.ALL in on ||
             module in on ||
@@ -111,6 +115,7 @@ object ReaderLog {
         }
 
     fun dumpEnabled(where: String = "ReaderLog") {
+        if (!BuildConfig.DEBUG) return
         Log.i(where, "log modules on=${enabledModuleIds().ifEmpty { listOf("off") }}")
     }
 
@@ -141,4 +146,32 @@ object ReaderLog {
     fun w(module: Module, msg: String, tr: Throwable? = null) = w(module.tag, msg, tr)
 
     fun e(module: Module, msg: String, tr: Throwable? = null) = e(module.tag, msg, tr)
+}
+
+/**
+ * 原 `android.util.Log` 替代：debug 原样输出，**release 全丢弃**。
+ * 模块化、可开关的调试请用 [ReaderLog]。
+ */
+object AppLog {
+    fun v(tag: String, msg: String) {
+        if (BuildConfig.DEBUG) Log.v(tag, msg)
+    }
+
+    fun d(tag: String, msg: String) {
+        if (BuildConfig.DEBUG) Log.d(tag, msg)
+    }
+
+    fun i(tag: String, msg: String) {
+        if (BuildConfig.DEBUG) Log.i(tag, msg)
+    }
+
+    fun w(tag: String, msg: String, tr: Throwable? = null) {
+        if (!BuildConfig.DEBUG) return
+        if (tr != null) Log.w(tag, msg, tr) else Log.w(tag, msg)
+    }
+
+    fun e(tag: String, msg: String, tr: Throwable? = null) {
+        if (!BuildConfig.DEBUG) return
+        if (tr != null) Log.e(tag, msg, tr) else Log.e(tag, msg)
+    }
 }

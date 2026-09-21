@@ -3,7 +3,6 @@ package com.whj.reader.data
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
-import android.util.Log
 import com.whj.reader.model.LinkedDirEntry
 import com.whj.reader.model.LinkedFileEntry
 import org.json.JSONArray
@@ -12,6 +11,7 @@ import java.io.File
 import java.text.Collator
 import java.util.ArrayDeque
 import java.util.Locale
+import com.whj.reader.util.AppLog
 
 /**
  * 绑定文件夹的文件树缓存：
@@ -127,7 +127,7 @@ object LinkedTreeCacheStore {
         val snap = runCatching {
             parseSnapshot(f.readText(Charsets.UTF_8))
         }.onFailure {
-            Log.w(TAG, "load cache failed: ${it.message}")
+            AppLog.w(TAG, "load cache failed: ${it.message}")
         }.getOrNull()?.takeIf { it.treeUri == treeUri }
         if (snap != null) {
             memory[treeUri] = snap
@@ -142,7 +142,7 @@ object LinkedTreeCacheStore {
         runCatching {
             f.writeText(toJson(snapshot).toString(), Charsets.UTF_8)
         }.onFailure {
-            Log.e(TAG, "save cache failed", it)
+            AppLog.e(TAG, "save cache failed", it)
         }
     }
 
@@ -187,7 +187,7 @@ object LinkedTreeCacheStore {
             val listing = runCatching {
                 FolderImporter.listLinkedDirectory(ctx, uri, parentId)
             }.getOrElse {
-                Log.w(TAG, "list failed parent=$parentId: ${it.message}")
+                AppLog.w(TAG, "list failed parent=$parentId: ${it.message}")
                 LinkedListing(emptyList(), emptyList())
             }
             val dirs = listing.dirs.map { d ->
@@ -251,7 +251,7 @@ object LinkedTreeCacheStore {
             levels = levels,
         )
         save(ctx, snap)
-        Log.i(
+        AppLog.i(
             TAG,
             "scan done tree=${treeUri.takeLast(24)} levels=${levels.size} " +
                 "files=${snap.allFiles().size}",
@@ -360,7 +360,7 @@ object LinkedTreeCacheStore {
         // 先写内存，立刻可被下一层进入使用；磁盘写入相对慢
         putMemory(snap)
         save(ctx, snap)
-        Log.i(TAG, "level updated key=${key.takeLast(20)} items=${newLevel.itemCount}")
+        AppLog.i(TAG, "level updated key=${key.takeLast(20)} items=${newLevel.itemCount}")
         return RefreshResult(snap.listing(parentDocumentId), contentChanged = true)
     }
 

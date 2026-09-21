@@ -2,7 +2,6 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
@@ -10,6 +9,7 @@ import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.P
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode
 import java.util.concurrent.atomic.AtomicInteger
+import com.whj.reader.util.AppLog
 
 /**
  * 从 PDF 内嵌大纲（Bookmarks / TOC）提取树形目录。
@@ -44,7 +44,7 @@ object PdfOutlineLoader {
                 }
             } ?: emptyList()
         } catch (t: Throwable) {
-            Log.e(TAG, "load outline failed", t)
+            AppLog.e(TAG, "load outline failed", t)
             emptyList()
         }
     }
@@ -55,13 +55,13 @@ object PdfOutlineLoader {
             val outline = try {
                 doc.documentCatalog?.documentOutline
             } catch (t: Throwable) {
-                Log.w(TAG, "get outline failed", t)
+                AppLog.w(TAG, "get outline failed", t)
                 null
             } ?: return emptyList()
             val idGen = AtomicInteger(0)
             parseKids(outline, doc, idGen)
         } catch (t: Throwable) {
-            Log.e(TAG, "loadFromDocument failed", t)
+            AppLog.e(TAG, "loadFromDocument failed", t)
             emptyList()
         }
     }
@@ -75,7 +75,7 @@ object PdfOutlineLoader {
         var item: PDOutlineItem? = try {
             parent.firstChild
         } catch (t: Throwable) {
-            Log.w(TAG, "firstChild failed", t)
+            AppLog.w(TAG, "firstChild failed", t)
             null
         }
         var guard = 0
@@ -90,7 +90,7 @@ object PdfOutlineLoader {
                 val children = try {
                     if (item.hasChildren()) parseKids(item, doc, idGen) else emptyList()
                 } catch (t: Throwable) {
-                    Log.w(TAG, "parse children failed: $title", t)
+                    AppLog.w(TAG, "parse children failed: $title", t)
                     emptyList()
                 }
                 out.add(
@@ -102,12 +102,12 @@ object PdfOutlineLoader {
                     ),
                 )
             } catch (t: Throwable) {
-                Log.w(TAG, "parse outline item failed", t)
+                AppLog.w(TAG, "parse outline item failed", t)
             }
             item = try {
                 item.nextSibling
             } catch (t: Throwable) {
-                Log.w(TAG, "nextSibling failed", t)
+                AppLog.w(TAG, "nextSibling failed", t)
                 null
             }
         }
@@ -163,7 +163,7 @@ object PdfOutlineLoader {
                 else -> -1
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "resolvePageIndex failed", t)
+            AppLog.w(TAG, "resolvePageIndex failed", t)
             -1
         }
     }

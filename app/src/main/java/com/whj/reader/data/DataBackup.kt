@@ -2,7 +2,6 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.os.Environment
-import android.util.Log
 import com.whj.reader.model.Bookmark
 import com.whj.reader.model.ShelfBook
 import com.whj.reader.model.ShelfFolder
@@ -14,6 +13,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import com.whj.reader.util.AppLog
 
 /**
  * 书架 / 绑定文件夹 / 阅读进度 / 书签 的 SQLite 备份导入导出。
@@ -406,7 +406,7 @@ object DataBackup {
                     ed.apply()
                 }
             }
-        }.onFailure { Log.w(TAG, "importPrefKeys: ${it.message}") }
+        }.onFailure { AppLog.w(TAG, "importPrefKeys: ${it.message}") }
     }
 
     private fun queryMeta(db: android.database.sqlite.SQLiteDatabase, key: String): String? {

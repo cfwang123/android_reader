@@ -2,7 +2,6 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -12,6 +11,7 @@ import java.io.ByteArrayInputStream
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import com.whj.reader.util.AppLog
 
 /**
  * 从 PDF 提取可朗读文字与带坐标的字符（选字 / TTS 高亮）。
@@ -92,10 +92,10 @@ object PdfTextExtractor {
                     ?: return false
                 sessionDoc = PDDocument.load(ByteArrayInputStream(bytes))
                 sessionKey = key
-                Log.i(TAG, "session open pages=${sessionDoc?.numberOfPages} bytes=${bytes.size}")
+                AppLog.i(TAG, "session open pages=${sessionDoc?.numberOfPages} bytes=${bytes.size}")
                 true
             } catch (t: Throwable) {
-                Log.w(TAG, "openSession failed", t)
+                AppLog.w(TAG, "openSession failed", t)
                 closeSessionLocked()
                 false
             }
@@ -129,7 +129,7 @@ object PdfTextExtractor {
         synchronized(sessionLock) {
             val doc = sessionDoc ?: return emptyMap()
             return runCatching { PdfLinkIndex.extractAll(doc) }
-                .onFailure { Log.w(TAG, "extractLinks", it) }
+                .onFailure { AppLog.w(TAG, "extractLinks", it) }
                 .getOrDefault(emptyMap())
         }
     }
@@ -144,7 +144,7 @@ object PdfTextExtractor {
             return try {
                 block(doc)
             } catch (t: Throwable) {
-                Log.w(TAG, "withSessionDocument", t)
+                AppLog.w(TAG, "withSessionDocument", t)
                 null
             }
         }
@@ -191,7 +191,7 @@ object PdfTextExtractor {
                 return try {
                     block(existing)
                 } catch (t: Throwable) {
-                    Log.w(TAG, "withDocument session failed", t)
+                    AppLog.w(TAG, "withDocument session failed", t)
                     null
                 }
             }
@@ -203,10 +203,10 @@ object PdfTextExtractor {
                 val doc = PDDocument.load(ByteArrayInputStream(bytes))
                 sessionDoc = doc
                 sessionKey = key
-                Log.i(TAG, "session open(lazy) pages=${doc.numberOfPages} bytes=${bytes.size}")
+                AppLog.i(TAG, "session open(lazy) pages=${doc.numberOfPages} bytes=${bytes.size}")
                 block(doc)
             } catch (t: Throwable) {
-                Log.w(TAG, "withDocument load failed", t)
+                AppLog.w(TAG, "withDocument load failed", t)
                 closeSessionLocked()
                 null
             }
@@ -225,7 +225,7 @@ object PdfTextExtractor {
             collector.endPage = page1
             collector.sortByPosition = true
             runCatching { collector.getText(doc) }
-                .onFailure { Log.w(TAG, "extract page $pageIndex failed", it) }
+                .onFailure { AppLog.w(TAG, "extract page $pageIndex failed", it) }
             // 即使无字也占位，避免反复尝试空页
             rawPageChars[pageIndex] = collector.chars.toList()
         }
@@ -297,7 +297,7 @@ object PdfTextExtractor {
 
             val (normalized, blocks) = runCatching { smartSegment(visible) }
                 .getOrElse {
-                    Log.w(TAG, "smartSegment failed page=$pageIndex", it)
+                    AppLog.w(TAG, "smartSegment failed page=$pageIndex", it)
                     emptyList<PdfChar>() to emptyList()
                 }
 

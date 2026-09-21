@@ -7,12 +7,16 @@
 #### Changed / fixed
 - **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
 - **PDF crop screen**: page preview now fills **white** before render (same as reading view), so transparent PDF paper no longer shows the gray chrome behind
+- **Release logging**: `AppLog` / `ReaderLog` emit nothing in release (`BuildConfig.DEBUG`); former direct `android.util.Log` calls migrated
+- **PDF continuous zoom-in**: bottom padding `vh*(z-1)/z` so the list can scroll to the true content bottom
 
 ### 中文
 
 #### 修改 / 修复
 - **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）
 - **PDF 切边页**：预览渲染前先铺 **白底**（与阅读预览一致），PDF 未画纸底时不再透出灰色界面底
+- **Release 日志**：`AppLog` / `ReaderLog` 在 release 中不输出（`BuildConfig.DEBUG`）；原直连 `android.util.Log` 已迁走
+- **PDF 连续放大**：底 padding `vh*(z-1)/z`，可滚到内容真实底部
 
 ---
 

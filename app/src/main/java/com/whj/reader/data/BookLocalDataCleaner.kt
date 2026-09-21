@@ -1,10 +1,10 @@
 package com.whj.reader.data
 
 import android.content.Context
-import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
+import com.whj.reader.util.AppLog
 
 /**
  * 清除单本书的**全部**本地阅读记录与缓存（保留书架条目与源文件）。
@@ -14,7 +14,7 @@ object BookLocalDataCleaner {
 
     fun clear(ctx: Context, uri: String) {
         if (uri.isBlank()) return
-        Log.i(TAG, "clear ALL local data for ${uri.take(160)}")
+        AppLog.i(TAG, "clear ALL local data for ${uri.take(160)}")
 
         // 进度与历史（先清进度 store，再清书架字段）
         ReadingProgressStore.remove(ctx, uri)
@@ -43,7 +43,7 @@ object BookLocalDataCleaner {
         runCatching { CoverStore.fileFor(ctx, uri).delete() }
         ShelfFileMetaStore.remove(ctx, uri)
 
-        Log.i(TAG, "clear done")
+        AppLog.i(TAG, "clear done")
     }
 
     private fun clearEbookParseCaches(ctx: Context, uri: String) {
@@ -64,7 +64,7 @@ object BookLocalDataCleaner {
                 val key = md5Hex("$uri|$name").take(16)
                 val dir = File(root, key)
                 if (dir.isDirectory) {
-                    Log.i(TAG, "rm ebook cache key=$key")
+                    AppLog.i(TAG, "rm ebook cache key=$key")
                     runCatching { dir.deleteRecursively() }
                 }
             }
@@ -72,7 +72,7 @@ object BookLocalDataCleaner {
             root.listFiles()?.forEach { dir ->
                 if (!dir.isDirectory) return@forEach
                 if (dirLooksLikeUri(dir, uri, uriBytes)) {
-                    Log.i(TAG, "rm ebook cache scan ${dir.name}")
+                    AppLog.i(TAG, "rm ebook cache scan ${dir.name}")
                     runCatching { dir.deleteRecursively() }
                 }
             }

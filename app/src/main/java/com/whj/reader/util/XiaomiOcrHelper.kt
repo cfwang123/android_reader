@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
-import android.util.Log
 import dalvik.system.PathClassLoader
 import java.io.File
 
@@ -113,7 +112,7 @@ object XiaomiOcrHelper {
         val log = StringBuilder()
         fun line(s: String) {
             log.append(s).append('\n')
-            Log.i(TAG, s)
+            AppLog.i(TAG, s)
         }
 
         return try {
@@ -223,7 +222,7 @@ object XiaomiOcrHelper {
                 elapsedMs = System.currentTimeMillis() - t0,
             )
         } catch (t: Throwable) {
-            Log.e(TAG, "reflect ocr failed", t)
+            AppLog.e(TAG, "reflect ocr failed", t)
             OcrAttempt(
                 name = "反射 OCREngine",
                 ok = false,

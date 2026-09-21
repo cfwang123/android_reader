@@ -9,7 +9,6 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.widget.AdapterView
@@ -26,6 +25,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.whj.reader.util.AppLog
 
 /**
  * 文本转语音：输入文本 → 选引擎/发音人 → 播放或导出音频文件。
@@ -233,7 +233,7 @@ class TtsSynthActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 TextToSpeech(this, this, pkg)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "create TTS failed", e)
+            AppLog.e(TAG, "create TTS failed", e)
             setStatus(getString(R.string.tts_init_failed))
             return
         }
@@ -241,7 +241,7 @@ class TtsSynthActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (gen != initGen || ready) return@postDelayed
             // 超时：若指定包失败，试默认
             if (!pkg.isNullOrBlank()) {
-                Log.w(TAG, "init timeout, try default")
+                AppLog.w(TAG, "init timeout, try default")
                 bindEngine(null)
             } else {
                 setStatus(getString(R.string.tts_init_failed))

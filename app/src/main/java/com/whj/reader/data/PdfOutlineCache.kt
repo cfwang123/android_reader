@@ -2,11 +2,11 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import com.whj.reader.util.AppLog
 
 /**
  * PDF 大纲缓存：内存 + 磁盘，避免每次打开目录都重新 PDFBox 解析（常需 1–2s）。
@@ -56,7 +56,7 @@ object PdfOutlineCache {
         val key = uri.toString()
         memory.remove(key)
         runCatching { cacheFile(context, key).delete() }
-            .onFailure { Log.w(TAG, "remove outline cache: ${it.message}") }
+            .onFailure { AppLog.w(TAG, "remove outline cache: ${it.message}") }
     }
 
     fun remove(context: Context, uriKey: String) {
@@ -67,13 +67,13 @@ object PdfOutlineCache {
 
     fun loadOrParse(context: Context, uri: Uri): List<PdfOutlineLoader.Node> {
         get(context, uri)?.let {
-            Log.i(TAG, "outline cache hit ${uri.toString().takeLast(32)}")
+            AppLog.i(TAG, "outline cache hit ${uri.toString().takeLast(32)}")
             return it
         }
         val roots = PdfOutlineLoader.load(context, uri)
         // 空目录也缓存，避免反复解析无大纲 PDF
         put(context, uri, roots)
-        Log.i(TAG, "outline cached nodes=${roots.size}")
+        AppLog.i(TAG, "outline cached nodes=${roots.size}")
         return roots
     }
 
@@ -97,7 +97,7 @@ object PdfOutlineCache {
                 .put("uri", uriKey)
                 .put("roots", nodesToJson(roots))
             cacheFile(ctx, uriKey).writeText(o.toString(), Charsets.UTF_8)
-        }.onFailure { Log.w(TAG, "save disk failed: ${it.message}") }
+        }.onFailure { AppLog.w(TAG, "save disk failed: ${it.message}") }
     }
 
     private fun loadDisk(
@@ -112,7 +112,7 @@ object PdfOutlineCache {
             if (o.optString("stamp") != stamp) return null
             jsonToNodes(o.getJSONArray("roots"))
         }.onFailure {
-            Log.w(TAG, "load disk failed: ${it.message}")
+            AppLog.w(TAG, "load disk failed: ${it.message}")
         }.getOrNull()
     }
 

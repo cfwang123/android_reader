@@ -9,7 +9,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.AttributeSet
-import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -24,6 +23,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import com.whj.reader.util.AppLog
 
 /**
  * 双指捏合缩放（结束后保留）+ 缩放后单指平移/惯性 + 双击切换缩放。
@@ -561,7 +561,7 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     /** 诊断「按住再 pan」：随 MangaZoom 模块开关（ReaderLog） */
     private fun zLog(msg: String) {
         if (!ReaderLog.isEnabled(ReaderLog.Module.MANGA_ZOOM)) return
-        Log.i("ZFrame", msg)
+        AppLog.i("ZFrame", msg)
         ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "ZFrame $msg")
     }
 
@@ -1108,8 +1108,14 @@ class ZoomableFrameLayout @JvmOverloads constructor(
     }
 
     /**
+     * 连续放大时为 RV 增加的底 padding（使 maxScroll 达到 contentH - vh/z）。
+     * 放大后可视高度仅为 vh/z，若仍按 vh 算可滚区间会少一截，滚不到底。
+     */
+    private var continuousZoomBottomPadPx = 0
+
+    /**
      * 应用缩放：
-     * - 放大（z>1）：match_parent + scale，可平移
+     * - 放大（z>1）：match_parent + scale；连续模式给 RV 加底 padding，保证能滚到内容底
      * - 缩小（z<1）且连续滚动：把内容区高度设为 vh/z 再 scale=z，
      *   视觉铺满高度且多露出 PDF 内容；宽度仍为屏宽，scale 后两侧露黑边
      * - 缩小且单页：match_parent + scale，居中，外侧黑底
@@ -1154,6 +1160,11 @@ class ZoomableFrameLayout @JvmOverloads constructor(
             }
         }
 
+        // 连续放大：补底 padding，否则 RV maxScroll=contentH-vh，视觉需要 contentH-vh/z
+        if (continuousScrollWhenZoomed) {
+            syncContinuousZoomBottomPadding(t, z, vh)
+        }
+
         t.pivotX = 0f
         t.pivotY = 0f
         t.scaleX = z
@@ -1173,6 +1184,27 @@ class ZoomableFrameLayout @JvmOverloads constructor(
         t.translationY = panY
         syncExteriorBackground()
         onTransformChanged?.invoke()
+    }
+
+    /**
+     * 连续模式放大后，父容器只露出 RV 顶部 vh/z 高度；给 RV 加底 padding
+     * P = vh*(z-1)/z，使 maxScroll ≈ contentH - vh/z，才能滚到最后一页底。
+     */
+    private fun syncContinuousZoomBottomPadding(target: View, z: Float, vh: Int) {
+        val rv = target as? RecyclerView ?: return
+        val want = if (z > 1.01f) {
+            ((vh.toFloat() * (z - 1f) / z)).toInt().coerceAtLeast(0)
+        } else {
+            0
+        }
+        if (want == continuousZoomBottomPadPx && rv.paddingBottom == want) return
+        continuousZoomBottomPadPx = want
+        rv.setPadding(rv.paddingLeft, rv.paddingTop, rv.paddingRight, want)
+        ReaderLog.i(
+            ReaderLog.Module.PDF_ZOOM,
+            "continuousZoomBottomPad=$want z=$z vh=$vh range=${rv.computeVerticalScrollRange()} " +
+                "extent=${rv.computeVerticalScrollExtent()} offset=${rv.computeVerticalScrollOffset()}",
+        )
     }
 
     private fun abortPanFling() {

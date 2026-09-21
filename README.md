@@ -51,6 +51,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 ### PDF reading
 
 - Continuous or single page; pinch-zoom; **crop margins per file** (crop preview uses the same white paper background as reading)
+- **Release builds** drop app logcat output (`AppLog` / `ReaderLog`; debug keeps it)
 - **Progress %** = scroll position / total content height (updates while scrolling inside tall pages)
 - **Fast scroll**: right-edge thumb in continuous mode (drag to jump; shows while scrolling, hides ~1s after stop)
 - **TOC** prepared in the background after open

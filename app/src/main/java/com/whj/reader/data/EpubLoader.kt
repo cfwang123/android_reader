@@ -2,7 +2,6 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import com.whj.reader.model.Chapter
 import com.whj.reader.model.InlineImage
 import com.whj.reader.model.Paragraph
@@ -18,6 +17,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
+import com.whj.reader.util.AppLog
 
 /**
  * EPUB → [LoadedBook]（段落流 + 富文本 span + 图片缓存路径）。
@@ -81,7 +81,7 @@ object EpubLoader {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(epubFile).use { out -> copyStream(input, out) }
             } ?: error("无法打开 EPUB")
-            Log.i(TAG, "copy epub ${epubFile.length()}B in ${System.currentTimeMillis() - t0}ms")
+            AppLog.i(TAG, "copy epub ${epubFile.length()}B in ${System.currentTimeMillis() - t0}ms")
         }
         val coverDest = CoverStore.fileFor(context, uri.toString())
         return openFromFile(
@@ -105,13 +105,13 @@ object EpubLoader {
         onProgress?.invoke("读取缓存…", 0, 0)
         // 大缓存跳过：整本反序列化会卡首页数秒；改用按需续载 + 章节索引
         if (parsedCache.isFile && parsedCache.length() > MAX_FULL_CACHE_BYTES) {
-            Log.i(
+            AppLog.i(
                 TAG,
                 "skip large full cache ${parsedCache.length()}B (>${MAX_FULL_CACHE_BYTES}B), use progressive",
             )
         } else {
             loadParsedCache(parsedCache, uriStr)?.let { cached ->
-                Log.i(TAG, "hit parse cache paras=${cached.paragraphs.size} in ${System.currentTimeMillis() - tAll}ms")
+                AppLog.i(TAG, "hit parse cache paras=${cached.paragraphs.size} in ${System.currentTimeMillis() - tAll}ms")
                 // 去掉旧版「章节n/m」前缀；保持 isChapter 样式
                 val cleaned = stripLegacyChapterPrefixes(cached)
                 runCatching { saveChapterIndex(chapterIndexFile, uriStr, cleaned.chapters) }
@@ -126,7 +126,7 @@ object EpubLoader {
         try {
             val t0 = System.currentTimeMillis()
             val index = ZipIndex.build(zip)
-            Log.i(TAG, "zip index entries=${index.size} in ${System.currentTimeMillis() - t0}ms")
+            AppLog.i(TAG, "zip index entries=${index.size} in ${System.currentTimeMillis() - t0}ms")
 
             val container = readZipText(index, zip, "META-INF/container.xml")
                 ?: error("无效 EPUB：缺少 container.xml")
@@ -256,7 +256,7 @@ object EpubLoader {
                 chapters = mergeChapterLists(firstBookRaw.chapters, cachedChapterIndex),
             )
             runCatching { saveChapterIndex(chapterIndexFile, uriStr, firstBook.chapters) }
-            Log.i(
+            AppLog.i(
                 TAG,
                 "first screen spines=$nextSpine/${spine.size} paras=${paragraphs.size} " +
                     "nav=${navChapters.size} ch=${firstBook.chapters.size} " +
@@ -574,7 +574,7 @@ object EpubLoader {
                 .put("uri", uri)
                 .put("chapters", arr)
             file.writeText(o.toString(), Charsets.UTF_8)
-        }.onFailure { Log.w(TAG, "save chapter index fail", it) }
+        }.onFailure { AppLog.w(TAG, "save chapter index fail", it) }
     }
 
     private fun loadChapterIndex(file: File, expectedUri: String): List<Chapter> {
@@ -601,14 +601,14 @@ object EpubLoader {
     private fun maybeSaveParsedCache(file: File, book: LoadedBook) {
         // 预估体积：段数很多时不写整本缓存
         if (book.paragraphs.size > 12_000) {
-            Log.i(TAG, "skip save full cache paras=${book.paragraphs.size}")
+            AppLog.i(TAG, "skip save full cache paras=${book.paragraphs.size}")
             return
         }
         runCatching { saveParsedCache(file, book) }
-            .onFailure { Log.w(TAG, "save full cache fail", it) }
+            .onFailure { AppLog.w(TAG, "save full cache fail", it) }
         // 写完后若过大则删掉，下次走渐进
         if (file.isFile && file.length() > MAX_FULL_CACHE_BYTES) {
-            Log.i(TAG, "full cache too large ${file.length()}B, delete")
+            AppLog.i(TAG, "full cache too large ${file.length()}B, delete")
             runCatching { file.delete() }
         }
     }
@@ -662,7 +662,7 @@ object EpubLoader {
             alreadyMarked.add(key)
         }
         if (marked > 0) {
-            Log.i(TAG, "mark TOC targets as chapter style: +$marked (total=${alreadyMarked.size})")
+            AppLog.i(TAG, "mark TOC targets as chapter style: +$marked (total=${alreadyMarked.size})")
         }
     }
 
@@ -763,7 +763,7 @@ object EpubLoader {
                     }
                 }
             }
-        }.onFailure { Log.w(TAG, "save spine cache $spineIndex fail", it) }
+        }.onFailure { AppLog.w(TAG, "save spine cache $spineIndex fail", it) }
     }
 
     /**
@@ -1042,7 +1042,7 @@ object EpubLoader {
                     true
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "stream batch fail", e)
+                AppLog.e(TAG, "stream batch fail", e)
                 val partial = runCatching {
                     injectAndBuild(complete = true, streamCurrent = nextSpine)
                 }.getOrElse {
@@ -1097,7 +1097,7 @@ object EpubLoader {
                     }
                 }
                 if (cancelled) return false
-                Log.i(
+                AppLog.i(
                     TAG,
                     "seek load spines=$loadedSpines paras=${paragraphs.size} " +
                         "target=$targetParaInclusive in ${System.currentTimeMillis() - t0}ms",
@@ -1116,7 +1116,7 @@ object EpubLoader {
                     true
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "seek load fail", e)
+                AppLog.e(TAG, "seek load fail", e)
                 loadNextBatchBlocking()
             }
         }
@@ -1378,7 +1378,7 @@ object EpubLoader {
                     linkTargets = linkTargets,
                 )
             }
-        }.onFailure { Log.w(TAG, "parse cache load fail: ${it.message}") }.getOrNull()
+        }.onFailure { AppLog.w(TAG, "parse cache load fail: ${it.message}") }.getOrNull()
     }
 
     private fun writeInt(out: java.io.OutputStream, v: Int) {

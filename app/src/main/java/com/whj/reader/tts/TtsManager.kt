@@ -15,7 +15,6 @@ import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import android.util.Log
 import androidx.core.content.ContextCompat
 import com.whj.reader.R
 import com.whj.reader.data.AppSettings
@@ -24,6 +23,7 @@ import com.whj.reader.model.Paragraph
 import java.util.ArrayDeque
 import java.util.Locale
 import kotlin.math.roundToInt
+import com.whj.reader.util.AppLog
 
 /**
  * 系统 TTS 封装：按句朗读，支持暂停/继续、上一句/下一句、跳段、发音人选择。
@@ -140,10 +140,10 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             val idle = now - lastUttActivityElapsed
             // 管道已空但仍 SPEAKING：引擎回调丢失，立刻续读
             if (pipeline.isEmpty() && lastUttActivityElapsed > 0L && idle >= EMPTY_PIPELINE_MS) {
-                Log.w(TAG, "TTS pipeline empty ${idle}ms while SPEAKING → advance")
+                AppLog.w(TAG, "TTS pipeline empty ${idle}ms while SPEAKING → advance")
                 scheduleAdvanceFromEndOfPipeline()
             } else if (lastUttActivityElapsed > 0L && idle >= STALL_TIMEOUT_MS) {
-                Log.w(
+                AppLog.w(
                     TAG,
                     "TTS stall ${idle}ms (screen-off engine freeze?) → re-speak p=$paraIndex s=$sentIndex",
                 )
@@ -190,7 +190,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         lastEnginePackage = AppSettings.ttsLastEnginePackage(appCtx)
         preferredLanguageKey = AppSettings.ttsLanguageKey(appCtx)
         preferredVoiceName = AppSettings.voiceName(appCtx)
-        Log.i(
+        AppLog.i(
             TAG,
             "prefs engine preferred=$preferredEnginePackage last=$lastEnginePackage " +
                 "lang=$preferredLanguageKey voice=$preferredVoiceName",
@@ -279,7 +279,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             forceSingleEngine = false
             buildEngineQueue()
         }
-        Log.i(TAG, "switchEngine target=${target ?: "auto"} queue=$engineQueue")
+        AppLog.i(TAG, "switchEngine target=${target ?: "auto"} queue=$engineQueue")
         tryBindNextEngine()
     }
 
@@ -324,7 +324,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         }
         engineQueue.clear()
         engineQueue.addAll(unique)
-        Log.i(TAG, "TTS engine queue=$engineQueue preferred=$preferred last=$last")
+        AppLog.i(TAG, "TTS engine queue=$engineQueue preferred=$preferred last=$last")
     }
 
     private fun queryInstalledTtsPackages(): List<String> =
@@ -351,7 +351,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         if (engineQueue.isEmpty()) {
             ready = false
             statusMessage = str(R.string.tts_init_failed)
-            Log.e(TAG, "all TTS engines failed")
+            AppLog.e(TAG, "all TTS engines failed")
             // 不弹 Toast：状态栏/重试按钮已提示，避免反复 reinit 刷屏
             finishSwitchCallback(false)
             notifyState()
@@ -368,21 +368,21 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         val gen = ++initGeneration
         try {
             tts = if (pkg.isBlank()) {
-                Log.i(TAG, "binding default TTS engine")
+                AppLog.i(TAG, "binding default TTS engine")
                 TextToSpeech(appCtx, this)
             } else {
-                Log.i(TAG, "binding TTS engine package=$pkg")
+                AppLog.i(TAG, "binding TTS engine package=$pkg")
                 TextToSpeech(appCtx, this, pkg)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "create TextToSpeech($pkg) failed", e)
+            AppLog.e(TAG, "create TextToSpeech($pkg) failed", e)
             tryBindNextEngine()
             return
         }
         // 绑定超时：Google 等引擎可能 onInit 很久或永不回调
         mainHandler.postDelayed({
             if (gen != initGeneration || ready) return@postDelayed
-            Log.w(TAG, "TTS init timeout engine=${currentEnginePackage ?: "default"}, try next")
+            AppLog.w(TAG, "TTS init timeout engine=${currentEnginePackage ?: "default"}, try next")
             statusMessage = str(R.string.tts_still_not_ready)
             notifyState()
             tryBindNextEngine()
@@ -411,7 +411,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
      * 注意：系统常在 binder 线程回调 onInit，必须切主线程再动 UI / speak。
      */
     override fun onInit(status: Int) {
-        Log.i(
+        AppLog.i(
             TAG,
             "onInit status=$status engine=${currentEnginePackage ?: "default"} " +
                 "defaultEngine=${tts?.defaultEngine}",
@@ -422,7 +422,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private fun handleOnInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) {
             ready = false
-            Log.e(TAG, "onInit failed status=$status engine=$currentEnginePackage")
+            AppLog.e(TAG, "onInit failed status=$status engine=$currentEnginePackage")
             // 换下一个引擎
             tryBindNextEngine()
             return
@@ -469,7 +469,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             fun retryVoice(tag: String) {
                 if (!ready || preferredVoiceName != name) return
                 val ok = applyVoiceByName(name, persist = false)
-                Log.i(TAG, "$tag applyVoice name=$name ok=$ok current=${tts?.voice?.name}")
+                AppLog.i(TAG, "$tag applyVoice name=$name ok=$ok current=${tts?.voice?.name}")
                 if (ok) notifyState()
             }
             if (!voiceOk) {
@@ -501,7 +501,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
                 mainHandler.post {
                     if (state != State.SPEAKING) return@post
-                    Log.i(TAG, "onStop id=$utteranceId interrupted=$interrupted")
+                    AppLog.i(TAG, "onStop id=$utteranceId interrupted=$interrupted")
                     if (!interrupted) {
                         onUtteranceDone(utteranceId)
                     }
@@ -512,7 +512,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             override fun onError(utteranceId: String?) {
                 mainHandler.post {
                     // 灭屏偶发 error：尝试续读当前句而非直接 IDLE
-                    Log.e(TAG, "utterance error id=$utteranceId → retry")
+                    AppLog.e(TAG, "utterance error id=$utteranceId → retry")
                     cancelUtteranceTimeout()
                     pipeline.clear()
                     if (ready && paragraphs.isNotEmpty() && state == State.SPEAKING) {
@@ -527,7 +527,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
 
             override fun onError(utteranceId: String?, errorCode: Int) {
                 mainHandler.post {
-                    Log.e(TAG, "utterance error code=$errorCode id=$utteranceId → retry")
+                    AppLog.e(TAG, "utterance error code=$errorCode id=$utteranceId → retry")
                     cancelUtteranceTimeout()
                     pipeline.clear()
                     if (ready && paragraphs.isNotEmpty() &&
@@ -566,7 +566,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         ready = true
         forceSingleEngine = false
         statusMessage = if (langOk || voiceOk) str(R.string.tts_ready) else str(R.string.tts_ready_no_zh)
-        Log.i(
+        AppLog.i(
             TAG,
             "$statusMessage voice=${engine.voice?.name} prefVoice=$preferredVoiceName " +
                 "lang=${engine.voice?.locale} engine=${engine.defaultEngine} " +
@@ -593,7 +593,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         }
         for (locale in candidates) {
             val r = runCatching { engine.setLanguage(locale) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
-            Log.i(TAG, "setLanguage $locale -> $r")
+            AppLog.i(TAG, "setLanguage $locale -> $r")
             if (r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED) {
                 return true
             }
@@ -750,7 +750,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     fun setSpeechRate(rate: Float, restartCurrent: Boolean = false) {
         speechRate = rate.coerceIn(0.5f, 2.5f)
         val r = applySpeechRateToEngine(tts)
-        Log.i(TAG, "setSpeechRate=$speechRate engineResult=$r eng=${boundEnginePackage()}")
+        AppLog.i(TAG, "setSpeechRate=$speechRate engineResult=$r eng=${boundEnginePackage()}")
         if (restartCurrent && ready && paragraphs.isNotEmpty() &&
             (state == State.SPEAKING || state == State.PAUSED)
         ) {
@@ -847,7 +847,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         // 固定走音乐流，与音量键/AudioFocus 一致，避免落到通知流等
         params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
-        Log.i(
+        AppLog.i(
             TAG,
             "speak params rateInt=$rateParam (speed=$speed) pitchInt=$pitchParam " +
                 "vol=1.0 uiRate=$speechRate uiPitch=$pitch xiaomi=${isXiaomiEngine()} " +
@@ -894,7 +894,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 tts?.language = voice.locale
                 tts?.voice = voice
             }
-            Log.i(
+            AppLog.i(
                 TAG,
                 "setVoice saved name=${voice.name} locale=${voice.locale} engine=$bound",
             )
@@ -914,13 +914,13 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         }
         val voices = getVoices()
         if (voices.isEmpty()) {
-            Log.w(TAG, "applyVoiceByName: voices empty, keep name=$name for retry")
+            AppLog.w(TAG, "applyVoiceByName: voices empty, keep name=$name for retry")
             return false
         }
         val voice = voices.firstOrNull { it.name == name }
             ?: voices.firstOrNull { it.name.equals(name, ignoreCase = true) }
             ?: return false.also {
-                Log.w(TAG, "applyVoiceByName: name=$name not in ${voices.size} voices")
+                AppLog.w(TAG, "applyVoiceByName: name=$name not in ${voices.size} voices")
             }
         return runCatching {
             tts?.language = voice.locale
@@ -929,7 +929,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             if (persist) {
                 AppSettings.setTtsLanguageKey(appCtx, preferredLanguageKey)
             }
-            Log.i(TAG, "applyVoiceByName ok name=${voice.name}")
+            AppLog.i(TAG, "applyVoiceByName ok name=${voice.name}")
             true
         }.getOrDefault(false)
     }
@@ -1072,7 +1072,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             if (state != State.SPEAKING) return@Runnable
             val head = pipeline.firstOrNull() ?: return@Runnable
             if (head.id != utt.id) return@Runnable
-            Log.w(TAG, "utterance timeout id=${utt.id} → force onDone")
+            AppLog.w(TAG, "utterance timeout id=${utt.id} → force onDone")
             onUtteranceDone(utt.id)
         }
         utteranceTimeoutRunnable = r
@@ -1410,7 +1410,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         pipeline.addLast(unit)
         lastUttActivityElapsed = SystemClock.elapsedRealtime()
         if (flush) scheduleUtteranceTimeout(unit)
-        Log.i(TAG, "speak p=${unit.para} s=${unit.sent} len=${unit.text.length} mode=$mode")
+        AppLog.i(TAG, "speak p=${unit.para} s=${unit.sent} len=${unit.text.length} mode=$mode")
         fillPipeline()
         state = State.SPEAKING
         statusMessage = str(R.string.tts_status_speaking)
@@ -1436,13 +1436,13 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 val r = engine.speak(retry.text, TextToSpeech.QUEUE_ADD, buildSpeakParams(), retry.id)
                 if (r == TextToSpeech.ERROR) break
                 pipeline.addLast(retry)
-                Log.i(TAG, "prequeue p=${retry.para} s=${retry.sent}")
+                AppLog.i(TAG, "prequeue p=${retry.para} s=${retry.sent}")
                 continue
             }
             val r = engine.speak(unit.text, TextToSpeech.QUEUE_ADD, buildSpeakParams(), unit.id)
             if (r == TextToSpeech.ERROR) break
             pipeline.addLast(unit)
-            Log.i(TAG, "prequeue p=${unit.para} s=${unit.sent}")
+            AppLog.i(TAG, "prequeue p=${unit.para} s=${unit.sent}")
         }
     }
 

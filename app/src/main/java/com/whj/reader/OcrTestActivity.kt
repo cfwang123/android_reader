@@ -6,7 +6,6 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -19,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max
+import com.whj.reader.util.AppLog
 
 /**
  * OCR 测试页：TFLite PP-OCRv4 mobile（Umi-OCR Rapid 同源），GPU / CPU。
@@ -116,7 +116,7 @@ class OcrTestActivity : AppCompatActivity() {
             engineBackend = backend
             true
         } catch (t: Throwable) {
-            Log.e(TAG, "load engine", t)
+            AppLog.e(TAG, "load engine", t)
             engine = null
             engineBackend = null
             false
@@ -191,7 +191,7 @@ class OcrTestActivity : AppCompatActivity() {
             } ?: return null
             scaleIfNeeded(raw)
         } catch (t: Throwable) {
-            Log.e(TAG, "decode", t)
+            AppLog.e(TAG, "decode", t)
             null
         }
     }
@@ -222,7 +222,7 @@ class OcrTestActivity : AppCompatActivity() {
     private fun appendLog(msg: String) {
         val old = binding.tvLog.text?.toString().orEmpty()
         binding.tvLog.text = if (old.isBlank()) msg else "$old\n$msg"
-        Log.i(TAG, msg)
+        AppLog.i(TAG, msg)
     }
 
     companion object {

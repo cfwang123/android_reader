@@ -1,12 +1,12 @@
 package com.whj.reader.tts
 
 import android.os.Build
-import android.util.Log
 import com.naman14.androidlame.AndroidLame
 import com.naman14.androidlame.LameBuilder
 import com.naman14.androidlame.WaveReader
 import java.io.File
 import java.io.FileOutputStream
+import com.whj.reader.util.AppLog
 
 /**
  * WAV(PCM 16-bit) → MP3（LAME，仅打包 arm64-v8a 的 libandroidlame.so）。
@@ -35,7 +35,7 @@ object Mp3Encoder {
                 .also { it.close() }
             true
         }.onFailure { t ->
-            Log.w(TAG, "LAME unavailable: ${t.message}")
+            AppLog.w(TAG, "LAME unavailable: ${t.message}")
         }.getOrDefault(false)
         availableCache = ok
         return ok
@@ -103,7 +103,7 @@ object Mp3Encoder {
             if (!mp3.exists() || mp3.length() <= 0L) {
                 error("mp3 output empty")
             }
-            Log.i(TAG, "wavToMp3 ok size=${mp3.length()} kbps=$kbps rate=$sampleRate ch=$channels")
+            AppLog.i(TAG, "wavToMp3 ok size=${mp3.length()} kbps=$kbps rate=$sampleRate ch=$channels")
         } finally {
             runCatching { reader.closeWaveFile() }
         }

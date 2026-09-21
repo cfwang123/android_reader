@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
-import android.util.Log
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
@@ -19,6 +18,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.system.measureTimeMillis
+import com.whj.reader.util.AppLog
 
 /**
  * Umi-OCR Rapid 同源 PP-OCRv4 mobile（det / cls / rec）TFLite 推理。
@@ -95,7 +95,7 @@ class TfliteOcrEngine(
 
     private fun initLine(s: String) {
         initLogBuf.append(s).append('\n')
-        Log.i(TAG, s)
+        AppLog.i(TAG, s)
     }
 
     private data class Models(
@@ -133,7 +133,7 @@ class TfliteOcrEngine(
                 return Models(models.det, models.cls, models.rec, models.backend)
             } catch (t: Throwable) {
                 last = t
-                Log.w(TAG, "backend attempt fail", t)
+                AppLog.w(TAG, "backend attempt fail", t)
                 initLine("backend fail: ${t.javaClass.simpleName}: ${t.message}")
                 t.cause?.let { initLine("  cause: ${it.javaClass.simpleName}: ${it.message}") }
             }
@@ -506,7 +506,7 @@ class TfliteOcrEngine(
 
     private fun line(s: String) {
         logBuf.append(s).append('\n')
-        Log.i(TAG, s)
+        AppLog.i(TAG, s)
     }
 
     // ---------- preprocess ----------
