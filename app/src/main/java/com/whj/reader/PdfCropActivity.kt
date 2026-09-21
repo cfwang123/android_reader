@@ -2,6 +2,7 @@ package com.whj.reader
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.pdf.PdfRenderer
@@ -175,6 +176,8 @@ class PdfCropActivity : AppCompatActivity() {
                 val bh = (page.height * scale).toInt().coerceAtLeast(1)
                 val old = fullBitmap
                 val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+                // PDF 常不画纸底，透明处需先铺白，否则会透出切边页灰底
+                bmp.eraseColor(Color.WHITE)
                 val matrix = Matrix()
                 matrix.postScale(scale, scale)
                 page.render(bmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
@@ -244,6 +247,7 @@ class PdfCropActivity : AppCompatActivity() {
                     val sw = 140
                     val sh = max(1, (page.height * sw / page.width.toFloat()).toInt())
                     val probe = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+                    probe.eraseColor(Color.WHITE)
                     val m = Matrix()
                     m.postScale(sw / page.width.toFloat(), sh / page.height.toFloat())
                     page.render(probe, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)

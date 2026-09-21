@@ -6,11 +6,13 @@
 
 #### Changed / fixed
 - **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
+- **PDF crop screen**: page preview now fills **white** before render (same as reading view), so transparent PDF paper no longer shows the gray chrome behind
 
 ### 中文
 
 #### 修改 / 修复
 - **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）
+- **PDF 切边页**：预览渲染前先铺 **白底**（与阅读预览一致），PDF 未画纸底时不再透出灰色界面底
 
 ---
 
