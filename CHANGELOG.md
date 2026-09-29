@@ -5,6 +5,7 @@
 ### English
 
 #### Changed / fixed
+- **Open from SD card**: local files (internal storage and SD card) are read **in place** and no longer copied into app storage. A copy is kept only when the source has no real file path (for example a cloud provider)
 - **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
 - **PDF crop screen**: page preview now fills **white** before render (same as reading view), so transparent PDF paper no longer shows the gray chrome behind
 - **Release logging**: `AppLog` / `ReaderLog` emit nothing in release (`BuildConfig.DEBUG`); former direct `android.util.Log` calls migrated
@@ -13,6 +14,7 @@
 ### 中文
 
 #### 修改 / 修复
+- **从 SD 卡打开**：内部存储和 SD 卡上的书 **直接读原文件**，不再复制到应用目录。只有解析不出真实路径的来源（如网盘）才复制一份
 - **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）
 - **PDF 切边页**：预览渲染前先铺 **白底**（与阅读预览一致），PDF 未画纸底时不再透出灰色界面底
 - **Release 日志**：`AppLog` / `ReaderLog` 在 release 中不输出（`BuildConfig.DEBUG`）；原直连 `android.util.Log` 已迁走

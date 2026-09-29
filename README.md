@@ -19,6 +19,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 ### Bookshelf
 
 - Import files or folders; bind a folder (browse only, no copy)
+- Opening a book from a file manager on **SD card / internal storage** reads the original file and does not copy it into app storage. Sources with no real path (cloud drives, etc.) are still copied so the shelf can reopen them
 - List style: compact rows, multi-select checkbox on the right
 - Multi-select: move / remove (does not delete source files)
 - **Reading history** with correct format labels (TXT / PDF / EPUB / MOBI…)

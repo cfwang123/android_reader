@@ -5,17 +5,21 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.storage.StorageManager
+import android.os.storage.StorageVolume
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 /**
  * 全盘可读（MANAGE_EXTERNAL_STORAGE）与外部打开书目持久化。
  *
- * 从文件管理器 ACTION_VIEW 传入的 content:// 往往只有一次性授权，
- * 无法 takePersistable 时会复制到应用目录，保证书架可再次打开。
+ * 本机存储（内部共享存储 / SD 卡）直接读原文件，不复制进应用目录。
+ * 只有解析不出真实路径、又拿不到持久授权的 content（网盘等）才复制到 books/。
  */
 object StorageAccess {
 
@@ -70,8 +74,9 @@ object StorageAccess {
     /**
      * 确保书架上的 URI 长期可读：
      * 1) 尝试持久授权
-     * 2) 若已有全盘权限且可解析真实路径，改为 file://
-     * 3) 否则复制到应用专属目录 books/
+     * 2) 能解析到本机真实路径且当前可读时，改为 file://（含 SD 卡，不复制）
+     * 3) 路径已知但暂时读不了：保留原 URI，不复制
+     * 4) 没有真实路径且未持久授权：才复制到应用专属目录 books/
      *
      * @return 可写入书架的 uri 字符串
      */
@@ -81,31 +86,41 @@ object StorageAccess {
         displayName: String?,
     ): String {
         tryTakePersistableRead(context, uri)
+        readableFileUri(context, uri)?.let { return it }
+        if (uri.scheme.equals("file", ignoreCase = true) || isPersistableHeld(context, uri)) {
+            return uri.toString()
+        }
+        // SD 卡 / 内部存储路径已经能解析：即使这次只有一次性 content 授权，也不复制整本
+        if (resolveFilePath(context, uri) != null) {
+            return uri.toString()
+        }
         if (canRead(context, uri)) {
-            // 有全盘权限时尽量落到 file 路径，避免 content 授权过期
-            if (hasAllFilesAccess()) {
-                resolveFilePath(context, uri)?.let { path ->
-                    val f = File(path)
-                    if (f.isFile && f.canRead()) {
-                        return Uri.fromFile(f).toString()
-                    }
-                }
-            }
-            // 仍用原 uri（已持久授权或当前会话可读）
-            if (uri.scheme == "file" || isPersistableHeld(context, uri)) {
-                return uri.toString()
-            }
-            // content 且未持久授权：复制一份
             return copyToAppBooks(context, uri, displayName) ?: uri.toString()
         }
-        // 当前不可读：尝试真实路径 / 复制
-        if (hasAllFilesAccess()) {
-            resolveFilePath(context, uri)?.let { path ->
-                val f = File(path)
-                if (f.isFile && f.canRead()) return Uri.fromFile(f).toString()
-            }
+        return uri.toString()
+    }
+
+    /** 书架条目是否指向复制进应用目录 books/ 的副本。 */
+    fun isAppBooksCopy(context: Context, uriString: String): Boolean {
+        if (!uriString.startsWith("file:")) return false
+        val path = Uri.parse(uriString).path ?: return false
+        val root = context.getExternalFilesDir(null) ?: return false
+        val books = File(root, "books").absolutePath
+        val abs = File(path).absolutePath
+        return abs == books || abs.startsWith(books + File.separator)
+    }
+
+    /** 全盘权限下把 content/file 收成可读的 file://；读不了则返回 null。 */
+    private fun readableFileUri(context: Context, uri: Uri): String? {
+        if (!hasAllFilesAccess() && !uri.scheme.equals("file", ignoreCase = true)) return null
+        val path = resolveFilePath(context, uri) ?: return null
+        val file = File(path)
+        return try {
+            FileInputStream(file).use { }
+            Uri.fromFile(file).toString()
+        } catch (_: Exception) {
+            null
         }
-        return copyToAppBooks(context, uri, displayName) ?: uri.toString()
     }
 
     private fun isPersistableHeld(context: Context, uri: Uri): Boolean {
@@ -152,45 +167,145 @@ object StorageAccess {
 
     /**
      * 尽力解析 content/file URI 为绝对路径（全盘权限下可直接读）。
+     * 外置卡在未授权时 [File.exists] 常为 false，仍返回推测路径，避免被当成“没有原文件”而去复制。
      */
     fun resolveFilePath(context: Context, uri: Uri): String? {
         when (uri.scheme?.lowercase()) {
-            "file" -> return uri.path
-            "content" -> {
-                // DocumentProvider primary storage
-                if (DocumentsContract.isDocumentUri(context, uri)) {
-                    val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
-                    if (docId != null) {
-                        // raw:/storage/...
-                        if (docId.startsWith("raw:")) {
-                            return docId.removePrefix("raw:")
-                        }
-                        // primary:Download/a.pdf
-                        val split = docId.split(":", limit = 2)
-                        if (split.size == 2) {
-                            val type = split[0]
-                            val rel = split[1]
-                            if (type.equals("primary", ignoreCase = true)) {
-                                return "${Environment.getExternalStorageDirectory()}/$rel"
-                            }
-                            // 外置卡：/storage/<uuid>/...
-                            val ext = File("/storage/$type/$rel")
-                            if (ext.exists()) return ext.absolutePath
-                        }
-                    }
-                }
-                // _data 列（部分文件管理器）
-                runCatching {
-                    context.contentResolver.query(uri, arrayOf("_data"), null, null, null)?.use { c ->
-                        val i = c.getColumnIndex("_data")
-                        if (i >= 0 && c.moveToFirst()) {
-                            val p = c.getString(i)
-                            if (!p.isNullOrBlank()) return p
-                        }
-                    }
-                }
+            "file" -> {
+                val path = uri.path
+                return if (path.isNullOrBlank()) null else path
             }
+            "content" -> return resolveContentFilePath(context, uri)
         }
         return null
+    }
+
+    private fun resolveContentFilePath(context: Context, uri: Uri): String? {
+        val candidates = ArrayList<String>()
+        documentPathCandidates(context, uri)?.let { candidates.addAll(it) }
+        embeddedStoragePath(uri)?.let { candidates.add(it) }
+        queryDataColumn(context, uri)?.let { candidates.add(it) }
+        if (candidates.isEmpty()) return null
+        for (path in candidates) {
+            if (File(path).isFile) return path
+        }
+        return candidates.firstOrNull { looksLikeDevicePath(it) }
+    }
+
+    private fun documentPathCandidates(context: Context, uri: Uri): List<String>? {
+        if (!DocumentsContract.isDocumentUri(context, uri)) return null
+        val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+        if (docId.startsWith("raw:")) return listOf(docId.removePrefix("raw:"))
+        if (docId.startsWith("/")) return listOf(docId)
+        val split = docId.split(":", limit = 2)
+        if (split.size != 2) return null
+        val type = split[0]
+        val rel = split[1].trimStart('/')
+        if (type.equals("primary", ignoreCase = true)) {
+            return listOf("${Environment.getExternalStorageDirectory()}/$rel")
+        }
+        if (type.equals("home", ignoreCase = true)) {
+            val docs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+            return listOf(File(docs, rel).absolutePath)
+        }
+        if (type.equals("msf", ignoreCase = true)) return msfPathCandidates(context, rel)
+        val out = ArrayList<String>()
+        volumeRootByUuid(context, type)?.let { out.add(File(it, rel).absolutePath) }
+        out.add("/storage/$type/$rel")
+        if (rel.isNotEmpty()) {
+            for (root in removableRoots(context)) {
+                val path = File(root, rel).absolutePath
+                if (!out.contains(path)) out.add(path)
+            }
+        }
+        return out
+    }
+
+    private fun msfPathCandidates(context: Context, id: String): List<String>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val n = id.toLongOrNull() ?: return null
+        val media = android.content.ContentUris.withAppendedId(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            n,
+        )
+        val path = queryDataColumn(context, media) ?: return null
+        return listOf(path)
+    }
+
+    /** 文件管理器把 /storage/... 嵌在 content URI 里。 */
+    private fun embeddedStoragePath(uri: Uri): String? {
+        val decoded = Uri.decode(uri.toString())
+        val markers = arrayOf("/storage/", "/sdcard/", "/mnt/sdcard/", "/mnt/media_rw/")
+        for (marker in markers) {
+            val i = decoded.indexOf(marker)
+            if (i < 0) continue
+            var path = decoded.substring(i)
+            val cut = path.indexOfAny(charArrayOf('?', '#'))
+            if (cut >= 0) path = path.substring(0, cut)
+            if (path.length > marker.length) return path
+        }
+        val ext = "/external_files/"
+        val j = decoded.indexOf(ext)
+        if (j >= 0) {
+            var rest = decoded.substring(j + ext.length)
+            val cut = rest.indexOfAny(charArrayOf('?', '#'))
+            if (cut >= 0) rest = rest.substring(0, cut)
+            if (rest.startsWith("storage/") || rest.startsWith("sdcard/") || rest.startsWith("mnt/")) {
+                return "/$rest"
+            }
+            if (rest.contains("/")) return "/storage/$rest"
+        }
+        return null
+    }
+
+    private fun looksLikeDevicePath(path: String): Boolean {
+        return path.startsWith("/storage/") ||
+            path.startsWith("/sdcard") ||
+            path.startsWith("/mnt/")
+    }
+
+    private fun volumeRootByUuid(context: Context, uuid: String): File? {
+        val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager ?: return null
+        for (vol in sm.storageVolumes) {
+            val id = vol.uuid ?: continue
+            if (!id.equals(uuid, ignoreCase = true)) continue
+            return volumeDirectory(vol)
+        }
+        return null
+    }
+
+    private fun removableRoots(context: Context): List<File> {
+        val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager ?: return emptyList()
+        val out = ArrayList<File>()
+        for (vol in sm.storageVolumes) {
+            if (vol.isPrimary) continue
+            val dir = volumeDirectory(vol) ?: continue
+            if (!out.contains(dir)) out.add(dir)
+        }
+        return out
+    }
+
+    private fun volumeDirectory(vol: StorageVolume): File? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return vol.directory
+        }
+        return runCatching {
+            val path = StorageVolume::class.java.getMethod("getPath").invoke(vol) as? String
+            if (path.isNullOrBlank()) null else File(path)
+        }.getOrNull()
+    }
+
+    private fun queryDataColumn(context: Context, uri: Uri): String? {
+        return runCatching {
+            context.contentResolver.query(uri, arrayOf("_data"), null, null, null)?.use { c ->
+                val i = c.getColumnIndex("_data")
+                if (i >= 0 && c.moveToFirst()) {
+                    val p = c.getString(i)
+                    if (!p.isNullOrBlank()) p else null
+                } else {
+                    null
+                }
+            }
+        }.getOrNull()
     }
 }

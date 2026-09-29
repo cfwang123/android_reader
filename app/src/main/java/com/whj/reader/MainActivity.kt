@@ -703,7 +703,7 @@ class MainActivity : AppCompatActivity() {
                     display,
                 )
             }
-            if (stableUri != uri.toString() && stableUri.startsWith("file:")) {
+            if (StorageAccess.isAppBooksCopy(this@MainActivity, stableUri)) {
                 Toasts.show(this@MainActivity, R.string.book_copied_local)
             }
             BookshelfStore.addOrUpdateBook(
