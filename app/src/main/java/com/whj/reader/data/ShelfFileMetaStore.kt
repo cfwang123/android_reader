@@ -46,6 +46,14 @@ object ShelfFileMetaStore {
         prefs(ctx).edit().putInt(pagesKey(uri), pageCount).apply()
     }
 
+    fun migrate(ctx: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val size = getSizeBytes(ctx, oldUri)
+        if (size >= 0L && getSizeBytes(ctx, newUri) < 0L) setSizeBytes(ctx, newUri, size)
+        val pages = getPdfPageCount(ctx, oldUri)
+        if (pages > 0 && getPdfPageCount(ctx, newUri) == 0) setPdfPageCount(ctx, newUri, pages)
+    }
+
     fun remove(ctx: Context, uri: String) {
         if (uri.isBlank()) return
         prefs(ctx).edit()

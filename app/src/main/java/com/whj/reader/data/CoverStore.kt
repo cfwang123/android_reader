@@ -41,6 +41,19 @@ object CoverStore {
         }.getOrNull()
     }
 
+    fun migrate(context: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val old = fileFor(context, oldUri)
+        val dest = fileFor(context, newUri)
+        if (!old.isFile || old.length() == 0L || dest.isFile) return
+        if (!old.renameTo(dest)) {
+            runCatching {
+                old.copyTo(dest, overwrite = false)
+                old.delete()
+            }
+        }
+    }
+
     private fun hashKey(uri: String): String {
         val md = MessageDigest.getInstance("SHA-1")
         val dig = md.digest(uri.toByteArray(Charsets.UTF_8))

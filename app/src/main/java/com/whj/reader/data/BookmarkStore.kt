@@ -62,6 +62,14 @@ object BookmarkStore {
         save(ctx, all(ctx).filterNot { it.fileKey == fileKey })
     }
 
+    /** 旧版本地副本改回原文件时，书签跟着 URI 走。 */
+    fun migrateFileKey(ctx: Context, oldKey: String, newKey: String) {
+        if (oldKey.isBlank() || newKey.isBlank() || oldKey == newKey) return
+        val items = all(ctx)
+        if (items.none { it.fileKey == oldKey }) return
+        save(ctx, items.map { if (it.fileKey == oldKey) it.copy(fileKey = newKey) else it })
+    }
+
     fun has(ctx: Context, fileKey: String, paragraphIndex: Int): Boolean {
         return all(ctx).any {
             it.fileKey == fileKey && it.paragraphIndex == paragraphIndex

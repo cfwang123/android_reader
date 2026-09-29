@@ -78,6 +78,22 @@ object BookNotesFileStore {
         return loc
     }
 
+    /** 副本 URI 换成原文件后，笔记文件跟着走。 */
+    fun migrate(ctx: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val oldLoc = resolveLocation(ctx, oldUri)
+        val newLoc = resolveLocation(ctx, newUri)
+        if (!oldLoc.file.isFile || newLoc.file.isFile) return
+        if (oldLoc.file.absolutePath == newLoc.file.absolutePath) return
+        newLoc.file.parentFile?.mkdirs()
+        if (!oldLoc.file.renameTo(newLoc.file)) {
+            runCatching {
+                oldLoc.file.copyTo(newLoc.file, overwrite = false)
+                oldLoc.file.delete()
+            }
+        }
+    }
+
     fun deleteAll(ctx: Context, bookUri: String) {
         save(ctx, BookNotesDocument(bookUri = bookUri, highlights = emptyList()))
     }

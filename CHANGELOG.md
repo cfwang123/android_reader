@@ -5,6 +5,7 @@
 ### English
 
 #### Changed / fixed
+- **Old copied books**: on startup, files previously copied into app storage are deleted. If the same name and size exists on internal storage or the SD card, the shelf (progress, bookmarks, notes) points at that original first. Unmatched copies, such as cloud imports, are kept
 - **Open from SD card**: local files (internal storage and SD card) are read **in place** and no longer copied into app storage. A copy is kept only when the source has no real file path (for example a cloud provider)
 - **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
 - **PDF crop screen**: page preview now fills **white** before render (same as reading view), so transparent PDF paper no longer shows the gray chrome behind
@@ -14,6 +15,7 @@
 ### 中文
 
 #### 修改 / 修复
+- **旧副本清理**：启动时删除以前复制进应用目录的书。内部存储或 SD 卡上有同名同大小的原文件时，书架、进度、书签、笔记改指向原文件后再删副本。对不上的（如网盘复制）保留
 - **从 SD 卡打开**：内部存储和 SD 卡上的书 **直接读原文件**，不再复制到应用目录。只有解析不出真实路径的来源（如网盘）才复制一份
 - **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）
 - **PDF 切边页**：预览渲染前先铺 **白底**（与阅读预览一致），PDF 未画纸底时不再透出灰色界面底

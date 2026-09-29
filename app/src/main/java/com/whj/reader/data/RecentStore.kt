@@ -72,6 +72,13 @@ object RecentStore {
         save(ctx, list(ctx).filterNot { it.uri == uri })
     }
 
+    fun migrateUri(ctx: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val items = list(ctx)
+        if (items.none { it.uri == oldUri }) return
+        save(ctx, items.map { if (it.uri == oldUri) it.copy(uri = newUri) else it })
+    }
+
     private fun save(ctx: Context, items: List<RecentFile>) {
         val arr = JSONArray()
         items.forEach { f ->

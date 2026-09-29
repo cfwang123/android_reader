@@ -39,6 +39,15 @@ object PdfOcrCacheStore {
         val coverFrac: Float = 0f,
     )
 
+    /** 旧版副本 URI 换成原文件后，把已识别页目录改挂到新 key。 */
+    fun migrateBook(ctx: Context, oldKey: String, newKey: String) {
+        if (oldKey.isBlank() || newKey.isBlank() || oldKey == newKey) return
+        val oldDir = File(rootDir(ctx), sha1(oldKey).take(24))
+        val newDir = File(rootDir(ctx), sha1(newKey).take(24))
+        if (!oldDir.isDirectory || newDir.exists()) return
+        oldDir.renameTo(newDir)
+    }
+
     private fun rootDir(ctx: Context): File =
         File(ctx.filesDir, DIR).also { it.mkdirs() }
 

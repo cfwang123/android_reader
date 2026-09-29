@@ -780,4 +780,53 @@ object AppSettings {
         ed.apply()
     }
 
+    /**
+     * 旧版本地副本改回原文件：正文进度、漫画/PDF 视图、上次打开、书架定位。
+     * 新 URI 已有记录时不覆盖。切边由 [migratePdfCrop] 处理。
+     */
+    fun migrateReaderFileKey(ctx: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val p = prefs(ctx)
+        val ed = p.edit()
+        if (p.contains("progress_$oldUri") && !p.contains("progress_$newUri")) {
+            ed.putInt("progress_$newUri", p.getInt("progress_$oldUri", 0))
+        }
+        val oldM = mangaStateKey(oldUri)
+        val newM = mangaStateKey(newUri)
+        if (p.contains("manga_idx_$oldM") && !p.contains("manga_idx_$newM")) {
+            ed.putInt("manga_idx_$newM", p.getInt("manga_idx_$oldM", 0))
+            ed.putFloat("manga_zoom_$newM", p.getFloat("manga_zoom_$oldM", 1f))
+            ed.putFloat("manga_panX_$newM", p.getFloat("manga_panX_$oldM", 0f))
+            ed.putFloat("manga_panY_$newM", p.getFloat("manga_panY_$oldM", 0f))
+            ed.putInt("manga_itemOff_$newM", p.getInt("manga_itemOff_$oldM", 0))
+            ed.putInt("manga_scrollY_$newM", p.getInt("manga_scrollY_$oldM", 0))
+            ed.putString("manga_uri_$newM", newUri.take(240))
+        }
+        if (p.getString("shelfFocusUri", null) == oldUri) {
+            ed.putString("shelfFocusUri", newUri)
+        }
+        ed.apply()
+        if (lastBookUri(ctx) == oldUri) {
+            setLastBook(ctx, newUri, lastBookTitle(ctx))
+        }
+
+        val pdf = pdfPrefs(ctx)
+        val ped = pdf.edit()
+        if (pdf.contains("pdf_progress_$oldUri") && !pdf.contains("pdf_progress_$newUri")) {
+            ped.putInt("pdf_progress_$newUri", pdf.getInt("pdf_progress_$oldUri", 0))
+        }
+        val oldK = oldUri.hashCode().toString()
+        val newK = newUri.hashCode().toString()
+        if (pdf.contains("pdf_zoom_$oldK") && !pdf.contains("pdf_zoom_$newK")) {
+            ped.putFloat("pdf_zoom_$newK", pdf.getFloat("pdf_zoom_$oldK", 1f))
+            ped.putFloat("pdf_panX_$newK", pdf.getFloat("pdf_panX_$oldK", 0f))
+            ped.putFloat("pdf_panY_$newK", pdf.getFloat("pdf_panY_$oldK", 0f))
+            ped.putInt("pdf_scrollY_$newK", pdf.getInt("pdf_scrollY_$oldK", 0))
+        }
+        ped.apply()
+        if (lastPdfUri(ctx) == oldUri) {
+            setLastPdfBook(ctx, newUri, lastPdfTitle(ctx))
+        }
+    }
+
 }

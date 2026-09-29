@@ -24,6 +24,13 @@ object BookChapterPatternStore {
         return prefs(ctx).getBoolean("${key(uri)}_ic", false)
     }
 
+    fun migrate(ctx: Context, oldUri: String, newUri: String) {
+        if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
+        val pattern = get(ctx, oldUri) ?: return
+        if (get(ctx, newUri) != null) return
+        set(ctx, newUri, pattern, getIgnoreCase(ctx, oldUri))
+    }
+
     fun set(ctx: Context, uri: String, pattern: String?, ignoreCase: Boolean = false) {
         if (uri.isBlank()) return
         val ed = prefs(ctx).edit()

@@ -51,6 +51,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -181,6 +182,9 @@ class MainActivity : AppCompatActivity() {
 
     private var pendingViewUri: Uri? = null
     private var pendingViewName: String? = null
+    /** 已在拥有全盘权限时扫过旧副本；未授权时下次 onResume 再试，才能找到 SD 卡原文件 */
+    private var copyCleanupScanned = false
+    private var copyCleanupJob: Job? = null
 
     private var appliedThemeKey: String = ""
 
@@ -260,10 +264,46 @@ class MainActivity : AppCompatActivity() {
 
         requestStorageIfNeeded()
         ensureAllFilesAccessPrompt()
-        val openedExternal = handleIncomingIntent(intent)
         refreshShelf()
-        if (savedInstanceState == null && !openedExternal) {
-            tryAutoResumeLastBook()
+        val resumeLastBook = savedInstanceState == null
+        scheduleCopyCleanup {
+            if (isDestroyed) return@scheduleCopyCleanup
+            val openedExternal = handleIncomingIntent(intent)
+            refreshShelf()
+            if (resumeLastBook && !openedExternal) {
+                tryAutoResumeLastBook()
+            }
+        }
+    }
+
+    /**
+     * 启动时清掉旧版复制进应用目录的书。全盘权限下才能在 SD 卡上对上原文件。
+     * 清完再处理外部打开 / 自动续读，避免刚打开就被删掉的副本。
+     */
+    private fun scheduleCopyCleanup(onDone: (() -> Unit)? = null) {
+        val existing = copyCleanupJob
+        if (existing != null && existing.isActive) {
+            if (onDone != null) {
+                lifecycleScope.launch {
+                    existing.join()
+                    if (!isDestroyed) onDone()
+                }
+            }
+            return
+        }
+        if (copyCleanupScanned) {
+            onDone?.invoke()
+            return
+        }
+        val canScanOriginals = StorageAccess.hasAllFilesAccess()
+        copyCleanupJob = lifecycleScope.launch {
+            val removed = withContext(Dispatchers.IO) {
+                com.whj.reader.data.AppBooksCopyCleaner.cleanup(applicationContext)
+            }
+            if (isDestroyed) return@launch
+            if (canScanOriginals) copyCleanupScanned = true
+            if (removed > 0) refreshShelf()
+            onDone?.invoke()
         }
     }
 
@@ -300,6 +340,9 @@ class MainActivity : AppCompatActivity() {
             restoreShelfFocus()
         } else {
             refreshShelf()
+        }
+        if (!copyCleanupScanned && StorageAccess.hasAllFilesAccess()) {
+            scheduleCopyCleanup()
         }
     }
 
