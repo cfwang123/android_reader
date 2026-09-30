@@ -403,7 +403,7 @@ class TextSettingsController(
             AppSettings.MobiViewMode.CONTINUOUS,
             -> {
                 val paths = activity.mangaPaths.ifEmpty { activity.book?.imagePaths.orEmpty() }
-                    .filter { File(it).isFile }
+                    .filter { com.whj.reader.data.BookImageSource.readable(it) }
                 if (paths.isEmpty()) {
                     Toasts.show(activity, R.string.mobi_manga_no_images)
                     updateMobiModeButtons()

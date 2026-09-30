@@ -110,6 +110,20 @@ object StorageAccess {
         return abs == books || abs.startsWith(books + File.separator)
     }
 
+    /**
+     * 能直接读的本机文件（内部存储 / SD 卡）。没有真实路径或当前打不开则 null。
+     */
+    fun readableBookFile(context: Context, uri: Uri): File? {
+        val path = resolveFilePath(context, uri) ?: return null
+        val file = File(path)
+        return try {
+            FileInputStream(file).use { }
+            file
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** 全盘权限下把 content/file 收成可读的 file://；读不了则返回 null。 */
     private fun readableFileUri(context: Context, uri: Uri): String? {
         if (!hasAllFilesAccess() && !uri.scheme.equals("file", ignoreCase = true)) return null

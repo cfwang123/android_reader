@@ -660,7 +660,7 @@ class ReadingActivity : AppCompatActivity() {
         for (p in paras) {
             // 看图模式只收集整行图（行内小图仍在正文内显示）
             val path = p.imagePath?.takeIf { it.isNotBlank() } ?: continue
-            if (!java.io.File(path).isFile) continue
+            if (!com.whj.reader.data.BookImageSource.readable(path)) continue
             paths.add(path)
             indices.add(p.index)
         }

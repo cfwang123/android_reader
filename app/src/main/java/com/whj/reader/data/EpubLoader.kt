@@ -60,10 +60,15 @@ object EpubLoader {
             ?: queryDisplayName(context, uri)
             ?: uri.lastPathSegment
             ?: context.getString(com.whj.reader.R.string.unnamed)
-        val cacheKey = cacheKeyFor(uri.toString(), titleHint)
+        val cacheKey = cacheKeyFor(uri.toString())
         val workDir = File(context.cacheDir, "ebooks/epub/$cacheKey").apply { mkdirs() }
-        val epubFile = File(workDir, "book.epub")
-        if (!epubFile.exists() || epubFile.length() == 0L) {
+        val direct = com.whj.reader.util.StorageAccess.readableBookFile(context, uri)
+        val epubFile = if (direct != null) {
+            direct
+        } else {
+            File(workDir, "book.epub")
+        }
+        if (direct == null && (!epubFile.exists() || epubFile.length() == 0L)) {
             val t0 = System.currentTimeMillis()
             onProgress?.invoke(
                 context.getString(com.whj.reader.R.string.load_stage_copy),
@@ -1724,9 +1729,10 @@ object EpubLoader {
         }
     }
 
-    private fun cacheKeyFor(uri: String, name: String): String {
+    /** 只按文件地址区分缓存，显示名变化不再另存一份。 */
+    private fun cacheKeyFor(uri: String): String {
         val md = MessageDigest.getInstance("MD5")
-        val dig = md.digest((uri + "|" + name).toByteArray(Charsets.UTF_8))
+        val dig = md.digest(uri.toByteArray(Charsets.UTF_8))
         return dig.joinToString("") { "%02x".format(it) }.take(16)
     }
 

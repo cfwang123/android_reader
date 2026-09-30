@@ -678,7 +678,7 @@ class TextMangaController(
 
     fun enterMangaMode(restoreIndex: Boolean) {
         if (mangaPaths.isEmpty()) {
-            mangaPaths = activity.book?.imagePaths.orEmpty().filter { File(it).isFile }
+            mangaPaths = activity.book?.imagePaths.orEmpty().filter { com.whj.reader.data.BookImageSource.readable(it) }
         }
         if (mangaPaths.isEmpty()) {
             mangaMode = false
@@ -1321,11 +1321,10 @@ class TextMangaController(
 
 
     fun decodeMangaSampled(path: String, maxSide: Int): Bitmap? {
-        val file = File(path)
-        if (!file.isFile) return null
+        if (!com.whj.reader.data.BookImageSource.readable(path)) return null
         return runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
+            com.whj.reader.data.BookImageSource.decode(path, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
             var sample = 1
             val longSide = maxOf(bounds.outWidth, bounds.outHeight)
@@ -1334,7 +1333,7 @@ class TextMangaController(
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
-            BitmapFactory.decodeFile(path, opts)
+            com.whj.reader.data.BookImageSource.decode(path, opts)
         }.getOrNull()
     }
 

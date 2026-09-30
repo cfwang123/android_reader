@@ -59,9 +59,13 @@ object BookLocalDataCleaner {
         )
         for (root in roots) {
             if (!root.isDirectory) continue
-            // 精确 key：md5(uri|name).take(16)
+            // 精确 key：现在是 md5(uri)；旧版是 md5(uri|name)
+            val keys = ArrayList<String>(nameHints.size + 1)
+            keys.add(md5Hex(uri).take(16))
             for (name in nameHints) {
-                val key = md5Hex("$uri|$name").take(16)
+                keys.add(md5Hex("$uri|$name").take(16))
+            }
+            for (key in keys) {
                 val dir = File(root, key)
                 if (dir.isDirectory) {
                     AppLog.i(TAG, "rm ebook cache key=$key")

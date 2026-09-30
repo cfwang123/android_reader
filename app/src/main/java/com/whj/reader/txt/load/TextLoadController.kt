@@ -433,7 +433,7 @@ class TextLoadController(
         activity.displayTitle = resolved.title
         updateStreamTitle(resolved)
         if (resolved.imagePaths.isNotEmpty()) {
-            activity.mangaPaths = resolved.imagePaths.filter { File(it).isFile }
+            activity.mangaPaths = resolved.imagePaths.filter { com.whj.reader.data.BookImageSource.readable(it) }
         }
         activity.settingsController.updateMobiModeButtons()
 

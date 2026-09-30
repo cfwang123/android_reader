@@ -39,8 +39,13 @@ object MobiLoader {
             ?: queryDisplayName(context, uri)
             ?: uri.lastPathSegment
             ?: context.getString(com.whj.reader.R.string.unnamed)
-        val cacheKey = cacheKeyFor(uri.toString(), titleHint)
+        val cacheKey = cacheKeyFor(uri.toString())
         val workDir = File(context.cacheDir, "ebooks/mobi/$cacheKey").apply { mkdirs() }
+        val direct = com.whj.reader.util.StorageAccess.readableBookFile(context, uri)
+        if (direct != null) {
+            return openFromFile(direct, workDir, titleHint, uri.toString(), chineseMode, onProgress)
+        }
+        // 没有真实路径（网盘等）才复制一份，SD 卡 / 内部存储不走这里
         val mobiFile = File(workDir, "book.mobi")
         if (!mobiFile.exists() || mobiFile.length() == 0L) {
             onProgress?.invoke(context.getString(com.whj.reader.R.string.load_stage_copy), 0, 0)
@@ -115,7 +120,8 @@ object MobiLoader {
     ): BookOpenResult {
         val sourceSize = file.length()
         val sourceModified = file.lastModified()
-        val parsedCache = File(workDir, "parsed_${chineseMode.name}_v5.bin")
+        // v6：图片改为原文件偏移，不再使用抽出的 jpg 路径
+        val parsedCache = File(workDir, "parsed_${chineseMode.name}_v6.bin")
         val chapterIndexFile = File(workDir, CHAPTER_INDEX_NAME)
         val chunkCacheDir = File(workDir, CHUNK_CACHE_DIR).apply { mkdirs() }
 
@@ -135,19 +141,18 @@ object MobiLoader {
         )
 
         onProgress?.invoke("解析 MOBI…", 0, 0)
-        val data = file.readBytes()
-        if (data.size < 80) error("MOBI 文件过小")
-
-        val numRecords = u16(data, 76)
-        if (numRecords <= 0 || 78 + numRecords * 8 > data.size) {
-            error("无效 MOBI：记录表异常")
-        }
-        val offsets = IntArray(numRecords)
-        for (i in 0 until numRecords) {
-            offsets[i] = u32(data, 78 + i * 8)
-        }
-
-        val rec0 = sliceRecord(data, offsets, 0)
+        var fullName = titleHint
+            .removeSuffix(".mobi").removeSuffix(".MOBI")
+            .removeSuffix(".azw").removeSuffix(".AZW")
+            .removeSuffix(".azw3").removeSuffix(".AZW3")
+            .removeSuffix(".prc").removeSuffix(".PRC")
+        lateinit var html: String
+        lateinit var imageMap: HashMap<String, String>
+        lateinit var orderedImagePaths: ArrayList<String>
+        val src = MobiFile(file)
+        try {
+        val numRecords = src.numRecords
+        val rec0 = src.readRecord(0)
         if (rec0.size < 16) error("无效 MOBI：记录 0 过短")
 
         val compression = u16(rec0, 0)
@@ -155,15 +160,10 @@ object MobiLoader {
         val textRecordCount = u16(rec0, 8)
         // val recordSize = u16(rec0, 10)
 
-        var fullName = titleHint
-            .removeSuffix(".mobi").removeSuffix(".MOBI")
-            .removeSuffix(".azw").removeSuffix(".AZW")
-            .removeSuffix(".azw3").removeSuffix(".AZW3")
-            .removeSuffix(".prc").removeSuffix(".PRC")
-
         // MOBI header starts at 16
         var firstImageIndex = -1
         var exthFlags = 0
+        @Suppress("UNUSED_VARIABLE")
         var mobiType = 2
         var mobiEncoding = 1252
         if (rec0.size >= 0x20 && String(rec0, 16, 4, Charsets.US_ASCII) == "MOBI") {
@@ -223,7 +223,7 @@ object MobiLoader {
         val rawText = ByteArrayOutputStream(textLength.coerceAtLeast(1024))
         for (i in 1..textCount) {
             if (i >= numRecords) break
-            val rec = sliceRecord(data, offsets, i)
+            val rec = src.readRecord(i)
             val decoded = when (compression) {
                 1 -> rec // no compression
                 2 -> palmDocDecompress(rec)
@@ -240,7 +240,7 @@ object MobiLoader {
             rawBytes = rawBytes.copyOf(textLength)
         }
         rawBytes = sanitizeMobiRawHtml(rawBytes)
-        var html = decodeMobiHtml(rawBytes, mobiEncoding, fullName)
+        html = decodeMobiHtml(rawBytes, mobiEncoding, fullName)
         html = repairMobiHtml(html)
         logDecodeProbe(rawBytes, mobiEncoding, fullName, html)
 
@@ -255,28 +255,26 @@ object MobiLoader {
                 "html=${html.length} chunks~=${splitHtmlChunks(html).size}",
         )
 
-        val imgDir = File(workDir, "images").apply { mkdirs() }
-        val imageMap = HashMap<String, String>() // recindex / src → path
-
-        // 提取图片记录（从 firstImageIndex 起，直到非图片）
-        val orderedImagePaths = ArrayList<String>()
+        imageMap = HashMap()
+        // 只记下图片在原文件里的偏移，显示时再读，不抽出 jpg
+        orderedImagePaths = ArrayList()
         if (firstImageIndex in 1 until numRecords) {
             var imgN = 0
             for (ri in firstImageIndex until numRecords) {
-                val rec = sliceRecord(data, offsets, ri)
-                val ext = sniffImageExt(rec) ?: break
+                val prefix = src.readPrefix(ri, 16)
+                if (sniffImageExt(prefix) == null) break
                 imgN++
-                val out = File(imgDir, "img_${imgN}.$ext")
-                if (!out.exists()) {
-                    out.writeBytes(rec)
-                }
-                // MOBI 中常见 recindex="00001" 从 1 起
+                val ref = src.imageRef(ri)
+                if (ref.isEmpty()) break
                 val key = String.format(Locale.US, "%05d", imgN)
-                imageMap[key] = out.absolutePath
-                imageMap[imgN.toString()] = out.absolutePath
-                orderedImagePaths.add(out.absolutePath)
+                imageMap[key] = ref
+                imageMap[imgN.toString()] = ref
+                orderedImagePaths.add(ref)
                 if (imgN > 2000) break
             }
+        }
+        } finally {
+            src.close()
         }
 
         // recindex 图：<img recindex="00001">
@@ -287,7 +285,7 @@ object MobiLoader {
             val key = String.format(Locale.US, "%05d", idx)
             val path = imageMap[key] ?: imageMap[idx.toString()]
             if (path != null) {
-                """<img src="file://$path"${m.groupValues[1]}${m.groupValues[3]}>"""
+                """<img src="$path"${m.groupValues[1]}${m.groupValues[3]}>"""
             } else {
                 m.value
             }
@@ -353,9 +351,6 @@ object MobiLoader {
         if (paragraphs.isEmpty()) {
             paragraphs.add(Paragraph(index = 0, text = ""))
         }
-
-        @Suppress("UNUSED_VARIABLE")
-        val unusedMobiType = mobiType
 
         reindexParas(paragraphs)
         applyMobiAnchorLinks(html, mobiAnchorLinks, paragraphs, linkTargets, chapters)
@@ -858,7 +853,15 @@ object MobiLoader {
 
     private fun resolveMobiImageSrc(src: String, imageMap: Map<String, String>): String? {
         return when {
-            src.startsWith("file://") -> src.removePrefix("file://").takeIf { File(it).isFile }
+            BookImageSource.isRef(src) -> src
+            src.startsWith("file://") -> {
+                val p = src.removePrefix("file://")
+                when {
+                    BookImageSource.isRef(p) -> p
+                    File(p).isFile -> p
+                    else -> null
+                }
+            }
             imageMap.containsKey(src) -> imageMap[src]
             File(src).isFile -> src
             else -> {
@@ -1221,14 +1224,6 @@ object MobiLoader {
             }
         }
         return buf.copyOf(outLen)
-    }
-
-    private fun sliceRecord(data: ByteArray, offsets: IntArray, index: Int): ByteArray {
-        val start = offsets[index]
-        val end = if (index + 1 < offsets.size) offsets[index + 1] else data.size
-        if (start < 0 || start >= data.size) return ByteArray(0)
-        val e = end.coerceIn(start, data.size)
-        return data.copyOfRange(start, e)
     }
 
     private fun u16(data: ByteArray, off: Int): Int {
@@ -1615,9 +1610,10 @@ object MobiLoader {
         return (hi shl 32) or lo
     }
 
-    private fun cacheKeyFor(uri: String, name: String): String {
+    /** 只按文件地址区分缓存，显示名变化不再另存一份。 */
+    private fun cacheKeyFor(uri: String): String {
         val md = MessageDigest.getInstance("MD5")
-        val dig = md.digest((uri + "|" + name).toByteArray(Charsets.UTF_8))
+        val dig = md.digest(uri.toByteArray(Charsets.UTF_8))
         return dig.joinToString("") { "%02x".format(it) }.take(16)
     }
 

@@ -2009,7 +2009,7 @@ class VirtualReaderView @JvmOverloads constructor(
     private fun peekImageBounds(path: String): Pair<Int, Int>? {
         imageBoundsCache[path]?.let { return it }
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, opts)
+        com.whj.reader.data.BookImageSource.decode(path, opts)
         if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
         val p = opts.outWidth to opts.outHeight
         imageBoundsCache[path] = p
@@ -2372,11 +2372,10 @@ class VirtualReaderView @JvmOverloads constructor(
 
     private fun decodeBitmapForWidth(path: String, maxWidth: Int): Bitmap? {
         bitmapCache.get(path)?.let { return it }
-        val file = File(path)
-        if (!file.isFile) return null
+        if (!com.whj.reader.data.BookImageSource.readable(path)) return null
         return runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
+            com.whj.reader.data.BookImageSource.decode(path, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
             var sample = 1
             val target = maxWidth.coerceAtLeast(1)
@@ -2387,7 +2386,7 @@ class VirtualReaderView @JvmOverloads constructor(
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.RGB_565
             }
-            val bmp = BitmapFactory.decodeFile(path, opts) ?: return@runCatching null
+            val bmp = com.whj.reader.data.BookImageSource.decode(path, opts) ?: return@runCatching null
             bitmapCache.put(path, bmp)
             bmp
         }.getOrNull()

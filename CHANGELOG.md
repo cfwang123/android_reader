@@ -5,6 +5,8 @@
 ### English
 
 #### Changed / fixed
+- **EPUB / MOBI open**: books on internal storage or the SD card are read from the original file. The app no longer copies the whole book into its cache. A copy is kept only when the source has no real path (for example a cloud provider)
+- **MOBI images**: pictures stay in the original file. A page reads that one image when it is shown, instead of extracting every picture into cache. Opening the same book under another display name no longer stores a second copy. Startup deletes previously copied books and extracted MOBI images
 - **Old copied books**: on startup, files previously copied into app storage are deleted. If the same name and size exists on internal storage or the SD card, the shelf (progress, bookmarks, notes) points at that original first. Unmatched copies, such as cloud imports, are kept
 - **Open from SD card**: local files (internal storage and SD card) are read **in place** and no longer copied into app storage. A copy is kept only when the source has no real file path (for example a cloud provider)
 - **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
@@ -15,6 +17,8 @@
 ### 中文
 
 #### 修改 / 修复
+- **EPUB / MOBI 打开**：内部存储或 SD 卡上的书直接读原文件，不再把整本复制进缓存。只有没有真实路径的来源（如网盘）才复制
+- **MOBI 图片**：图片留在原文件里，翻到哪张就读哪张，不再提前抽出全部图片。同一本书换显示名也不会再存第二份。启动时删掉以前复制的整本和已抽出的 MOBI 图片
 - **旧副本清理**：启动时删除以前复制进应用目录的书。内部存储或 SD 卡上有同名同大小的原文件时，书架、进度、书签、笔记改指向原文件后再删副本。对不上的（如网盘复制）保留
 - **从 SD 卡打开**：内部存储和 SD 卡上的书 **直接读原文件**，不再复制到应用目录。只有解析不出真实路径的来源（如网盘）才复制一份
 - **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）

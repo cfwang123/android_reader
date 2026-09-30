@@ -11,5 +11,13 @@ class ReaderApp : Application() {
         LocaleHelper.applyFromSettings(this)
         // 无操作自动关闭（默认 1 小时）
         AutoCloseController.init(this)
+        // 删掉以前复制进缓存的整本 MOBI/EPUB 和抽出的图片
+        Thread {
+            runCatching { com.whj.reader.data.EbookCacheCleaner.dropCopiedBooks(this) }
+        }.apply {
+            name = "ebook-cache-clean"
+            isDaemon = true
+            start()
+        }
     }
 }
