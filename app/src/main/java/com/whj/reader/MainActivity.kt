@@ -344,6 +344,7 @@ class MainActivity : AppCompatActivity() {
         if (!copyCleanupScanned && StorageAccess.hasAllFilesAccess()) {
             scheduleCopyCleanup()
         }
+        com.whj.reader.ui.ExternalDataPrompt.maybeShow(this)
     }
 
     /**

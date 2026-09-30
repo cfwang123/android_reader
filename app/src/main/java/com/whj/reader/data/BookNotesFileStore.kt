@@ -15,38 +15,23 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * 按书落盘：同目录 `.notes/{书名}.notes.json`；不可写时降级 `files/notes_mirror/`。
+ * 笔记只写在书旁边：`.notes/{书名}.notes.json`。
+ * 写不了时不放进应用目录，由界面提示授权或说明文件夹不可写。
  */
 object BookNotesFileStore {
 
     private const val NOTES_DIR = ".notes"
-    private const val MIRROR_DIR = "notes_mirror"
     private const val SUFFIX = ".notes.json"
+
+    enum class SaveResult { OK, NEED_PERMISSION, NOT_WRITABLE }
 
     data class Location(
         val file: File,
-        val isMirror: Boolean,
     )
 
-    fun resolveLocation(ctx: Context, bookUri: String): Location {
-        val uri = runCatching { Uri.parse(bookUri) }.getOrNull()
-        if (uri != null) {
-            when (uri.scheme?.lowercase()) {
-                "file" -> {
-                    val book = File(uri.path.orEmpty())
-                    if (book.isFile && book.parentFile != null) {
-                        return sidecarFor(book)
-                    }
-                }
-                "content" -> {
-                    StorageAccess.resolveFilePath(ctx, uri)?.let { path ->
-                        val book = File(path)
-                        if (book.isFile) return sidecarFor(book)
-                    }
-                }
-            }
-        }
-        return mirrorFor(ctx, bookUri)
+    fun resolveLocation(ctx: Context, bookUri: String): Location? {
+        val book = bookFile(ctx, bookUri) ?: return null
+        return sidecarFor(book)
     }
 
     fun load(ctx: Context, bookUri: String): BookNotesDocument {
@@ -54,7 +39,7 @@ object BookNotesFileStore {
             return BookNotesDocument(bookUri = bookUri, highlights = emptyList())
         }
         val loc = resolveLocation(ctx, bookUri)
-        if (!loc.file.isFile) {
+        if (loc == null || !loc.file.isFile) {
             return BookNotesDocument(bookUri = bookUri, highlights = emptyList())
         }
         return runCatching {
@@ -64,25 +49,41 @@ object BookNotesFileStore {
         }
     }
 
-    fun save(ctx: Context, doc: BookNotesDocument): Location {
+    fun save(ctx: Context, doc: BookNotesDocument): SaveResult {
         val loc = resolveLocation(ctx, doc.bookUri)
-        loc.file.parentFile?.mkdirs()
-        val json = serialize(doc)
-        val tmp = File(loc.file.parentFile, loc.file.name + ".tmp")
-        tmp.writeText(json, Charsets.UTF_8)
-        if (loc.file.exists()) loc.file.delete()
-        if (!tmp.renameTo(loc.file)) {
-            tmp.copyTo(loc.file, overwrite = true)
-            tmp.delete()
+            ?: return if (StorageAccess.hasAllFilesAccess()) {
+                SaveResult.NOT_WRITABLE
+            } else {
+                SaveResult.NEED_PERMISSION
+            }
+        val parent = loc.file.parentFile ?: return SaveResult.NOT_WRITABLE
+        if (!parent.isDirectory && !parent.mkdirs()) {
+            return if (StorageAccess.hasAllFilesAccess()) {
+                SaveResult.NOT_WRITABLE
+            } else {
+                SaveResult.NEED_PERMISSION
+            }
         }
-        return loc
+        return try {
+            val json = serialize(doc)
+            val tmp = File(parent, loc.file.name + ".tmp")
+            tmp.writeText(json, Charsets.UTF_8)
+            if (loc.file.exists()) loc.file.delete()
+            if (!tmp.renameTo(loc.file)) {
+                tmp.copyTo(loc.file, overwrite = true)
+                tmp.delete()
+            }
+            if (loc.file.isFile) SaveResult.OK else failure()
+        } catch (_: Exception) {
+            failure()
+        }
     }
 
     /** 副本 URI 换成原文件后，笔记文件跟着走。 */
     fun migrate(ctx: Context, oldUri: String, newUri: String) {
         if (oldUri.isBlank() || newUri.isBlank() || oldUri == newUri) return
-        val oldLoc = resolveLocation(ctx, oldUri)
-        val newLoc = resolveLocation(ctx, newUri)
+        val oldLoc = resolveLocation(ctx, oldUri) ?: return
+        val newLoc = resolveLocation(ctx, newUri) ?: return
         if (!oldLoc.file.isFile || newLoc.file.isFile) return
         if (oldLoc.file.absolutePath == newLoc.file.absolutePath) return
         newLoc.file.parentFile?.mkdirs()
@@ -95,20 +96,36 @@ object BookNotesFileStore {
     }
 
     fun deleteAll(ctx: Context, bookUri: String) {
+        val loc = resolveLocation(ctx, bookUri) ?: return
+        if (loc.file.isFile && loc.file.delete()) return
         save(ctx, BookNotesDocument(bookUri = bookUri, highlights = emptyList()))
     }
 
-    private fun sidecarFor(book: File): Location {
-        val notesDir = File(book.parentFile, NOTES_DIR)
-        notesDir.mkdirs()
-        val safeName = book.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        return Location(File(notesDir, "$safeName$SUFFIX"), isMirror = false)
+    private fun bookFile(ctx: Context, bookUri: String): File? {
+        val uri = runCatching { Uri.parse(bookUri) }.getOrNull() ?: return null
+        when (uri.scheme?.lowercase()) {
+            "file" -> {
+                val book = File(uri.path.orEmpty())
+                if (book.parentFile != null) return book
+            }
+            "content" -> {
+                StorageAccess.resolveFilePath(ctx, uri)?.let { path ->
+                    val book = File(path)
+                    if (book.parentFile != null) return book
+                }
+            }
+        }
+        return null
     }
 
-    private fun mirrorFor(ctx: Context, bookUri: String): Location {
-        val dir = File(ctx.filesDir, MIRROR_DIR).apply { mkdirs() }
-        val key = bookUri.hashCode().toUInt().toString(16)
-        return Location(File(dir, "$key$SUFFIX"), isMirror = true)
+    private fun failure(): SaveResult =
+        if (StorageAccess.hasAllFilesAccess()) SaveResult.NOT_WRITABLE
+        else SaveResult.NEED_PERMISSION
+
+    private fun sidecarFor(book: File): Location {
+        val notesDir = File(book.parentFile, NOTES_DIR)
+        val safeName = book.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return Location(File(notesDir, "$safeName$SUFFIX"))
     }
 
     private fun serialize(doc: BookNotesDocument): String {

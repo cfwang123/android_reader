@@ -78,7 +78,7 @@ object PdfOutlineCache {
     }
 
     private fun cacheDir(ctx: Context): File =
-        File(ctx.filesDir, DIR).also { it.mkdirs() }
+        AppDataDir.files(ctx, DIR)
 
     private fun cacheFile(ctx: Context, uriKey: String): File {
         val safe = uriKey.hashCode().toUInt().toString(16)

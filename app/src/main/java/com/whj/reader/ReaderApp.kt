@@ -13,7 +13,11 @@ class ReaderApp : Application() {
         AutoCloseController.init(this)
         // 删掉以前复制进缓存的整本 MOBI/EPUB 和抽出的图片
         Thread {
-            runCatching { com.whj.reader.data.EbookCacheCleaner.dropCopiedBooks(this) }
+            runCatching {
+                com.whj.reader.data.EbookCacheCleaner.dropCopiedBooks(this)
+                com.whj.reader.data.EbookCacheCleaner.dropStale(this)
+                java.io.File(filesDir, "notes_mirror").deleteRecursively()
+            }
         }.apply {
             name = "ebook-cache-clean"
             isDaemon = true

@@ -37,7 +37,7 @@ object BookLocalDataCleaner {
         BookChapterPatternStore.clear(ctx, uri)
 
         // EPUB / MOBI 解析与章节缓存（禁止整文件 readText 大 bin，防 OOM 闪退）
-        clearEbookParseCaches(ctx, uri)
+        clearParseCache(ctx, uri)
 
         // 封面与元数据（页数/大小 → 书架副标题刷新）
         runCatching { CoverStore.fileFor(ctx, uri).delete() }
@@ -46,11 +46,10 @@ object BookLocalDataCleaner {
         AppLog.i(TAG, "clear done")
     }
 
-    private fun clearEbookParseCaches(ctx: Context, uri: String) {
-        val roots = listOf(
-            File(ctx.cacheDir, "ebooks/epub"),
-            File(ctx.cacheDir, "ebooks/mobi"),
-        )
+    /** 删掉这本书的 EPUB/MOBI 解析缓存（含 MOBI 章节索引）。书架删除和历史删除都会调。 */
+    fun clearParseCache(ctx: Context, uri: String) {
+        if (uri.isBlank()) return
+        val roots = AppDataDir.ebookCacheRoots(ctx)
         val uriBytes = uri.toByteArray(Charsets.UTF_8)
         val nameHints = listOf(
             "",
@@ -86,7 +85,9 @@ object BookLocalDataCleaner {
     private fun dirLooksLikeUri(dir: File, uri: String, uriBytes: ByteArray): Boolean {
         val smallJson = listOf(
             File(dir, "chapter_index_v1.json"),
+            File(dir, "mobi_chapter_index_v1.json"),
             File(dir, "chapter_index.json"),
+            File(dir, "source_uri.txt"),
         )
         for (f in smallJson) {
             if (!f.isFile || f.length() > 512 * 1024) continue

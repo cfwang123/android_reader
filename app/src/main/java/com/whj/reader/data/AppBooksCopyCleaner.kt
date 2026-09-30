@@ -65,7 +65,7 @@ object AppBooksCopyCleaner {
         return removed
     }
 
-    private fun retarget(ctx: Context, oldUri: String, newUri: String) {
+    fun retarget(ctx: Context, oldUri: String, newUri: String) {
         OpenFailGuide.migrateBindings(ctx, oldUri, newUri)
         BookmarkStore.migrateFileKey(ctx, oldUri, newUri)
         RecentStore.migrateUri(ctx, oldUri, newUri)

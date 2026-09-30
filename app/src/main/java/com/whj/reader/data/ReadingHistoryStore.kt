@@ -174,6 +174,7 @@ object ReadingHistoryStore {
             // 清空上次打开记录
             AppSettings.setLastBook(ctx, "", "")
         }
+        BookLocalDataCleaner.clearParseCache(ctx, uri)
     }
 
     fun removeRecords(ctx: Context, uris: Collection<String>) {

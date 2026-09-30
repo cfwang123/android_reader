@@ -133,7 +133,7 @@ class TextHighlightController(
 
     var bookHighlights: List<com.whj.reader.model.Highlight> = emptyList()
         private set
-    private var notesMirrorWarned = false
+    private var notesPermAsked = false
 
     fun reloadBookHighlights() {
         if (activity.fileKey.isBlank()) {
@@ -188,17 +188,36 @@ class TextHighlightController(
 
     fun saveBookHighlights() {
         if (activity.fileKey.isBlank()) return
-        val loc = BookNotesFileStore.save(
-            activity,
-            BookNotesDocument(bookUri = activity.fileKey, highlights = bookHighlights),
-        )
-        if (loc.isMirror && !notesMirrorWarned) {
-            notesMirrorWarned = true
-            Toasts.show(activity, R.string.highlight_mirror_hint)
+        when (
+            BookNotesFileStore.save(
+                activity,
+                BookNotesDocument(bookUri = activity.fileKey, highlights = bookHighlights),
+            )
+        ) {
+            BookNotesFileStore.SaveResult.OK -> Unit
+            BookNotesFileStore.SaveResult.NEED_PERMISSION -> askNotesPermission()
+            BookNotesFileStore.SaveResult.NOT_WRITABLE ->
+                Toasts.show(activity, R.string.notes_not_writable)
         }
         if (activity.isReaderReady()) {
             reader.setPersistentHighlights(bookHighlights)
         }
+    }
+
+    private fun askNotesPermission() {
+        if (notesPermAsked) {
+            Toasts.show(activity, R.string.notes_need_permission)
+            return
+        }
+        notesPermAsked = true
+        AlertDialog.Builder(activity)
+            .setTitle(R.string.notes_need_permission_title)
+            .setMessage(R.string.notes_need_permission)
+            .setPositiveButton(R.string.permission_all_files_go) { _, _ ->
+                activity.startActivity(StorageAccess.manageAllFilesIntent(activity))
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
 

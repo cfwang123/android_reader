@@ -12,7 +12,7 @@ import java.util.UUID
 
 /**
  * 自定义字体（TTF/OTF）安装与元数据。
- * 文件：filesDir/fonts/；元数据：SharedPreferences JSON。
+ * 文件：fonts/（未绑定外部目录时在应用私有目录）；元数据：SharedPreferences JSON。
  */
 object CustomFontStore {
 
@@ -45,7 +45,7 @@ object CustomFontStore {
         ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
     private fun fontsDir(ctx: Context): File =
-        File(ctx.filesDir, DIR).also { it.mkdirs() }
+        AppDataDir.files(ctx, DIR)
 
     fun list(ctx: Context): List<Entry> {
         val raw = prefs(ctx).getString(KEY_LIST, null) ?: return emptyList()

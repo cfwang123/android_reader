@@ -79,9 +79,9 @@ object BgTextures {
         }
     }
 
-    /** 导入背景图：filesDir/bg/[fileName] */
+    /** 导入背景图：bg/[fileName]（未绑定外部目录时在应用私有目录） */
     fun importDir(ctx: Context): java.io.File =
-        java.io.File(ctx.filesDir, "bg").also { it.mkdirs() }
+        com.whj.reader.data.AppDataDir.files(ctx, "bg")
 
     fun importFile(ctx: Context, fileName: String): java.io.File? {
         if (fileName.isBlank()) return null

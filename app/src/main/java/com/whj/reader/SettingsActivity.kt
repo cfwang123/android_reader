@@ -1,5 +1,6 @@
 package com.whj.reader
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.SeekBar
@@ -7,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.whj.reader.data.AppDataDir
 import com.whj.reader.data.AppSettings
 import com.whj.reader.data.DataBackup
 import com.whj.reader.data.LocaleHelper
@@ -18,6 +20,7 @@ import com.whj.reader.ui.AppTheme
 import com.whj.reader.ui.AppThemeSkin
 import com.whj.reader.util.AppUpdate
 import com.whj.reader.util.AutoCloseController
+import com.whj.reader.util.StorageAccess
 import com.whj.reader.util.Toasts
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +37,25 @@ class SettingsActivity : AppCompatActivity() {
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) confirmAndImport(uri)
+    }
+
+    private var pendingExternalTree: Uri? = null
+    private var externalDataBusy = false
+
+    private val externalTreeLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) acceptExternalTree(uri)
+    }
+
+    private val externalAllFilesLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val uri = pendingExternalTree
+        pendingExternalTree = null
+        if (uri != null && StorageAccess.hasAllFilesAccess()) {
+            acceptExternalTree(uri)
+        }
     }
 
     /** 未知来源安装权限返回后继续安装已下载 APK */
@@ -131,6 +153,93 @@ class SettingsActivity : AppCompatActivity() {
         binding.tvLanguage.text = languageLabel(AppSettings.appLanguage(this))
     }
 
+    private fun refreshExternalDataLabel() {
+        val path = AppSettings.externalDataPath(this)
+        binding.tvExternalData.text = when {
+            path.isBlank() -> getString(R.string.external_data_unbound)
+            AppDataDir.boundRoot(this) == null -> getString(R.string.external_data_unavailable, path)
+            else -> path
+        }
+    }
+
+    private fun onExternalDataRow() {
+        if (externalDataBusy) return
+        val path = AppSettings.externalDataPath(this)
+        if (path.isBlank()) {
+            launchExternalTree()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.external_data_title)
+            .setItems(
+                arrayOf(
+                    getString(R.string.external_data_pick),
+                    getString(R.string.external_data_clear),
+                ),
+            ) { _, which ->
+                if (which == 0) launchExternalTree() else confirmClearExternalData()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun launchExternalTree() {
+        val existing = AppSettings.externalDataTreeUri(this)
+        val initial = existing.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        externalTreeLauncher.launch(initial)
+    }
+
+    private fun acceptExternalTree(uri: Uri) {
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
+        val dir = StorageAccess.resolveTreeDirectory(this, uri)
+        if (dir == null || !dir.isDirectory) {
+            Toasts.show(this, R.string.external_data_unresolved)
+            return
+        }
+        if (!AppDataDir.probeWritable(dir)) {
+            if (!StorageAccess.hasAllFilesAccess()) {
+                pendingExternalTree = uri
+                Toasts.show(this, R.string.external_data_need_all_files)
+                externalAllFilesLauncher.launch(StorageAccess.manageAllFilesIntent(this))
+                return
+            }
+            Toasts.show(this, R.string.external_data_failed)
+            return
+        }
+        externalDataBusy = true
+        Toasts.show(this, R.string.external_data_migrating)
+        AppDataDir.bind(this, dir, uri.toString()) { ok ->
+            externalDataBusy = false
+            refreshExternalDataLabel()
+            Toasts.show(
+                this,
+                if (ok) R.string.external_data_bound else R.string.external_data_failed,
+            )
+        }
+    }
+
+    private fun confirmClearExternalData() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.external_data_clear_title)
+            .setMessage(R.string.external_data_clear_message)
+            .setPositiveButton(R.string.external_data_clear) { _, _ ->
+                if (externalDataBusy) return@setPositiveButton
+                externalDataBusy = true
+                Toasts.show(this, R.string.external_data_migrating)
+                AppDataDir.unbind(this) { ok ->
+                    externalDataBusy = false
+                    refreshExternalDataLabel()
+                    Toasts.show(
+                        this,
+                        if (ok) R.string.external_data_unbound_done else R.string.external_data_failed,
+                    )
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun themeLabel(skin: AppThemeSkin): String = getString(skin.labelRes)
 
     private fun refreshThemeLabel() {
@@ -219,6 +328,13 @@ class SettingsActivity : AppCompatActivity() {
 
         refreshLanguageLabel()
         binding.rowLanguage.setOnClickListener { pickLanguage() }
+
+        refreshExternalDataLabel()
+        binding.rowExternalData.setOnClickListener { onExternalDataRow() }
+        if (intent.getBooleanExtra(AppDataDir.EXTRA_PICK, false)) {
+            intent.removeExtra(AppDataDir.EXTRA_PICK)
+            launchExternalTree()
+        }
 
         fun refreshKeepScreenLabel() {
             binding.tvKeepScreen.text = keepScreenLabel(AppSettings.keepScreenMode(this))

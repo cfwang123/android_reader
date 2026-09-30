@@ -40,7 +40,8 @@ object MobiLoader {
             ?: uri.lastPathSegment
             ?: context.getString(com.whj.reader.R.string.unnamed)
         val cacheKey = cacheKeyFor(uri.toString())
-        val workDir = File(context.cacheDir, "ebooks/mobi/$cacheKey").apply { mkdirs() }
+        val workDir = File(AppDataDir.ebookCache(context, "mobi"), cacheKey).apply { mkdirs() }
+        AppDataDir.writeSourceUri(context, workDir, uri.toString())
         val direct = com.whj.reader.util.StorageAccess.readableBookFile(context, uri)
         if (direct != null) {
             return openFromFile(direct, workDir, titleHint, uri.toString(), chineseMode, onProgress)

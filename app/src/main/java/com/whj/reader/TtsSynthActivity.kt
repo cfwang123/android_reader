@@ -521,7 +521,7 @@ class TtsSynthActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         tts?.setSpeechRate(speechRate)
         tts?.setPitch(pitch)
 
-        val dir = File(getExternalFilesDir(null), "tts_export").also { it.mkdirs() }
+        val dir = com.whj.reader.data.AppDataDir.externalKind(this, "tts_export")
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val out = File(dir, "tts_$stamp.wav")
         val id = "export_${System.currentTimeMillis()}"

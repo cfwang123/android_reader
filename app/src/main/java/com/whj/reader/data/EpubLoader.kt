@@ -45,7 +45,7 @@ object EpubLoader {
      */
     private const val MAX_FULL_CACHE_BYTES = 6L * 1024L * 1024L
     private const val CHAPTER_INDEX_NAME = "chapter_index_v1.json"
-    private const val SPINE_CACHE_DIR = "spine_cache"
+    private const val SPINE_CACHE_DIR = "spine_cache_v2"
     /** 跳转/恢复进度时每批解析更多 spine，减少往返 */
     private const val BATCH_SPINES_SEEK = 24
 
@@ -61,7 +61,8 @@ object EpubLoader {
             ?: uri.lastPathSegment
             ?: context.getString(com.whj.reader.R.string.unnamed)
         val cacheKey = cacheKeyFor(uri.toString())
-        val workDir = File(context.cacheDir, "ebooks/epub/$cacheKey").apply { mkdirs() }
+        val workDir = File(AppDataDir.ebookCache(context, "epub"), cacheKey).apply { mkdirs() }
+        AppDataDir.writeSourceUri(context, workDir, uri.toString())
         val direct = com.whj.reader.util.StorageAccess.readableBookFile(context, uri)
         val epubFile = if (direct != null) {
             direct
@@ -104,8 +105,8 @@ object EpubLoader {
         onProgress: LoadProgressListener? = null,
     ): BookOpenResult {
         val tAll = System.currentTimeMillis()
-        // v7：表格列对齐
-        val parsedCache = File(workDir, "parsed_${chineseMode.name}_v7.bin")
+        // v8：图片改为 epubimg 引用，不再把图抽到 images/
+        val parsedCache = File(workDir, "parsed_${chineseMode.name}_v8.bin")
         val chapterIndexFile = File(workDir, CHAPTER_INDEX_NAME)
         onProgress?.invoke("读取缓存…", 0, 0)
         // 大缓存跳过：整本反序列化会卡首页数秒；改用按需续载 + 章节索引
@@ -146,7 +147,6 @@ object EpubLoader {
             if (spine.isEmpty()) error("EPUB 无 spine")
             val spineResolved = spine.map { resolveZipPath(opfDir, it) }
 
-            val imgDir = File(workDir, "images").apply { mkdirs() }
             val paragraphs = ArrayList<Paragraph>(512)
             val headingChapters = ArrayList<Chapter>(64)
             val navChapters = parseNavChapters(index, zip, opf, opfDir)
@@ -160,22 +160,18 @@ object EpubLoader {
             }
             val linkTargets = LinkedHashMap<String, Int>(512)
 
-            // 封面：OPF cover-image / meta cover → 块图段 + 书架缓存
-            val coverLocal = extractCoverImage(index, zip, opf, opfDir, imgDir)
-            if (coverLocal != null) {
-                if (coverDest != null && coverDest.absolutePath != coverLocal.absolutePath) {
-                    runCatching {
-                        coverDest.parentFile?.mkdirs()
-                        coverLocal.inputStream().use { input ->
-                            FileOutputStream(coverDest).use { out -> copyStream(input, out) }
-                        }
-                    }
+            // 封面：OPF cover-image / meta cover → 块图段（epubimg）+ 书架封面文件
+            val coverRef = extractCoverImage(index, zip, opf, opfDir, epubFile)
+            if (coverRef != null) {
+                val entryName = BookImageSource.epubEntryName(coverRef)
+                if (coverDest != null && entryName != null) {
+                    runCatching { copyZipEntry(zip, entryName, coverDest) }
                 }
                 paragraphs.add(
                     Paragraph(
                         index = 0,
                         text = "",
-                        imagePath = coverLocal.absolutePath,
+                        imagePath = coverRef,
                     ),
                 )
             }
@@ -199,7 +195,7 @@ object EpubLoader {
                     paragraphs.size - before
                 } else {
                     val n = appendSpine(
-                        index, zip, opfDir, spine[nextSpine], imgDir,
+                        index, zip, opfDir, spine[nextSpine], epubFile,
                         chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
                     )
                     saveSpineCache(spineCacheDir, nextSpine, paragraphs, before, paragraphs.size)
@@ -219,7 +215,7 @@ object EpubLoader {
                     paragraphs.size - before
                 } else {
                     val n = appendSpine(
-                        index, zip, opfDir, spine[nextSpine], imgDir,
+                        index, zip, opfDir, spine[nextSpine], epubFile,
                         chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
                     )
                     saveSpineCache(spineCacheDir, nextSpine, paragraphs, before, paragraphs.size)
@@ -284,7 +280,7 @@ object EpubLoader {
                 spine = spine,
                 spineResolved = spineResolved,
                 nextSpine = nextSpine,
-                imgDir = imgDir,
+                epubFile = epubFile,
                 chineseMode = chineseMode,
                 navTitleKeys = navTitleKeys,
                 paragraphs = paragraphs,
@@ -344,7 +340,7 @@ object EpubLoader {
         zip: ZipFile,
         opfDir: String,
         href: String,
-        imgDir: File,
+        epubFile: File,
         chineseMode: ChineseConvert.Mode,
         navTitleKeys: MutableSet<String>,
         paragraphs: ArrayList<Paragraph>,
@@ -366,13 +362,13 @@ object EpubLoader {
         var textAdded = 0
         for (block in blocks) {
             if (!block.imageSrc.isNullOrBlank()) {
-                val local = extractImage(index, zip, baseDir, block.imageSrc, imgDir) ?: continue
+                val local = extractImage(index, zip, baseDir, block.imageSrc, epubFile) ?: continue
                 val idx = paragraphs.size
                 paragraphs.add(
                     Paragraph(
                         index = idx,
                         text = "",
-                        imagePath = local.absolutePath,
+                        imagePath = local,
                         imageDisplaySize = block.imageDisplaySize,
                     ),
                 )
@@ -397,7 +393,7 @@ object EpubLoader {
             } else {
                 emptyList()
             }
-            val inlines = resolveInlineImages(index, zip, baseDir, block.inlineImages, imgDir)
+            val inlines = resolveInlineImages(index, zip, baseDir, block.inlineImages, epubFile)
             val firstLine = text.lineSequence().first().take(80)
             val isChapter = block.isChapter ||
                 firstLine in navTitleKeys ||
@@ -943,7 +939,7 @@ object EpubLoader {
         private val spine: List<String>,
         private val spineResolved: List<String>,
         private var nextSpine: Int,
-        private val imgDir: File,
+        private val epubFile: File,
         private val chineseMode: ChineseConvert.Mode,
         private val navTitleKeys: MutableSet<String>,
         private val paragraphs: ArrayList<Paragraph>,
@@ -1001,7 +997,7 @@ object EpubLoader {
             )
             if (!fromCache) {
                 appendSpine(
-                    index, zip, opfDir, spine[nextSpine], imgDir,
+                    index, zip, opfDir, spine[nextSpine], epubFile,
                     chineseMode, navTitleKeys, paragraphs, headingChapters, linkTargets,
                 )
                 saveSpineCache(spineCacheDir, nextSpine, paragraphs, before, paragraphs.size)
@@ -1149,17 +1145,17 @@ object EpubLoader {
         zip: ZipFile,
         baseDir: String,
         refs: List<HtmlRichParser.InlineImageRef>,
-        imgDir: File,
+        epubFile: File,
     ): List<InlineImage> {
         if (refs.isEmpty()) return emptyList()
         val out = ArrayList<InlineImage>(refs.size)
         for (r in refs) {
-            val local = extractImage(index, zip, baseDir, r.src, imgDir) ?: continue
+            val local = extractImage(index, zip, baseDir, r.src, epubFile) ?: continue
             out.add(
                 InlineImage(
                     start = r.start,
                     end = r.end,
-                    path = local.absolutePath,
+                    path = local,
                     displaySize = r.displaySize,
                 ),
             )
@@ -1501,15 +1497,15 @@ object EpubLoader {
         return OpfData(title, finalHrefs, manifest, coverId = coverImageId ?: coverId)
     }
 
-    /** 从 OPF 提取封面图到 imgDir */
+    /** 封面图的 epubimg 引用，不写到磁盘。 */
     private fun extractCoverImage(
         index: ZipIndex,
         zip: ZipFile,
         opf: OpfData,
         opfDir: String,
-        imgDir: File,
-    ): File? {
-        fun tryItem(item: ManifestItem?): File? {
+        epubFile: File,
+    ): String? {
+        fun tryItem(item: ManifestItem?): String? {
             if (item == null) return null
             val mt = item.mediaType.lowercase(Locale.ROOT)
             if (mt.isNotEmpty() && !mt.startsWith("image/") &&
@@ -1522,7 +1518,7 @@ object EpubLoader {
                 // 可能是封面 XHTML，不当作图
                 return null
             }
-            return extractImage(index, zip, opfDir, item.href, imgDir)
+            return extractImage(index, zip, opfDir, item.href, epubFile)
         }
         opf.coverId?.let { id -> tryItem(opf.manifest[id]) }?.let { return it }
         // 再扫 properties
@@ -1649,8 +1645,8 @@ object EpubLoader {
         zip: ZipFile,
         baseDir: String,
         src: String,
-        imgDir: File,
-    ): File? {
+        epubFile: File,
+    ): String? {
         var s = src.trim()
         if (s.startsWith("data:", ignoreCase = true)) return null
         s = s.substringBefore('#').substringBefore('?')
@@ -1658,17 +1654,16 @@ object EpubLoader {
         s = runCatching { java.net.URLDecoder.decode(s, Charsets.UTF_8.name()) }.getOrDefault(s)
         val zipPath = resolveZipPath(baseDir, s)
         val entryName = index.resolve(zipPath) ?: index.resolve(s) ?: return null
-        val name = entryName.substringAfterLast('/').ifBlank { "img.bin" }
-        val safe = name.replace(Regex("[^a-zA-Z0-9._\\-]"), "_")
-        val hash = shortHash(entryName)
-        val out = File(imgDir, "${hash}_$safe")
-        if (!out.exists() || out.length() == 0L) {
-            val entry = zip.getEntry(entryName) ?: return null
-            zip.getInputStream(entry).use { input ->
-                FileOutputStream(out).use { output -> copyStream(input, output) }
-            }
+        if (zip.getEntry(entryName) == null) return null
+        return BookImageSource.epubRef(epubFile.absolutePath, entryName)
+    }
+
+    private fun copyZipEntry(zip: ZipFile, entryName: String, dest: File) {
+        val entry = zip.getEntry(entryName) ?: return
+        dest.parentFile?.mkdirs()
+        zip.getInputStream(entry).use { input ->
+            FileOutputStream(dest).use { output -> copyStream(input, output) }
         }
-        return out.takeIf { it.exists() && it.length() > 0 }
     }
 
     private fun resolveZipPath(baseDir: String, href: String): String {
@@ -1734,11 +1729,6 @@ object EpubLoader {
         val md = MessageDigest.getInstance("MD5")
         val dig = md.digest(uri.toByteArray(Charsets.UTF_8))
         return dig.joinToString("") { "%02x".format(it) }.take(16)
-    }
-
-    private fun shortHash(s: String): String {
-        val md = MessageDigest.getInstance("MD5")
-        return md.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(8)
     }
 
     private fun queryDisplayName(context: Context, uri: Uri): String? {

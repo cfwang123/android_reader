@@ -108,7 +108,7 @@ object LinkedTreeCacheStore {
     }
 
     private fun cacheDir(ctx: Context): File =
-        File(ctx.filesDir, DIR_NAME).also { it.mkdirs() }
+        AppDataDir.files(ctx, DIR_NAME)
 
     private fun cacheFile(ctx: Context, treeUri: String): File {
         val safe = treeUri.hashCode().toUInt().toString(16)

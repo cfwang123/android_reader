@@ -7,12 +7,12 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 
 /**
- * 书架封面图：按书 URI 哈希存到 filesDir/covers/。
+ * 书架封面图：按书 URI 哈希存到 covers/（未绑定外部目录时在应用私有目录）。
  */
 object CoverStore {
 
     fun fileFor(context: Context, bookUri: String): File {
-        val dir = File(context.filesDir, "covers").apply { mkdirs() }
+        val dir = AppDataDir.files(context, "covers")
         return File(dir, "${hashKey(bookUri)}.jpg")
     }
 

@@ -9,7 +9,7 @@ import com.whj.reader.util.AppLog
 
 /**
  * 按 PDF 文件持久化 OCR 结果（每页字符 + 坐标）。
- * 目录：files/pdf_ocr/{sha1(fileKey)}/page_{n}.json + index.json
+ * 目录：pdf_ocr/{sha1(fileKey)}/page_{n}.json + index.json（可绑定到外部目录）
  */
 object PdfOcrCacheStore {
 
@@ -49,7 +49,7 @@ object PdfOcrCacheStore {
     }
 
     private fun rootDir(ctx: Context): File =
-        File(ctx.filesDir, DIR).also { it.mkdirs() }
+        AppDataDir.files(ctx, DIR)
 
     private fun bookDir(ctx: Context, fileKey: String): File {
         val hash = sha1(fileKey).take(24)

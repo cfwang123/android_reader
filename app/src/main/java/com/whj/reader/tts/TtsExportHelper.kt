@@ -411,7 +411,7 @@ class TtsExportHelper(private val context: Context) {
             }
             doneChars = totalChars
             val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val outDir = File(context.getExternalFilesDir(null), "tts_export").also { it.mkdirs() }
+            val outDir = com.whj.reader.data.AppDataDir.externalKind(context, "tts_export")
             val merged = File(dir, "merged.wav")
             reportProgress(chunks.size, chunks.size, "merge")
             WavMerger.merge(partFiles, merged)

@@ -490,6 +490,7 @@ class ReadingActivity : AppCompatActivity() {
         if (::keepScreen.isInitialized) keepScreen.onResume()
         // 仅在方向偏好与当前不一致时纠正（同方向不重设，避免闪）
         applyOrientationMode(AppSettings.orientationMode(this), force = false)
+        com.whj.reader.ui.ExternalDataPrompt.maybeShow(this)
     }
 
     override fun onPause() {

@@ -11,6 +11,8 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import com.whj.reader.data.AppDataDir
+import com.whj.reader.data.AppSettings
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -104,9 +106,16 @@ object StorageAccess {
     fun isAppBooksCopy(context: Context, uriString: String): Boolean {
         if (!uriString.startsWith("file:")) return false
         val path = Uri.parse(uriString).path ?: return false
-        val root = context.getExternalFilesDir(null) ?: return false
-        val books = File(root, "books").absolutePath
         val abs = File(path).absolutePath
+        if (underBooks(context.getExternalFilesDir(null), abs)) return true
+        val bound = AppSettings.externalDataPath(context)
+        if (bound.isNotBlank() && underBooks(File(bound), abs)) return true
+        return false
+    }
+
+    private fun underBooks(root: File?, abs: String): Boolean {
+        if (root == null) return false
+        val books = File(root, "books").absolutePath
         return abs == books || abs.startsWith(books + File.separator)
     }
 
@@ -144,7 +153,7 @@ object StorageAccess {
 
     private fun copyToAppBooks(context: Context, uri: Uri, displayName: String?): String? {
         return try {
-            val dir = File(context.getExternalFilesDir(null), "books").apply { mkdirs() }
+            val dir = AppDataDir.externalKind(context, "books")
             val name = sanitizeFileName(
                 displayName
                     ?: queryDisplayName(context, uri)
@@ -206,9 +215,35 @@ object StorageAccess {
         return candidates.firstOrNull { looksLikeDevicePath(it) }
     }
 
+    /**
+     * 用户用目录选择器选中的文件夹。能解析成真实目录才返回。
+     */
+    fun resolveTreeDirectory(context: Context, uri: Uri): File? {
+        if (uri.scheme.equals("file", ignoreCase = true)) {
+            val path = uri.path ?: return null
+            return File(path).takeIf { it.isDirectory }
+        }
+        val docId = when {
+            DocumentsContract.isTreeUri(uri) ->
+                runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+            DocumentsContract.isDocumentUri(context, uri) ->
+                runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+            else -> null
+        } ?: return null
+        val candidates = pathsFromDocumentId(context, docId) ?: return null
+        for (path in candidates) {
+            if (File(path).isDirectory) return File(path)
+        }
+        return null
+    }
+
     private fun documentPathCandidates(context: Context, uri: Uri): List<String>? {
         if (!DocumentsContract.isDocumentUri(context, uri)) return null
         val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+        return pathsFromDocumentId(context, docId)
+    }
+
+    private fun pathsFromDocumentId(context: Context, docId: String): List<String>? {
         if (docId.startsWith("raw:")) return listOf(docId.removePrefix("raw:"))
         if (docId.startsWith("/")) return listOf(docId)
         val split = docId.split(":", limit = 2)

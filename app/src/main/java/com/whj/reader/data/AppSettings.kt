@@ -496,6 +496,27 @@ object AppSettings {
         prefs(ctx).edit().putString("appLanguage", language.name).apply()
     }
 
+    /** 绑定的外部数据目录绝对路径；空表示未绑定，数据仍在应用本地。 */
+    fun externalDataPath(ctx: Context): String =
+        prefs(ctx).getString("externalDataPath", "").orEmpty()
+
+    fun externalDataTreeUri(ctx: Context): String =
+        prefs(ctx).getString("externalDataTreeUri", "").orEmpty()
+
+    fun setExternalDataDir(ctx: Context, path: String, treeUri: String) {
+        prefs(ctx).edit()
+            .putString("externalDataPath", path)
+            .putString("externalDataTreeUri", treeUri)
+            .commit()
+    }
+
+    fun clearExternalDataDir(ctx: Context) {
+        prefs(ctx).edit()
+            .remove("externalDataPath")
+            .remove("externalDataTreeUri")
+            .commit()
+    }
+
     /** 书架排序，默认按上次阅读时间 */
     fun shelfSort(ctx: Context): ShelfSort =
         runCatching {

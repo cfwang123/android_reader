@@ -204,7 +204,16 @@ object BookshelfStore {
 
     fun removeBooks(ctx: Context, bookIds: Set<String>) {
         if (bookIds.isEmpty()) return
-        saveBooks(ctx, books(ctx).filterNot { it.id in bookIds })
+        val list = books(ctx)
+        val removedUris = list.filter { it.id in bookIds }.map { it.uri }
+        val next = list.filterNot { it.id in bookIds }
+        saveBooks(ctx, next)
+        val still = next.map { it.uri }.toSet()
+        for (uri in removedUris.distinct()) {
+            if (uri.isNotBlank() && uri !in still) {
+                BookLocalDataCleaner.clearParseCache(ctx, uri)
+            }
+        }
     }
 
     fun moveBooks(ctx: Context, bookIds: Set<String>, targetFolderId: String?) {
@@ -434,11 +443,18 @@ object BookshelfStore {
     }
 
     fun removeBook(ctx: Context, bookId: String) {
-        saveBooks(ctx, books(ctx).filterNot { it.id == bookId })
+        val list = books(ctx)
+        val uri = list.firstOrNull { it.id == bookId }?.uri
+        val next = list.filterNot { it.id == bookId }
+        saveBooks(ctx, next)
+        if (!uri.isNullOrBlank() && next.none { it.uri == uri }) {
+            BookLocalDataCleaner.clearParseCache(ctx, uri)
+        }
     }
 
     fun removeBookByUri(ctx: Context, uri: String) {
         saveBooks(ctx, books(ctx).filterNot { it.uri == uri })
+        if (uri.isNotBlank()) BookLocalDataCleaner.clearParseCache(ctx, uri)
     }
 
     /** 阅读历史删除时：保留书架条目，但 lastOpened=0 使历史列表不再收录 */

@@ -5,6 +5,10 @@
 ### English
 
 #### Changed / fixed
+- **EPUB images**: pictures stay in the EPUB zip and are read when shown. They are no longer extracted into cache
+- **EPUB / MOBI cache**: deleting a shelf book or a history record also deletes that book's parse cache, including the MOBI chapter index. Startup drops cache whose book is gone or no longer on the shelf, in recents, or in reading progress
+- **Notes**: saved only beside the book (`.notes/`). If that folder cannot be written, the app asks for all-files access instead of storing a copy inside the app
+- **External data folder**: Settings can bind a folder. Until it is bound, covers, fonts, backgrounds, PDF caches, ebook parse cache, cloud-book copies, and speech export stay in app storage. Binding moves that data into the folder. If the folder later cannot be read or written, the app asks to bind it again and keeps new data local until then
 - **EPUB / MOBI open**: books on internal storage or the SD card are read from the original file. The app no longer copies the whole book into its cache. A copy is kept only when the source has no real path (for example a cloud provider)
 - **MOBI images**: pictures stay in the original file. A page reads that one image when it is shown, instead of extracting every picture into cache. Opening the same book under another display name no longer stores a second copy. Startup deletes previously copied books and extracted MOBI images
 - **Old copied books**: on startup, files previously copied into app storage are deleted. If the same name and size exists on internal storage or the SD card, the shelf (progress, bookmarks, notes) points at that original first. Unmatched copies, such as cloud imports, are kept
@@ -17,6 +21,10 @@
 ### 中文
 
 #### 修改 / 修复
+- **EPUB 图片**：图片留在 EPUB 压缩包里，显示时再读，不再抽到缓存
+- **EPUB / MOBI 缓存**：从书架或阅读历史删除记录时，一并删掉该书的解析缓存（含 MOBI 章节索引）。启动时清掉书已不在、或不在书架 / 最近阅读 / 阅读进度里的缓存
+- **笔记**：只写在书籍旁边的 `.notes/`。该文件夹写不了时请求所有文件访问权限，不再存进应用目录
+- **外部存储目录**：设置里可绑定一个文件夹。未绑定时，封面、字体、背景、PDF 缓存、电子书解析缓存、网盘副本和语音导出仍在应用本地。绑定后这些数据转入该目录。之后目录读写失败会提示重新绑定，在重新绑定前新数据仍写在本地
 - **EPUB / MOBI 打开**：内部存储或 SD 卡上的书直接读原文件，不再把整本复制进缓存。只有没有真实路径的来源（如网盘）才复制
 - **MOBI 图片**：图片留在原文件里，翻到哪张就读哪张，不再提前抽出全部图片。同一本书换显示名也不会再存第二份。启动时删掉以前复制的整本和已抽出的 MOBI 图片
 - **旧副本清理**：启动时删除以前复制进应用目录的书。内部存储或 SD 卡上有同名同大小的原文件时，书架、进度、书签、笔记改指向原文件后再删副本。对不上的（如网盘复制）保留

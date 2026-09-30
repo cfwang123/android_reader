@@ -522,6 +522,7 @@ class PdfReadingActivity : AppCompatActivity() {
         maybeRunPdfOrientDebugFromFile()
         ocrUiController.schedulePdfOcrDebugPoll()
         ocrUiController.startWatchdog(800L)
+        com.whj.reader.ui.ExternalDataPrompt.maybeShow(this)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
