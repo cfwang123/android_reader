@@ -2,6 +2,7 @@ package com.whj.reader.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -23,7 +24,9 @@ object AppDataDir {
     @Volatile private var probedKey: String? = null
     @Volatile private var probedOk = false
     @Volatile private var probedAt = 0L
-    @Volatile private var rebindPending = false
+    /** 延迟确认后仍然不可写，才改走本地并允许提示重新绑定。 */
+    @Volatile private var confirmedDead = false
+    @Volatile private var promptedThisProcess = false
 
     private val relativeDirs = listOf(
         "covers",
@@ -87,8 +90,9 @@ object AppDataDir {
     }
 
     /**
-     * 当前可用的绑定根。未绑定、或探测失败时返回 null（调用方用本地）。
-     * 从可用变成不可用时记一次重新绑定。
+     * 当前要用的绑定根。未绑定返回 null。
+     * 刚启动时外部存储可能还不可写，这时仍返回已绑定路径，避免误判后改写到本地。
+     * 只有延迟确认仍然失败后才返回 null，调用方暂时用本地。
      */
     fun boundRoot(ctx: Context): File? {
         val path = AppSettings.externalDataPath(ctx)
@@ -96,31 +100,51 @@ object AppDataDir {
         val now = SystemClock.elapsedRealtime()
         synchronized(lock) {
             if (probedKey == path && probedOk) return File(path)
-            if (probedKey == path && !probedOk && now - probedAt < 5_000L) return null
-        }
-        val ok = probeWritable(File(path))
-        synchronized(lock) {
-            val wasOk = probedKey == path && probedOk
-            val first = probedKey != path
-            probedKey = path
-            probedOk = ok
-            probedAt = now
-            if (ok) {
-                rebindPending = false
-            } else if (wasOk || first) {
-                rebindPending = true
+            if (confirmedDead && probedKey == path && !probedOk && now - probedAt < 5_000L) {
+                return null
+            }
+            if (!confirmedDead && probedKey == path && !probedOk && now - probedAt < 1_000L) {
+                return File(path)
             }
         }
-        return if (ok) File(path) else null
+        if (!storageSettled(path)) return File(path)
+        val ok = probeWritable(File(path))
+        synchronized(lock) {
+            probedKey = path
+            probedOk = ok
+            probedAt = SystemClock.elapsedRealtime()
+            if (ok) confirmedDead = false
+        }
+        if (ok || !confirmedDead) return File(path)
+        return null
     }
 
-    /** 界面 onResume 调用。目录仍不可用时只提示一次，直到下一次读写失败。 */
-    fun consumeRebindPrompt(ctx: Context): Boolean {
-        if (AppSettings.externalDataPath(ctx).isBlank()) return false
-        if (boundRoot(ctx) != null) return false
+    /** 最近一次探测已经成功，界面不必再等。 */
+    fun hasFreshOkProbe(ctx: Context): Boolean {
+        val path = AppSettings.externalDataPath(ctx)
+        if (path.isBlank()) return true
+        val now = SystemClock.elapsedRealtime()
+        return probedKey == path && probedOk && now - probedAt < 30_000L
+    }
+
+    /**
+     * 启动约一秒后再调用。存储已挂载且仍然写不了才返回 true，每个进程只提示一次。
+     */
+    fun confirmRebindNeeded(ctx: Context): Boolean {
+        val path = AppSettings.externalDataPath(ctx)
+        if (path.isBlank() || promptedThisProcess) return false
+        if (!storageSettled(path)) return false
+        val ok = probeWritable(File(path))
         synchronized(lock) {
-            if (!rebindPending) return false
-            rebindPending = false
+            probedKey = path
+            probedOk = ok
+            probedAt = SystemClock.elapsedRealtime()
+            if (ok) {
+                confirmedDead = false
+                return false
+            }
+            confirmedDead = true
+            promptedThisProcess = true
             return true
         }
     }
@@ -178,27 +202,44 @@ object AppDataDir {
             return local
         }
         val target = File(root, relative)
-        if (target.isDirectory || target.mkdirs()) return target
-        markFailed(root.absolutePath)
+        if (ensureDir(target)) return target
+        if (!storageSettled(root.absolutePath) || probeWritable(root)) {
+            if (ensureDir(target)) return target
+            return target
+        }
+        markSoftFailure(root.absolutePath)
+        if (!confirmedDead) return target
         if (!local.isDirectory) local.mkdirs()
         return local
     }
 
-    private fun noteIoFailure(ctx: Context, dir: File) {
-        val path = AppSettings.externalDataPath(ctx)
-        if (path.isBlank()) return
-        val abs = dir.absolutePath
-        if (abs == path || abs.startsWith(path + File.separator)) {
-            markFailed(path)
-        }
+    private fun ensureDir(dir: File): Boolean {
+        if (dir.isDirectory) return true
+        if (dir.mkdirs()) return true
+        return dir.isDirectory
     }
 
-    private fun markFailed(path: String) {
+    private fun storageSettled(path: String): Boolean {
+        val state = runCatching { Environment.getExternalStorageState(File(path)) }
+            .getOrDefault(Environment.MEDIA_UNKNOWN)
+        return state == Environment.MEDIA_MOUNTED ||
+            state == Environment.MEDIA_MOUNTED_READ_ONLY
+    }
+
+    private fun noteIoFailure(ctx: Context, dir: File) {
+        val path = AppSettings.externalDataPath(ctx)
+        if (path.isBlank() || !storageSettled(path)) return
+        val abs = dir.absolutePath
+        if (abs != path && !abs.startsWith(path + File.separator)) return
+        if (probeWritable(File(path))) return
+        markSoftFailure(path)
+    }
+
+    private fun markSoftFailure(path: String) {
         synchronized(lock) {
             probedKey = path
             probedOk = false
             probedAt = SystemClock.elapsedRealtime()
-            rebindPending = true
         }
     }
 
@@ -207,7 +248,8 @@ object AppDataDir {
             probedKey = null
             probedOk = false
             probedAt = 0L
-            rebindPending = false
+            confirmedDead = false
+            promptedThisProcess = false
         }
     }
 
