@@ -326,6 +326,7 @@ object AppSettings {
             .remove("manga_itemOff_$k")
             .remove("manga_scrollY_$k")
             .remove("manga_uri_$k")
+            .remove("mobi_mode_$k")
             .apply()
         ReaderLog.i(ReaderLog.Module.MANGA_ZOOM, "CLEAR key=$k uri=${fileKey.take(120)}")
     }
@@ -453,19 +454,76 @@ object AppSettings {
 
     fun mobiViewMode(ctx: Context): MobiViewMode {
         val p = prefs(ctx)
-        val raw = p.getString("mobiViewMode", null)
-        if (!raw.isNullOrBlank()) {
-            return runCatching { MobiViewMode.valueOf(raw) }.getOrElse {
-                // 旧拼写兼容
-                when (raw.uppercase()) {
-                    "SINGLE", "MANGA_SINGLE" -> MobiViewMode.MANGA
-                    "CONT", "CONTINUOUS_SCROLL" -> MobiViewMode.CONTINUOUS
-                    else -> MobiViewMode.TEXT
-                }
-            }
-        }
+        parseMobiViewMode(p.getString("mobiViewMode", null))?.let { return it }
         // 迁移旧布尔：漫画开 → 单图漫画
         return if (p.getBoolean("mobiMangaMode", false)) MobiViewMode.MANGA else MobiViewMode.TEXT
+    }
+
+    /** 这本书上次的浏览模式；没存过返回 null。 */
+    fun mobiViewModeFor(ctx: Context, fileKey: String): MobiViewMode? {
+        if (fileKey.isBlank()) return null
+        val p = prefs(ctx)
+        val keys = listOf(mangaStateKey(fileKey), fileKey.hashCode().toString()).distinct()
+        for (k in keys) {
+            val mode = parseMobiViewMode(p.getString("mobi_mode_$k", null)) ?: continue
+            if (k == fileKey.hashCode().toString() && k != mangaStateKey(fileKey)) {
+                setMobiViewModeFor(ctx, fileKey, mode)
+            }
+            return mode
+        }
+        return null
+    }
+
+    fun setMobiViewModeFor(ctx: Context, fileKey: String, mode: MobiViewMode) {
+        if (fileKey.isBlank()) return
+        val k = mangaStateKey(fileKey)
+        prefs(ctx).edit().putString("mobi_mode_$k", mode.name).apply()
+    }
+
+    /**
+     * 打开这本书时用的模式。
+     * 已记住的按本本恢复。没记住时：纯图进图片模式（全局若是连续图则用连续图）。
+     * 旧版本只把模式存在全局：这本书留过漫画位置，或它就是上次打开的那本，且全局不是正文，则沿用全局模式。
+     */
+    fun resolveOpenMobiViewMode(
+        ctx: Context,
+        fileKey: String,
+        imageOnly: Boolean,
+        hasImages: Boolean,
+    ): MobiViewMode {
+        mobiViewModeFor(ctx, fileKey)?.let { return it }
+        if (!hasImages) return MobiViewMode.TEXT
+        val global = mobiViewMode(ctx)
+        if (imageOnly) {
+            return if (global == MobiViewMode.TEXT) MobiViewMode.MANGA else global
+        }
+        if (global != MobiViewMode.TEXT &&
+            (hasMangaViewState(ctx, fileKey) || lastBookUri(ctx) == fileKey)
+        ) {
+            return global
+        }
+        return MobiViewMode.TEXT
+    }
+
+    fun hasMangaViewState(ctx: Context, fileKey: String): Boolean {
+        if (fileKey.isBlank()) return false
+        val p = prefs(ctx)
+        val keys = listOf(mangaStateKey(fileKey), fileKey.hashCode().toString()).distinct()
+        return keys.any { k ->
+            p.contains("manga_idx_$k") || p.contains("manga_zoom_$k") || p.contains("manga_scrollY_$k")
+        }
+    }
+
+    private fun parseMobiViewMode(raw: String?): MobiViewMode? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { MobiViewMode.valueOf(raw) }.getOrElse {
+            when (raw.uppercase()) {
+                "SINGLE", "MANGA_SINGLE" -> MobiViewMode.MANGA
+                "CONT", "CONTINUOUS_SCROLL" -> MobiViewMode.CONTINUOUS
+                "TEXT" -> MobiViewMode.TEXT
+                else -> null
+            }
+        }
     }
 
     fun setMobiViewMode(ctx: Context, mode: MobiViewMode) {
@@ -822,6 +880,9 @@ object AppSettings {
             ed.putInt("manga_itemOff_$newM", p.getInt("manga_itemOff_$oldM", 0))
             ed.putInt("manga_scrollY_$newM", p.getInt("manga_scrollY_$oldM", 0))
             ed.putString("manga_uri_$newM", newUri.take(240))
+        }
+        if (p.contains("mobi_mode_$oldM") && !p.contains("mobi_mode_$newM")) {
+            ed.putString("mobi_mode_$newM", p.getString("mobi_mode_$oldM", null))
         }
         if (p.getString("shelfFocusUri", null) == oldUri) {
             ed.putString("shelfFocusUri", newUri)

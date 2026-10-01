@@ -396,6 +396,7 @@ class TextSettingsController(
         when (mode) {
             AppSettings.MobiViewMode.TEXT -> {
                 AppSettings.setMobiViewMode(activity, mode)
+                AppSettings.setMobiViewModeFor(activity, activity.fileKey, mode)
                 if (activity.mangaMode) activity.mangaController.exitMangaMode()
                 activity.mangaContinuousPref = false
             }
@@ -412,6 +413,7 @@ class TextSettingsController(
                 activity.mangaPaths = paths
                 val wantContinuous = mode == AppSettings.MobiViewMode.CONTINUOUS
                 AppSettings.setMobiViewMode(activity, mode)
+                AppSettings.setMobiViewModeFor(activity, activity.fileKey, mode)
                 if (activity.mangaMode) {
                     // 已在漫画模式：切换连续/单图
                     activity.mangaController.switchMangaImageLayout(wantContinuous)

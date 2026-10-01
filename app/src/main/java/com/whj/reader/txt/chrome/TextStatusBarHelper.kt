@@ -12,8 +12,8 @@ object TextStatusBarHelper {
 
     fun formatClock(now: Date = Date()): String = clockFmt.format(now)
 
-  /**
-     * @return e.g. "85%" or "�?5%"; null if unparseable
+    /**
+     * @return 如 "85%"；充电时为 "⚡85%"。无法解析返回 null
      */
     fun formatBattery(intent: Intent, chargingPrefix: Boolean = true): String? {
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
@@ -24,7 +24,7 @@ object TextStatusBarHelper {
         val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
             status == BatteryManager.BATTERY_STATUS_FULL
         return when {
-            charging && chargingPrefix -> "�?pct%"
+            charging && chargingPrefix -> "\u26A1$pct%"
             else -> "$pct%"
         }
     }

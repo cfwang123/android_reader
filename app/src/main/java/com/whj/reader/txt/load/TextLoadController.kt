@@ -446,17 +446,21 @@ class TextLoadController(
             }
             activity.allowProgressSave = false
             // Ă¤ÂťÂĂŚÂÂ ĂŚÂ­ÂŁĂŚÂÂĂ§ÂşÂŻĂĽÂÂž MOBI Ă¨ÂÂŞĂĽÂÂ¨Ă¨ÂżÂĂŚÂźÂŤĂ§ÂÂťĂŻÂźÂĂŚÂÂĂŚÂ­ÂŁĂŚÂÂĂ§ÂÂ MOBI ĂŚÂÂĂĽÂźÂĂŚÂÂśĂŠÂťÂĂ¨ÂŽÂ¤ĂŚÂ­ÂŁĂŚÂÂĂŚÂ¨ÂĄĂĽÂź?
+            val isMobi = activity.settingsController.isMobiBook()
             val imageOnly = isImageOnlyMobi(resolved)
-            val viewMode = AppSettings.mobiViewMode(activity)
-            val wantManga = activity.settingsController.isMobiBook() &&
-                activity.mangaPaths.isNotEmpty() &&
-                imageOnly &&
-                viewMode != AppSettings.MobiViewMode.TEXT
+            val hasImages = activity.mangaPaths.isNotEmpty()
+            val savedMode = if (isMobi) AppSettings.mobiViewModeFor(activity, resolved.uri) else null
+            val viewMode = if (isMobi) {
+                AppSettings.resolveOpenMobiViewMode(activity, resolved.uri, imageOnly, hasImages)
+            } else {
+                AppSettings.MobiViewMode.TEXT
+            }
+            if (isMobi && savedMode == null && viewMode != AppSettings.MobiViewMode.TEXT) {
+                AppSettings.setMobiViewModeFor(activity, resolved.uri, viewMode)
+            }
+            val wantManga = isMobi && hasImages && viewMode != AppSettings.MobiViewMode.TEXT
             if (wantManga) {
                 activity.mangaContinuousPref = viewMode == AppSettings.MobiViewMode.CONTINUOUS
-                if (viewMode == AppSettings.MobiViewMode.TEXT) {
-                    AppSettings.setMobiViewMode(activity, AppSettings.MobiViewMode.MANGA)
-                }
             }
             val saved = AppSettings.progressFor(activity, loaded.uri)
             val shelfPara = BookshelfStore.findBookByUri(activity, loaded.uri)?.lastParagraph ?: 0

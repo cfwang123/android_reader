@@ -10,7 +10,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 |------|----------------|
 | **Bookshelf** | Import TXT/PDF/EPUB/MOBI (and AZW, etc.) or folders; one-level shelves; bind folders; multi-select; search; backup/restore; reading history; long-press clear local records |
 | **E-books** | TXT / EPUB / MOBI: large books show the first screen quickly, then **prefetch the rest in the background** |
-| **MOBI** | Text body; **view modes**: text / single image / continuous strip; image-only books auto-enter image mode; improved UTF-8 Chinese MOBI |
+| **MOBI** | Text body; **view modes**: text / single image / continuous strip, remembered per book; image-only books auto-enter image mode; improved UTF-8 Chinese MOBI |
 | **PDF** | Continuous/single page, zoom, per-file crop, fast scroll, TOC, in-book links, TTS, tall-page tiled OCR (partial pages re-scanned), page-range audio export |
 | **TTS / export** | System speech, rate control (e.g. `1×`), sentence highlight, lock-screen continue, media controls; export MP3 / M4A / WAV |
 | **OCR** | Gallery or camera; on-device; scanned PDFs (long pages split into strips) |
@@ -41,7 +41,7 @@ A lightweight reader: bookshelf, TXT / EPUB / MOBI / PDF, system speech (TTS) an
 - **Reading style**: background textures / solid color / **imported image** (full screen, adjustable opacity, solid underlay color, **stretch or fit-center** scale); text color presets + custom HSV; size and spacing; install custom fonts (long-press to remove); system default font (no bundled commercial typeface)
 - **TXT**: auto or manual encoding; simplified↔traditional Chinese
 - **EPUB / MOBI styling** (common features): bold / italic / underline / colors; block and inline images; in-book and external links; long-press image → gallery
-- **MOBI view modes** (Style → View mode): **Text** (normal reading); **Single image** (one picture at a time, pinch-zoom, side-tap / swipe); **Continuous strip** (vertical image stream). Image-only MOBI auto-enters image mode; progress **image n / total** in image modes. **Portrait ↔ landscape** keeps zoom and horizontal pan ratio in continuous strip. Images are read from the original file when shown, not extracted into app cache
+- **MOBI view modes** (Style → View mode): **Text** (normal reading); **Single image** (one picture at a time, pinch-zoom, side-tap / swipe); **Continuous strip** (vertical image stream). The choice is stored for that book and restored the next time it is opened. Image-only MOBI auto-enters image mode; progress **image n / total** in image modes. **Portrait ↔ landscape** keeps zoom and horizontal pan ratio in continuous strip. Images are read from the original file when shown, not extracted into app cache
 - EPUB / MOBI on internal storage or SD card are read in place (the whole book is not copied). Cloud sources with no file path are still copied so the shelf can reopen them. EPUB pictures are read from the zip when shown, not extracted
 - Settings → **Bind external storage folder**: optional. Unbound data stays in app storage. Binding moves covers, fonts, backgrounds, PDF caches, ebook parse cache, cloud copies, and speech export into that folder. If the folder is still unusable after startup, bind it again. A check in the first moment after launch does not ask to bind again
 - **Text selection**: long-press to select (ebooks use system long-press; **PDF needs ~1 s still hold on a glyph** — no text / blank press does not select; any move before that is pan/scroll); **handles at both ends** to adjust; drag a handle to the top/bottom edge to auto-scroll and extend; copy / **read from here** (also jumps mid-TTS to the selection)
@@ -193,7 +193,7 @@ Open **TOC → Custom TOC scan**, pick a preset or enter a wildcard pattern (`�
 
 ### MOBI is only images / comic
 
-Use **Style → View mode → Single image** or **Continuous strip**, or open an image-only MOBI (auto image mode). Progress is image n / total.
+Use **Style → View mode → Single image** or **Continuous strip**, or open an image-only MOBI (auto image mode). Reopening that book keeps the last mode. Progress is image n / total.
 
 ### Scanned PDF has no text
 

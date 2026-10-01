@@ -689,7 +689,8 @@ class TextMangaController(
         if (activity.isTtsReady()) tts.stop()
         mangaMode = true
         // ä¸?¨?????????é?????ç?­?? / ??????ç????
-        val pref = AppSettings.mobiViewMode(activity)
+        val pref = AppSettings.mobiViewModeFor(activity, activity.fileKey)
+            ?: AppSettings.mobiViewMode(activity)
         mangaContinuousPref = pref == AppSettings.MobiViewMode.CONTINUOUS
         b.mangaHost.isVisible = true
         reader.visibility = View.GONE

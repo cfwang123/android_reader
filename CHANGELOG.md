@@ -5,6 +5,8 @@
 ### English
 
 #### Changed / fixed
+- **MOBI view mode**: text / single image / continuous strip is remembered per book and restored on reopen. Image-only books still open in image mode
+- **Reader status bar**: battery text while charging shows a lightning prefix and the percent again (the prefix bytes were corrupt, so it showed garbled `pct%`)
 - **EPUB images**: pictures stay in the EPUB zip and are read when shown. They are no longer extracted into cache
 - **EPUB / MOBI cache**: deleting a shelf book or a history record also deletes that book's parse cache, including the MOBI chapter index. Startup drops cache whose book is gone or no longer on the shelf, in recents, or in reading progress
 - **Notes**: saved only beside the book (`.notes/`). If that folder cannot be written, the app asks for all-files access instead of storing a copy inside the app
@@ -21,6 +23,8 @@
 ### 中文
 
 #### 修改 / 修复
+- **MOBI 浏览模式**：正文 / 单图 / 连续图按书记住，再次打开同一本恢复上次模式。无正文的纯图仍自动进图片模式
+- **阅读底栏**：充电时电量重新显示闪电前缀和百分比（前缀字节损坏，界面上变成乱码 `pct%`）
 - **EPUB 图片**：图片留在 EPUB 压缩包里，显示时再读，不再抽到缓存
 - **EPUB / MOBI 缓存**：从书架或阅读历史删除记录时，一并删掉该书的解析缓存（含 MOBI 章节索引）。启动时清掉书已不在、或不在书架 / 最近阅读 / 阅读进度里的缓存
 - **笔记**：只写在书籍旁边的 `.notes/`。该文件夹写不了时请求所有文件访问权限，不再存进应用目录
