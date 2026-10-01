@@ -1,6 +1,6 @@
 # Changelog / 更新日志
 
-## unreleased
+## 1.0.7 — 2026-08-19 ~ 2026-10-01
 
 ### English
 
@@ -14,11 +14,12 @@
 - **EPUB / MOBI open**: books on internal storage or the SD card are read from the original file. The app no longer copies the whole book into its cache. A copy is kept only when the source has no real path (for example a cloud provider)
 - **MOBI images**: pictures stay in the original file. A page reads that one image when it is shown, instead of extracting every picture into cache. Opening the same book under another display name no longer stores a second copy. Startup deletes previously copied books and extracted MOBI images
 - **Old copied books**: on startup, files previously copied into app storage are deleted. If the same name and size exists on internal storage or the SD card, the shelf (progress, bookmarks, notes) points at that original first. Unmatched copies, such as cloud imports, are kept
-- **Open from SD card**: local files (internal storage and SD card) are read **in place** and no longer copied into app storage. A copy is kept only when the source has no real file path (for example a cloud provider)
 - **PDF continuous**: after pinch-zoom in portrait, rotating to landscape no longer **squashes pages below** the current one (item height was still based on the old width)
 - **PDF crop screen**: page preview now fills **white** before render (same as reading view), so transparent PDF paper no longer shows the gray chrome behind
 - **Release logging**: `AppLog` / `ReaderLog` emit nothing in release (`BuildConfig.DEBUG`); former direct `android.util.Log` calls migrated
-- **PDF continuous zoom-in**: bottom padding `vh*(z-1)/z` so the list can scroll to the true content bottom
+- **PDF continuous pan/zoom**: align with **MOBI continuous strip** — unzoomed single-finger scroll is always **native RecyclerView** (removed `RV_RESTART` / CANCEL+new-DOWN); hold ~50 ms only clears system long-press; PDF text long-press still ~1 s **on a glyph only**
+- **PDF continuous zoom-in**: bottom padding `vh*(z-1)/z` so the list can scroll to the true content bottom (the visible window is only `vh/z`)
+- **PDF fast-scroll thumb**: at document top the thumb sits at the **top** of the track (progress = scrollY / scrollable range)
 
 ### 中文
 
@@ -32,15 +33,16 @@
 - **EPUB / MOBI 打开**：内部存储或 SD 卡上的书直接读原文件，不再把整本复制进缓存。只有没有真实路径的来源（如网盘）才复制
 - **MOBI 图片**：图片留在原文件里，翻到哪张就读哪张，不再提前抽出全部图片。同一本书换显示名也不会再存第二份。启动时删掉以前复制的整本和已抽出的 MOBI 图片
 - **旧副本清理**：启动时删除以前复制进应用目录的书。内部存储或 SD 卡上有同名同大小的原文件时，书架、进度、书签、笔记改指向原文件后再删副本。对不上的（如网盘复制）保留
-- **从 SD 卡打开**：内部存储和 SD 卡上的书 **直接读原文件**，不再复制到应用目录。只有解析不出真实路径的来源（如网盘）才复制一份
 - **PDF 连续模式**：竖屏捏合缩放后再切横屏，**下面几页不再被压扁**（页高仍按旧宽度计算）
 - **PDF 切边页**：预览渲染前先铺 **白底**（与阅读预览一致），PDF 未画纸底时不再透出灰色界面底
 - **Release 日志**：`AppLog` / `ReaderLog` 在 release 中不输出（`BuildConfig.DEBUG`）；原直连 `android.util.Log` 已迁走
-- **PDF 连续放大**：底 padding `vh*(z-1)/z`，可滚到内容真实底部
+- **PDF 连续 pan/zoom**：对齐 **MOBI 连续图**——未放大单指滚动一律 **RecyclerView 原生**（去掉 `RV_RESTART` / CANCEL+新 DOWN）；约 50ms 只清系统长按；选字仍为约 1 秒且 **仅按在字上**
+- **PDF 连续放大**：底 padding `vh*(z-1)/z`，放大后可滚到内容真实底部（可视高度只有 vh/z）
+- **PDF 右侧滚动条**：滚到顶时拇指在轨道 **顶部**（进度 = scrollY/可滚区间）
 
 ---
 
-## 1.0.6 — 2026-07-27 ~ 2026-08-19
+## 1.0.6 — 2026-07-27 ~ 2026-07-28
 
 ### English
 
@@ -52,9 +54,7 @@
 - **PDF pinch-zoom**: start scaling as soon as the second finger lands (bypass system min-span dead zone that ignored the first part of the pinch)
 - **Volume keys while TTS is active** (speaking or paused): adjust system media volume instead of page turn (TXT / EPUB / MOBI / PDF)
 - **TTS volume pumping**: use media/music audio attributes (avoid SPEECH AGC); pin `volume=1.0` and `STREAM_MUSIC` on every utterance
-- **PDF continuous pan/zoom**: align with **MOBI continuous strip** — unzoomed single-finger scroll is always **native RecyclerView** (removed `RV_RESTART` / CANCEL+new-DOWN); hold ~50 ms only clears system long-press; PDF text long-press still ~1 s **on a glyph only**
-- **PDF continuous zoom-in**: add bottom padding `vh*(z-1)/z` so the list can scroll to the **true content bottom** (was limited to `contentH-vh` while the visible window is only `vh/z`)
-- **PDF fast-scroll thumb**: at document top the thumb sits at the **top** of the track (progress = scrollY / scrollable range)
+- **PDF long-press vs pan**: hold still **1 s** to select text; **any move before long-press is pan** (cancels pending select); after a short hold then drag, continuous mode scrolls **immediately** (no hitch)
 - **TTS “read from selection” while speaking**: interrupt current sentence and **jump to the selected paragraph / offset** (ebook “Read from here”; PDF “Read selection”)
 
 ### 中文
@@ -67,9 +67,7 @@
 - **PDF 双指缩放**：第二指落下即开始缩放（绕过系统 minSpan 死区，避免前半段捏合无反应）
 - **TTS 朗读/暂停中**：音量键改为调节系统音量，不再翻页（电子书与 PDF）
 - **TTS 音量时大时小**：朗读属性改为媒体音乐流（避免 SPEECH 路径 AGC）；每次 speak 固定 `volume=1.0` 与 `STREAM_MUSIC`
-- **PDF 连续 pan/zoom**：对齐 **MOBI 连续图**——未放大单指滚动一律 **RecyclerView 原生**（去掉 `RV_RESTART` / CANCEL+新 DOWN）；约 50ms 只清系统长按；选字仍为约 1 秒且 **仅按在字上**
-- **PDF 连续放大**：给列表加底 padding `vh*(z-1)/z`，放大后可滚到 **内容真正底部**（原先可滚上限仍按整屏 vh，而可视只有 vh/z）
-- **PDF 右侧滚动条**：滚到顶时拇指在轨道 **顶部**（进度 = scrollY/可滚区间）
+- **PDF 长按选字与 pan**：需**静止按住 1 秒**才选字；**长按触发前移动一律 pan**（取消待选字）；按住片刻再拖时连续模式**立即跟手滚动**（消除顿挫）
 - **朗读中选区起读**：电子书「从本段开始朗读」、PDF「朗读选区」会**打断当前句并跳到选区起点**继续往下读
 
 ---
